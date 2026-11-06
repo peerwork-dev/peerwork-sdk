@@ -304,7 +304,10 @@ impl AgyStdio {
         )
     }
     pub fn deliver(&mut self, message: &Value) -> R<Value> {
-        if self.health()?["ready"] != true {
+        if self.health().map_err(|code| {
+            if let Some(budget)=&self.aggregate {budget.failure(code,None);}
+            "HOST_PREFLIGHT_FAILED"
+        })?["ready"] != true {
             return Err("HOST_NOT_READY");
         }
         let rendered = text(message, "rendered_text")?;
@@ -515,6 +518,23 @@ mod tests {
         let saved: Value = serde_json::from_slice(&fence.read_exact().unwrap().unwrap()).unwrap();
         assert_eq!(saved["state"], "STOPPED");
         assert_eq!(saved["input_attempted"], false);
+    }
+    #[test]
+    fn disappeared_child_before_input_is_proven_not_sent() {
+        let rt=tokio::runtime::Runtime::new().unwrap();
+        let root=crate::test_support::protected_test_dir();
+        let config=stub(root.path(),false);
+        let mut host=AgyStdio::open(&config,rt.handle().clone()).unwrap();
+        assert_eq!(host.health().unwrap()["ready"],true);
+        rt.block_on(async{host.child.kill().await.unwrap();});
+        let result=host.deliver(&json!({"rendered_text":"must not be written"}));
+        assert_eq!(result.unwrap_err(),"HOST_PREFLIGHT_FAILED");
+        assert!(!host.attempted);
+        let outcome=crate::participant_dispatch::host_outcome("agy-stdio",Err("HOST_PREFLIGHT_FAILED"));
+        assert_eq!(serde_json::to_value(outcome).unwrap()["state"],"NOT_SENT");
+        drop(host);
+        let replacement=AgyStdio::open(&config,rt.handle().clone()).unwrap();
+        assert!(!replacement.attempted);
     }
     #[test]
     fn running_previous_process_is_not_replaced() {

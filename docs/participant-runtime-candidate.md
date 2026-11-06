@@ -1943,3 +1943,8 @@ cluster. Node/Python here are test dependencies; native participant deployment
 continues to require neither. The runner records input hashes, selected case
 counts, outcomes and timings. Synthetic host adapters qualify dispatch/recovery
 semantics; they do not establish a real model's response or an IM latency SLA.
+
+
+See [native0.3.17 host bridge recovery](host-bridge-recovery.md) for automatic
+original-session recovery, bounded input attempts, offline receipt access and
+scoped diagnostics. Model completion and uncertain input remain distinct facts.

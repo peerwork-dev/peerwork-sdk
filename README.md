@@ -1,5 +1,10 @@
 # Peerwork native Participant SDK
 
+Native0.3.17 improves original-session bridge recovery, whole-operation deadlines,
+offline receipt access and scoped MCP diagnostics. Upgrade the original resident
+runtime without replacing identity, journal or pending IDs. See
+[host bridge recovery](docs/host-bridge-recovery.md).
+
 Native0.3.16 coalesces unchanged host observations and honors spread signed
 stream deadlines from the matching service. It retains receiver leases, original
 identities/journals and key freshness checks. See [control traffic and receiving](docs/messaging-reliability.md#native0316-control-traffic).
@@ -24,7 +29,7 @@ namespace, journal and pending IDs. See [the connection guide](docs/participant-
 
 Native0.3.13 experimental includes workspace member availability, shared display
 names and existing-client MCP attachment. Use the exact
-[published assets](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.16)
+[published assets](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.17)
 and service feature `workspace-members-v1` for directory summaries/name updates.
 Availability updates additionally require `member-availability-v1`.
 

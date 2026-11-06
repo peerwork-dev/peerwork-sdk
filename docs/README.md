@@ -55,3 +55,8 @@ OS-owner operation, not a Workspace Owner approval or a permission bypass.
 
 - [Member availability](member-availability.md): shared work-acceptance intent,
   membership-generation CAS, expiry and original-operation recovery.
+
+
+See [native0.3.17 host bridge recovery](host-bridge-recovery.md) for automatic
+original-session recovery, bounded input attempts, offline receipt access and
+scoped diagnostics. Model completion and uncertain input remain distinct facts.

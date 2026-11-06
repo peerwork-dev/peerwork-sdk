@@ -23,6 +23,43 @@ struct Initial {
     connect_directory:Option<PathBuf>,
     inbox_request:Option<Value>,
 }
+
+/// Explicit maintainer qualification against an isolated official App Server.
+/// A deterministic local model fixture is sufficient to prove host acceptance;
+/// this does not claim a real model response or latency SLA.
+#[tokio::test(flavor="multi_thread",worker_threads=2)]
+#[ignore="requires isolated official Codex host plus synthetic PostgreSQL HTTP service"]
+async fn official_unloaded_codex_receives_original_pending_mail_once() {
+    let path=std::env::var("PEERWORK_CODEX_CONTROL_CONFIG").expect("isolated adapter required");
+    let adapter:Value=serde_json::from_slice(&crate::secure_state::read_private_file_bounded(Path::new(&path),8192).unwrap()).unwrap();
+    let source=setup(false,adapter.clone()).await;
+    let started=std::time::Instant::now();
+    let moved=rebind_host(&source.path,source.request.clone()).await.unwrap();
+    assert_eq!(moved["state"],"HOST_REBIND_READY");
+    let target:RuntimeConfig=serde_json::from_value(private_json(&source.path,65536).unwrap()).unwrap();
+    let engine=target.engines[0].clone();
+    let cancel=KernelCancellationToken::new();let(tx,rx)=tokio::sync::oneshot::channel();
+    let running=tokio::spawn(ipc::serve(target,cancel.clone(),tx));let ready=rx.await.unwrap().unwrap();
+    let client=RuntimeClient::connect(ready.client_endpoints["worker"].clone(),&engine.origin,&engine.expected_actor).await.unwrap();
+    let mut watch=source.old.clone();watch.host_destination=Some(moved["destination_digest"].as_str().unwrap().into());
+    let accepted=tokio::time::timeout(Duration::from_secs(25),async{loop{
+        let page=client.call(json!({"method":"inbox","options":watch,"after":0,"limit":32})).await.unwrap();
+        if let Some(item)=page["items"].as_array().and_then(|items|items.first()) {
+            let selected=json!({"sequence":item["sequence"],"delivery_id":item["delivery_id"]});
+            let status=client.call(json!({"method":"delivery_status","options":watch,"item":selected})).await.unwrap();
+            if status["host"]=="HOST_ACCEPTED"{break status;}
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }}).await;
+    cancel.cancel();running.await.unwrap().unwrap();
+    let accepted=accepted.expect("original pending mail must reach the official selected host");
+    let identity=KernelIdentity::open(&engine.identity_path).unwrap();
+    let store=InboxStore::open_local(&engine.state_directory,&identity,&crate::transport::canonical_lifecycle_origin(&engine.origin,true).unwrap()).unwrap();
+    let pins=store.pins(&watch.workspace_id,&watch.mailbox_id).unwrap().unwrap();
+    assert_eq!(pins.receiver_id,source.original.receiver_id);
+    let report=json!({"state":"PASS","scope":"real official host; synthetic service, identity and model output","host_receipt":accepted,"elapsed_ms":started.elapsed().as_millis(),"same_receiver":true,"thread_id":adapter["thread_id"],"session_id":adapter["expected_session_id"]});
+    write_private(Path::new(&std::env::var("PEERWORK_OFFICIAL_HOST_REPORT").unwrap()),&serde_json::to_vec_pretty(&report).unwrap()).unwrap();
+}
 async fn setup(derived:bool,adapter:Value)->Initial {
     let service=Service::start();let root=crate::test_support::protected_test_dir();
     let cfg=configuration(root.path(),&service.origin);

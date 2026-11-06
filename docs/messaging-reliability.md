@@ -79,3 +79,8 @@ These are reductions in avoidable work and connection renewal. They do not
 promise a fixed transport P99, host/model response time or a larger production
 connection allowance. Performance qualification must state the actual resource,
 traffic, persistence and SDK/host boundaries.
+
+
+See [native0.3.17 host bridge recovery](host-bridge-recovery.md) for automatic
+original-session recovery, bounded input attempts, offline receipt access and
+scoped diagnostics. Model completion and uncertain input remain distinct facts.
