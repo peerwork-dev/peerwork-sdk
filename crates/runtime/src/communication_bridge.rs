@@ -677,7 +677,7 @@ fn provider_loop(config:Value,executor:tokio::runtime::Handle,progress:crate::co
             if let Some(expected)=&request.destination {
                 let mut actual=selected.destination.clone();
                 if actual.get("bridge_id").is_none(){if let Some(id)=expected.get("bridge_id"){actual["bridge_id"]=id.clone();}}
-                if &actual!=expected{return Ok((expected.clone(),json!({"state":"NOT_SENT","code":"HOST_BINDING_MISMATCH","proof":"BOUND_HOST_RECONCILIATION"})));}
+                if &actual!=expected{return if request.frame.is_some(){Ok((expected.clone(),json!({"state":"NOT_SENT","code":"HOST_BINDING_MISMATCH","proof":"BOUND_HOST_RECONCILIATION"})))}else{Err("HOST_BINDING_MISMATCH")};}
                 selected.destination=actual;
             }
             let result=if let Some(frame)=&request.frame {
