@@ -1110,3 +1110,68 @@ async fn bridge_aggregate_budget_blocks_stalled_preflight_without_late_input(){
     assert_eq!(call(&ready,"deliver",&two,json!({"message":frame})).await["state"],"NOT_SENT");
     stop.cancel();task.await.unwrap().unwrap();drop(fixture);
 }
+
+#[tokio::test(flavor="multi_thread",worker_threads=2)]
+#[ignore="requires synthetic loopback host"]
+async fn owned_provider_recovers_after_panic_without_reinjecting_original_input(){
+    let fixture=CodexFixture::start();fixture.emit_events.store(false,Ordering::SeqCst);
+    let mut config=fixture.config();config["_test_panic_after_input"]=json!(true);
+    let progress=crate::communication_host::operation::Budget::new(Duration::from_secs(2));
+    let executor=tokio::runtime::Handle::current();let (sender,receiver)=mpsc::channel(1);
+    let worker=tokio::task::spawn_blocking(move||provider_loop(config,executor,progress,receiver));
+    let destination=provider_request(&sender,None,None,json!({}),std::time::Instant::now()+Duration::from_secs(2)).unwrap().await.unwrap().unwrap().0;
+    let (_,frame)=self::frame(&destination,1);
+    let failed=provider_request(&sender,Some(destination.clone()),Some(frame),json!({}),std::time::Instant::now()+Duration::from_secs(2)).unwrap().await.unwrap();
+    assert_eq!(failed.unwrap_err(),"HOST_PROVIDER_PANICKED");
+    let restored=provider_request(&sender,Some(destination.clone()),None,json!({}),std::time::Instant::now()+Duration::from_secs(2)).unwrap().await.unwrap().unwrap();
+    assert_eq!(restored.0,destination);assert_eq!(restored.1["ready"],true);
+    assert_eq!(fixture.calls().iter().filter(|v|matches!(v["method"].as_str(),Some("turn/start"|"turn/steer"))).count(),1);
+    drop(sender);worker.await.unwrap().unwrap();drop(fixture);
+}
+
+#[tokio::test(flavor="multi_thread",worker_threads=2)]
+#[ignore="requires real loopback HTTP and synthetic host"]
+async fn expired_http_admission_has_a_durable_negative_fence_and_no_late_input(){
+    use tokio::io::{AsyncReadExt,AsyncWriteExt};
+    let fixture=CodexFixture::start();fixture.emit_events.store(false,Ordering::SeqCst);
+    let directory=crate::test_support::protected_test_dir();
+    let config=BridgeConfig{format:"peerwork.host-bridge.v1".into(),state_directory:directory.path().join("bridge"),host:fixture.config(),bindings:vec![grant()]};
+    let stop=KernelCancellationToken::new();let(tx,rx)=oneshot::channel();
+    let task=tokio::spawn(serve_limit(config,stop.clone(),tx,Duration::from_millis(750)));let ready=rx.await.unwrap().unwrap();
+    let(binding,frame)=self::frame(&ready.adapter["destination"],1);
+    let credential=crate::secure_state::read_private_file_bounded(Path::new(ready.adapter["token_file"].as_str().unwrap()),43).unwrap();let credential=std::str::from_utf8(&credential).unwrap();
+    let wire=channel::request(credential,"deliver",&json!({"binding":binding,"destination":ready.adapter["destination"],"message":frame})).unwrap();
+    let url=reqwest::Url::parse(ready.adapter["endpoint"].as_str().unwrap()).unwrap();
+    let mut socket=tokio::net::TcpStream::connect(("127.0.0.1",url.port().unwrap())).await.unwrap();
+    let header=format!("POST /deliver HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Peerwork-Bridge: v1\r\nX-Peerwork-Bridge-Key: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",channel::key_id(credential),wire.len());
+    socket.write_all(header.as_bytes()).await.unwrap();socket.write_all(&wire.as_bytes()[..20]).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(1000)).await;socket.write_all(&wire.as_bytes()[20..]).await.unwrap();
+    let mut response=Vec::new();tokio::time::timeout(Duration::from_secs(3),socket.read_to_end(&mut response)).await.unwrap().unwrap();
+    let split=response.windows(4).position(|v|v==b"\r\n\r\n").unwrap()+4;
+    let outcome=channel::open_response(credential,"deliver",wire.as_bytes(),&response[split..]).unwrap();
+    assert_eq!(outcome["state"],"NOT_SENT");assert_eq!(outcome["proof"],"BOUND_HOST_RECONCILIATION");
+    assert_eq!(call(&ready,"deliver",&binding,json!({"message":frame})).await["state"],"NOT_SENT");
+    assert!(!fixture.calls().iter().any(|v|matches!(v["method"].as_str(),Some("turn/start"|"turn/steer"))));
+    stop.cancel();task.await.unwrap().unwrap();drop(fixture);
+}
+
+#[tokio::test(flavor="multi_thread",worker_threads=2)]
+#[ignore="requires real bridge HTTP and local SQLite write contention"]
+async fn cached_bridge_health_remains_available_while_ledger_writer_is_blocked(){
+    let fixture=CodexFixture::start();fixture.emit_events.store(false,Ordering::SeqCst);
+    let directory=crate::test_support::protected_test_dir();let state=directory.path().join("bridge");
+    let config=BridgeConfig{format:"peerwork.host-bridge.v1".into(),state_directory:state.clone(),host:fixture.config(),bindings:vec![grant()]};
+    let (ready,stop,task)=start(config).await;wait_ready(&ready).await;
+    let db=rusqlite::Connection::open(state.join("bridge.sqlite")).unwrap();db.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let(binding,frame)=self::frame(&ready.adapter["destination"],1);let selected=ready.clone();
+    let delivery=tokio::spawn(async move{call(&selected,"deliver",&binding,json!({"message":frame})).await});
+    let health=tokio::time::timeout(Duration::from_secs(2),async{loop{
+        let value=call(&ready,"health",&json!({}),json!({})).await;
+        if value["health"]["coordinator_phase"]=="LEDGER_RESERVE"{return value;}
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }}).await.unwrap();
+    assert!(health["health"]["diagnostic"].is_object());
+    db.execute_batch("ROLLBACK").unwrap();drop(db);
+    assert_eq!(delivery.await.unwrap()["state"],"HOST_ACCEPTED");
+    stop.cancel();task.await.unwrap().unwrap();drop(fixture);
+}

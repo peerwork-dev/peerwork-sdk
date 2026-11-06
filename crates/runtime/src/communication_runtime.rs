@@ -413,8 +413,9 @@ impl Runtime {
                     for mut value in hosts.statuses(){
                         let selected=value["source_bindings"].as_array().map(|bindings|bindings.iter().filter(|b|b["client"]==session.name&&b.get("client_generation").and_then(Value::as_u64)==session.generation).cloned().collect::<Vec<_>>()).unwrap_or_default();
                         if selected.is_empty(){continue;}
-                        if let Some(fields)=value.as_object_mut(){fields.retain(|key,_|["state","code","diagnostic","dispatcher_running","restart_attempt","retry_after_ms","model_response","selection_id"].contains(&key.as_str()));}
-                        value["source_bindings"]=json!(selected);values.push(value);
+                        if let Some(fields)=value.as_object_mut(){fields.retain(|key,_|["state","code","diagnostic","host_observation","delivery_obligations","dispatcher_running","restart_attempt","retry_after_ms","model_response","selection_id"].contains(&key.as_str()));}
+                        let obligations=value["delivery_obligations"].as_array().map(|items|items.iter().filter(|item|selected.iter().any(|source|source["watch"]["workspace_id"]==item["workspace_id"]&&source["watch"]["mailbox_id"]==item["mailbox_id"])).cloned().collect::<Vec<_>>()).unwrap_or_default();
+                        value["source_bindings"]=json!(selected);value["delivery_obligations"]=json!(obligations);values.push(value);
                     }
                     Ok(json!({"hosts":values,"scope":"SELECTED_CLIENT_GENERATION","model_response":"NOT_ATTESTED"}))
                 },

@@ -39,3 +39,17 @@ pub(super) fn resolve(executor:&tokio::runtime::Handle,budget:&Budget,name:&str,
         tokio::time::timeout(budget.remaining().map_err(|_|"HOST_OPERATION_TIMEOUT")?,lookup).await.map_err(|_|"HOST_DNS_TIMEOUT")?.map_err(|_|"HOST_RESOLUTION_FAILED")?.map_err(|_|"HOST_RESOLUTION_FAILED")
     })
 }
+
+pub(crate) fn with_host<T>(host:&std::sync::Mutex<super::Host>,deadline:Instant,call:impl FnOnce(&mut super::Host)->Result<T,&'static str>)->Result<T,&'static str>{
+    loop {
+        if Instant::now()>=deadline{return Err("HOST_LOCK_TIMEOUT");}
+        match host.try_lock(){
+            Ok(mut selected)=>{
+                let _operation=selected.progress.scope("HOST_CALL");selected.progress.clamp(deadline);
+                return call(&mut selected);
+            },
+            Err(std::sync::TryLockError::Poisoned(_))=>return Err("HOST_STATE_INVALID"),
+            Err(std::sync::TryLockError::WouldBlock)=>std::thread::sleep(deadline.saturating_duration_since(Instant::now()).min(Duration::from_millis(2))),
+        }
+    }
+}

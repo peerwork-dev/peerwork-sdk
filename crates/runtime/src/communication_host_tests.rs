@@ -736,3 +736,24 @@ fn host_operation_deadline_expires_while_diagnostics_remain_readable() {
     assert!(budget.snapshot()["original_error_code"].as_str().is_some());
     fixture.stall_health.store(false,Ordering::SeqCst);drop(fixture);
 }
+
+#[test]
+#[ignore="requires loopback slow byte transport"]
+fn slow_partial_websocket_handshake_cannot_reset_the_operation_budget(){
+    use std::io::{Read,Write};
+    let listener=std::net::TcpListener::bind("127.0.0.1:0").unwrap();let endpoint=format!("ws://{}",listener.local_addr().unwrap());
+    let server=std::thread::spawn(move||{
+        let(mut stream,_)=listener.accept().unwrap();stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        let mut request=[0;8192];let _=stream.read(&mut request);
+        for byte in b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n" {
+            if stream.write_all(&[*byte]).is_err(){break;}
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    });
+    let runtime=tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let budget=operation::Budget::new(Duration::from_millis(250));let started=Instant::now();
+    let result=Host::open_progress(json!({"kind":"codex","endpoint":endpoint,"thread_id":"existing-thread"}),runtime.handle().clone(),budget.clone());
+    assert!(result.is_err());assert!(started.elapsed()<Duration::from_secs(2));
+    assert_eq!(budget.snapshot()["failure_phase"],"HANDSHAKE");
+    server.join().unwrap();
+}

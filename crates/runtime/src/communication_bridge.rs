@@ -23,7 +23,7 @@ use std::{
     collections::BTreeMap,
     convert::Infallible,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc,Mutex},
     time::Duration,
 };
 use tokio::{
@@ -335,6 +335,9 @@ struct Credential {
     grants: Vec<BridgeGrant>,
 }
 type Credentials = Arc<BTreeMap<String, Credential>>;
+type CachedStatus=Arc<Mutex<(Value,std::time::Instant)>>;
+fn coordinator_phase(cache:&CachedStatus,phase:&'static str){if let Ok(mut value)=cache.lock(){value.0["health"]["coordinator_phase"]=json!(phase);value.1=std::time::Instant::now();}}
+
 struct Work {
     grants: Vec<BridgeGrant>,
     method: String,
@@ -552,6 +555,8 @@ async fn http(
     sender: mpsc::Sender<Work>,
     keys: Credentials,
     operation_limit:Duration,
+    cached:CachedStatus,
+    progress:crate::communication_host::operation::Budget,
 ) -> std::result::Result<Response<Full<Bytes>>, Infallible> {
     let deadline=std::time::Instant::now()+operation_limit;
     let mut authenticated = None;
@@ -595,7 +600,16 @@ async fn http(
         let value =
             channel::open_request(&access.key, &method, &bytes).map_err(|_| "BRIDGE_FORBIDDEN")?;
         authenticated = Some((method.clone(), bytes.to_vec(), access.key.clone()));
-        let query = serde_json::from_value(value).map_err(|_| "BRIDGE_REQUEST_INVALID")?;
+        let query:Query = serde_json::from_value(value).map_err(|_| "BRIDGE_REQUEST_INVALID")?;
+        if method=="health" {
+            let (mut snapshot,at)=cached.lock().map_err(|_|"BRIDGE_STATE_INVALID")?.clone();
+            validate_query(&access.grants,&snapshot["destination"],&method,&query)?;
+            let age=at.elapsed();
+            if age>=Duration::from_secs(10){snapshot["health"]["ready"]=json!(false);snapshot["health"]["execution_state"]=json!("UNKNOWN");snapshot["health"]["reason"]=json!("BRIDGE_COORDINATOR_STALE");}
+            snapshot["health"]["coordinator_age_ms"]=json!(age.as_millis() as u64);
+            snapshot["health"]["diagnostic"]=progress.snapshot();
+            return Ok(snapshot);
+        }
         let (tx, rx) = oneshot::channel();
         sender
             .try_send(Work {
@@ -632,6 +646,58 @@ async fn http(
         .header("Cache-Control", "no-store")
         .body(Full::new(Bytes::from(body)))
         .expect("constant response headers"))
+}
+struct ProviderRequest {
+    destination:Option<Value>,
+    frame:Option<Value>,
+    binding:Value,
+    deadline:std::time::Instant,
+    reply:oneshot::Sender<R<(Value,Value)>>,
+}
+// The physical host never enters an async task: its owned proxy/process Drop
+// may synchronously reap children using the runtime handle.
+fn provider_loop(config:Value,executor:tokio::runtime::Handle,progress:crate::communication_host::operation::Budget,mut requests:mpsc::Receiver<ProviderRequest>)->R<()> {
+    let mut host:Option<Host>=None;
+    #[cfg(test)] let mut injected=false;
+    while let Some(request)=requests.blocking_recv(){
+        let _operation=progress.scope(if request.frame.is_some(){"DELIVER"}else{"HEALTH"});progress.clamp(request.deadline);
+        let result=std::panic::catch_unwind(std::panic::AssertUnwindSafe(||->R<(Value,Value)>{
+            if progress.remaining().is_err(){return Err("HOST_OPERATION_TIMEOUT");}
+            if host.is_none(){
+                let mut selected=config.clone();
+                if selected["kind"]=="codex" {if let Some(expected)=&request.destination{selected["expected_session_id"]=expected["session_id"].clone();}}
+                match Host::open_progress(selected,executor.clone(),progress.clone()) {
+                    Ok(opened)=>host=Some(opened),
+                    Err(code)=>return if request.frame.is_some(){Ok((request.destination.clone().unwrap_or(Value::Null),json!({"state":"NOT_SENT","code":code,"proof":"BOUND_HOST_RECONCILIATION"})))}else{Err(code)},
+                }
+            }
+            let selected=host.as_mut().unwrap();
+            if let Some(expected)=&request.destination {
+                let mut actual=selected.destination.clone();
+                if actual.get("bridge_id").is_none(){if let Some(id)=expected.get("bridge_id"){actual["bridge_id"]=id.clone();}}
+                if &actual!=expected{return Err("HOST_BINDING_MISMATCH");}
+                selected.destination=actual;
+            }
+            let result=if let Some(frame)=&request.frame {
+                let delivered=selected.deliver(&request.binding,frame);
+                let disconnect=delivered.as_ref().is_err_and(|code|!matches!(*code,"HOST_NOT_READY"|"HOST_INPUT_TOO_LARGE"|"HOST_INPUT_CONFLICT"|"HOST_INBOX_FULL"));
+                let destination=selected.destination.clone();
+                #[cfg(test)] if config["_test_panic_after_input"]==true&&!injected {injected=true;panic!("injected provider failure after possible input");}
+                let value=serde_json::to_value(crate::participant_dispatch::host_outcome(config["kind"].as_str().unwrap_or(""),delivered)).map_err(|_|"BRIDGE_OUTCOME_INVALID")?;
+                if disconnect{drop(host.take());}
+                return Ok((destination,value));
+            }else{selected.health(&request.binding)};
+            result.map(|value|(selected.destination.clone(),value))
+        })).unwrap_or(Err("HOST_PROVIDER_PANICKED"));
+        if let Err(code)=&result{progress.failure(code,None);drop(host.take());}
+        let _=request.reply.send(result);
+    }
+    drop(host);Ok(())
+}
+fn provider_request(sender:&mpsc::Sender<ProviderRequest>,destination:Option<Value>,frame:Option<Value>,binding:Value,deadline:std::time::Instant)->R<oneshot::Receiver<R<(Value,Value)>>> {
+    let (reply,received)=oneshot::channel();
+    sender.try_send(ProviderRequest{destination,frame,binding,deadline,reply}).map_err(|_|"HOST_PROVIDER_UNAVAILABLE")?;
+    Ok(received)
 }
 /// Starts only a capability-scoped loopback service. Closing a client socket
 /// never cancels a possibly effective input; worker evidence is saved first.
@@ -693,7 +759,16 @@ async fn serve_limit(mut config:BridgeConfig,cancel:KernelCancellationToken,read
     let (init_tx, init_rx) = oneshot::channel();
     let executor = tokio::runtime::Handle::current();
     let worker_cancel = cancel.clone();
-    let mut worker = tokio::spawn(async move {
+    let progress=crate::communication_host::operation::Budget::new(operation_limit);
+    let provider_progress=progress.clone();let provider_executor=executor.clone();
+    let mut provider_config=config.host.clone();
+    if provider_config["kind"]=="agy-stdio"{provider_config["launch_fence"]=json!(config.state_directory.join("agy-stdio-launch.state"));}
+    let (provider_tx,provider_rx)=mpsc::channel(1);
+    let provider=tokio::task::spawn_blocking(move||provider_loop(provider_config,provider_executor,provider_progress,provider_rx));
+    let cached:CachedStatus=Arc::new(Mutex::new((json!({}),std::time::Instant::now())));
+    let worker_cache=cached.clone();let http_progress=progress.clone();
+    let coordinator_executor=executor.clone();
+    let mut worker = tokio::task::spawn_blocking(move ||coordinator_executor.block_on(async move {
         create_private_state_directory(&config.state_directory)
             .map_err(|_| "BRIDGE_STATE_NOT_PRIVATE")?;
         let owner = SecureStateStore::open(&config.state_directory.join("bridge-owner.state"))
@@ -716,24 +791,18 @@ async fn serve_limit(mut config:BridgeConfig,cancel:KernelCancellationToken,read
             write_private(&token_file, worker_token.as_bytes())?;
             sync_directory(&config.state_directory)?;
         }
-        let mut host_config = config.host.clone();
-        if host_config["kind"] == "agy-stdio" {host_config["launch_fence"]=json!(config.state_directory.join("agy-stdio-launch.state"));}
-        let progress=crate::communication_host::operation::Budget::new(operation_limit);
-        let (mut host,pin)=match saved_owner {
+        let pin=match saved_owner {
             Some(bytes)=>{let pin=read_owner(&bytes)?;
-                if pin["host"]!=config.host{return Err("BRIDGE_BINDING_CHANGED_REQUIRES_REVIEW");}
-                (None,pin)
+                if pin["host"]!=config.host{return Err("BRIDGE_BINDING_CHANGED_REQUIRES_REVIEW");}pin
             },
             None=>{
-                let selected=host_config.clone();let executor=executor.clone();let budget=progress.clone();
-                let opened=tokio::task::spawn_blocking(move||Host::open_progress(selected,executor,budget)).await.map_err(|_|"BRIDGE_TASK_FAILED")??;
-                let saved=new_owner(&config,&opened.destination)?;
-                owner.write_exact(saved.to_string().as_bytes()).map_err(|_|"BRIDGE_STATE_FAILED")?;
-                (Some(opened),saved)
+                let opened=provider_request(&provider_tx,None,None,json!({}),std::time::Instant::now()+operation_limit)?
+                    .await.map_err(|_|"HOST_PROVIDER_UNAVAILABLE")??;
+                let saved=new_owner(&config,&opened.0)?;
+                owner.write_exact(saved.to_string().as_bytes()).map_err(|_|"BRIDGE_STATE_FAILED")?;saved
             }
         };
         let destination=pin["destination"].clone();
-        if host_config["kind"]=="codex" {host_config["expected_session_id"]=destination["session_id"].clone();}
         if pin["bindings"]
             != serde_json::to_value(&config.bindings).map_err(|_| "BRIDGE_GRANT_INVALID")?
         {
@@ -751,7 +820,6 @@ async fn serve_limit(mut config:BridgeConfig,cancel:KernelCancellationToken,read
         }
         let mut destination=destination;
         destination["bridge_id"]=pin["bridge_id"].clone();
-        if let Some(selected)=host.as_mut(){selected.destination=destination.clone();selected.progress=progress.clone();}
         let mut store = store::Store::open(
             &config.state_directory,
             pin["journal_pin"].as_str().ok_or("BRIDGE_STATE_INVALID")?,
@@ -830,6 +898,7 @@ async fn serve_limit(mut config:BridgeConfig,cancel:KernelCancellationToken,read
         owner
             .write_exact(active.to_string().as_bytes())
             .map_err(|_| "BRIDGE_STATE_FAILED")?;
+        *worker_cache.lock().map_err(|_|"BRIDGE_STATE_INVALID")?=(json!({"destination":destination,"health":{"ready":false,"execution_state":"UNKNOWN","reason":"HOST_ATTACHING"}}),std::time::Instant::now());
         let _ = init_tx.send(Ok((
             BridgeReady {
                 state: "BRIDGE_READY".into(),
@@ -846,7 +915,7 @@ async fn serve_limit(mut config:BridgeConfig,cancel:KernelCancellationToken,read
         // Authenticated status and original receipts never queue behind provider I/O.
         let mut pending=std::collections::VecDeque::<Work>::new();
         let mut active:Option<Work>=None;
-        let mut io:Option<tokio::task::JoinHandle<(Option<Host>,R<Value>)>>=None;
+        let mut io:Option<oneshot::Receiver<R<(Value,Value)>>>=None;
         let mut finish_pending:Option<(Work,Value)>=None;
         let mut health=json!({"ready":false,"execution_state":"UNKNOWN","reason":"HOST_ATTACHING"});
         let mut next_probe=std::time::Instant::now();
@@ -867,17 +936,26 @@ async fn serve_limit(mut config:BridgeConfig,cancel:KernelCancellationToken,read
             }
             pending=retained;
             if let Some((work,value))=finish_pending.take() {
+                coordinator_phase(&worker_cache,"LEDGER_FINISH");
                 match store.finish(&work.query.binding,&value) {
                     Ok(())=>{let _=work.reply.send(Ok(envelope(&destination,&work.query.binding,value)));},
                     Err(code)=>{health=json!({"ready":false,"execution_state":"UNKNOWN","reason":code});finish_pending=Some((work,value));}
                 }
             }
+            coordinator_phase(&worker_cache,"LEDGER_CAPACITY");
+            let capacity=store.capacity().unwrap_or(false)&&pending.len()<8&&finish_pending.is_none();
+            let mut observed=health.clone();observed["coordinator_phase"]=json!("IDLE");observed["capacity"]=json!(if capacity{"AVAILABLE"}else{"FULL"});
+            if !capacity{observed["ready"]=json!(false);observed["can_attempt"]=json!(false);}
+            if health_at.elapsed()>=Duration::from_secs(10){observed["ready"]=json!(false);observed["execution_state"]=json!("UNKNOWN");observed["reason"]=json!("HOST_OBSERVATION_STALE");}
+            observed["observation_age_ms"]=json!(health_at.elapsed().as_millis() as u64);observed["queue_depth"]=json!(pending.len());observed["result_write_pending"]=json!(finish_pending.is_some());
+            if let Ok(mut cache)=worker_cache.lock(){*cache=(json!({"destination":destination,"health":observed}),std::time::Instant::now());}
             if io.is_none()&&finish_pending.is_none()&&!worker_cancel.is_cancelled() {
                 let work=pending.pop_front();
                 let probe=work.is_none()&&std::time::Instant::now()>=next_probe;
                 if work.is_some()||probe {
                     let mut launch=true;
                     if let Some(work)=work {
+                        coordinator_phase(&worker_cache,"LEDGER_QUERY");
                         match prepare(&destination,&mut store,&work.method,&work.query,&work.grants) {
                             Ok(Some(value))=>{let _=work.reply.send(Ok(value));launch=false;},
                             Err(code)=>{let _=work.reply.send(Err(code));launch=false;},
@@ -888,6 +966,7 @@ async fn serve_limit(mut config:BridgeConfig,cancel:KernelCancellationToken,read
                                     let result=store.reserve(&work.query.binding,id,digest,None).and_then(|_|store.get(&work.query.binding,id,digest)).and_then(|v|v.ok_or("BRIDGE_STATE_INVALID"));
                                     let _=work.reply.send(result.map(|v|envelope(&destination,&work.query.binding,v)));launch=false;
                                 }else{
+                                    coordinator_phase(&worker_cache,"LEDGER_RESERVE");
                                     if let Err(code)=store.reserve(&work.query.binding,id,digest,Some(message)){let _=work.reply.send(Err(code));launch=false;}
                                     else{active=Some(work);}
                                 }
@@ -895,35 +974,17 @@ async fn serve_limit(mut config:BridgeConfig,cancel:KernelCancellationToken,read
                         }
                     }
                     if launch {
-                        let old=host.take();let selected=host_config.clone();let expected=destination.clone();
-                        let executor=executor.clone();let budget=progress.clone();
                         let frame=active.as_ref().and_then(|w|w.query.message.clone());
                         let binding=active.as_ref().map(|w|w.query.binding.clone()).unwrap_or_else(||json!({}));
                         let deadline=active.as_ref().map(|w|w.deadline).unwrap_or_else(||std::time::Instant::now()+operation_limit);
-                        let kind=config.host["kind"].as_str().unwrap_or("").to_owned();
-                        io=Some(tokio::task::spawn_blocking(move||{
-                            let _operation=budget.scope(if frame.is_some(){"DELIVER"}else{"HEALTH"});budget.clamp(deadline);
-                            let mut selected_host=match old {
-                                Some(host)=>host,
-                                None=>match Host::open_progress(selected,executor,budget.clone()) {
-                                    Ok(mut host)=>{
-                                        let mut actual=host.destination.clone();actual["bridge_id"]=expected["bridge_id"].clone();
-                                        if actual!=expected{return (None,Err("HOST_BINDING_MISMATCH"));}
-                                        host.destination=expected;host
-                                    },
-                                    Err(code)=>return (None,if frame.is_some(){Ok(json!({"state":"NOT_SENT","code":code,"proof":"BOUND_HOST_RECONCILIATION"}))}else{Err(code)})
-                                }
-                            };
-                            let mut disconnect=false;
-                            let value=if let Some(frame)=frame {
-                                let result=selected_host.deliver(&binding,&frame);
-                                disconnect=result.as_ref().is_err_and(|code|!matches!(*code,"HOST_NOT_READY"|"HOST_INPUT_TOO_LARGE"|"HOST_INPUT_CONFLICT"|"HOST_INBOX_FULL"));
-                                serde_json::to_value(crate::participant_dispatch::host_outcome(&kind,result)).map_err(|_|"BRIDGE_OUTCOME_INVALID")
-                            }else{selected_host.health(&json!({}))};
-                            // Transport failure is recoverable, but drop only after this owned operation is terminal.
-                            let failed=value.is_err()||disconnect;
-                            if failed {drop(selected_host);(None,value)}else{(Some(selected_host),value)}
-                        }));
+                        match provider_request(&provider_tx,Some(destination.clone()),frame,binding,deadline){
+                            Ok(received)=>io=Some(received),
+                            Err(code)=>{
+                                health=json!({"ready":false,"execution_state":"UNKNOWN","reason":code});
+                                if let Some(work)=active.take(){finish_pending=Some((work,json!({"state":"RESULT_UNKNOWN","code":code})));}
+                                next_probe=std::time::Instant::now()+Duration::from_secs(3);
+                            }
+                        }
                     }
                 }
             }
@@ -931,7 +992,7 @@ async fn serve_limit(mut config:BridgeConfig,cancel:KernelCancellationToken,read
             tokio::select! {
                 result=async{io.as_mut().unwrap().await},if io.is_some()=>{
                     io=None;
-                    let result=match result {Ok((returned,value))=>{host=returned;value},Err(_)=>{host=None;Err("BRIDGE_TASK_FAILED")}};
+                    let result=result.map_err(|_|"HOST_PROVIDER_UNAVAILABLE").and_then(|value|value).and_then(|(actual,value)|if actual==destination{Ok(value)}else{Err("HOST_BINDING_MISMATCH")});
                     if let Some(work)=active.take(){
                         let mut value=result.unwrap_or_else(|code|json!({"state":"RESULT_UNKNOWN","code":code}));
                         if value.to_string().len()>4096 {value=json!({"state":"RESULT_UNKNOWN","code":"HOST_RECEIPT_TOO_LARGE"});}
@@ -953,12 +1014,13 @@ async fn serve_limit(mut config:BridgeConfig,cancel:KernelCancellationToken,read
                         let mut value=health.clone();
                         if health_at.elapsed()>=Duration::from_secs(10){value=json!({"ready":false,"execution_state":"UNKNOWN","reason":"HOST_OBSERVATION_STALE"});}
                         value["observation_age_ms"]=json!(health_at.elapsed().as_millis() as u64);
-                        let capacity=store.capacity()?&&pending.len()<8&&finish_pending.is_none();
+                        let capacity=store.capacity().unwrap_or(false)&&pending.len()<8&&finish_pending.is_none();
                         value["capacity"]=json!(if capacity{"AVAILABLE"}else{"FULL"});
                         if !capacity{value["ready"]=json!(false);value["can_attempt"]=json!(false);}
                         value["diagnostic"]=progress.snapshot();value["queue_depth"]=json!(pending.len());value["result_write_pending"]=json!(finish_pending.is_some());
                         let _=work.reply.send(Ok(json!({"destination":destination,"health":value})));
                     }else{
+                        coordinator_phase(&worker_cache,"LEDGER_QUERY");
                         match prepare(&destination,&mut store,&work.method,&work.query,&work.grants) {
                             Ok(Some(value))=>{let _=work.reply.send(Ok(value));},Err(code)=>{let _=work.reply.send(Err(code));},
                             Ok(None)=>{if pending.len()<8{pending.push_back(work);}else{let _=work.reply.send(Err("BRIDGE_BUSY"));}}
@@ -969,36 +1031,31 @@ async fn serve_limit(mut config:BridgeConfig,cancel:KernelCancellationToken,read
                 _=worker_cancel.cancelled(),if io.is_none()=>break,
             }
         }
-        // Awaiting the I/O job above, rather than aborting its waiter, preserves the writer fence.
-        drop(host);
+        // Closing the provider command channel ends its owned blocking lane;
+        // outer serve joins that lane before reporting shutdown complete.
+        drop(provider_tx);
         drop(owner);
         Ok(())
-    });
-    let initialized = match init_rx.await {
-        Ok(v) => v,
-        Err(_) => match (&mut worker).await {
-            Ok(Err(code)) => Err(code),
-            _ => Err("BRIDGE_START_FAILED"),
-        },
-    };
-    let initialized = match initialized {
-        Ok(v) => v,
-        Err(code) => {
-            let _ = ready.send(Err(code));
-            return Err(code);
+    }));
+    let initialized=match init_rx.await {
+        Ok(Ok(value))=>value,
+        other=>{
+            let code=match other {Ok(Err(code))=>code,_=>match worker.await {Ok(Err(code))=>code,_=>"BRIDGE_START_FAILED"}};
+            let _=provider.await;let _=ready.send(Err(code));return Err(code);
         }
     };
     let (initialized, keys) = initialized;
     let _ = ready.send(Ok(initialized));
     let mut connections = JoinSet::new();
     let mut worker_result = None;
+    let mut listener_error=None;
     loop {
         tokio::select! {
             _=cancel.cancelled()=>break,
             result=&mut worker=>{worker_result=Some(result);break;},
             _=connections.join_next(),if !connections.is_empty()=>{},
-            accepted=listener.accept(),if connections.len()<16=>{let(stream,_)=accepted.map_err(|_|"BRIDGE_LISTEN_FAILED")?;let sender=tx.clone();let auth=keys.clone();connections.spawn(async move{
-                let service=hyper::service::service_fn(move|request|http(request,sender.clone(),auth.clone(),operation_limit));
+            accepted=listener.accept(),if connections.len()<16=>{let(stream,_)=match accepted{Ok(value)=>value,Err(_)=>{listener_error=Some("BRIDGE_LISTEN_FAILED");cancel.cancel();break;}};let sender=tx.clone();let auth=keys.clone();let cache=cached.clone();let live=http_progress.clone();connections.spawn(async move{
+                let service=hyper::service::service_fn(move|request|http(request,sender.clone(),auth.clone(),operation_limit,cache.clone(),live.clone()));
                 let connection=hyper::server::conn::http1::Builder::new().timer(hyper_util::rt::TokioTimer::new()).header_read_timeout(Duration::from_secs(2)).max_buf_size(16384).max_headers(32).serve_connection(hyper_util::rt::TokioIo::new(stream),service);
                 let _=tokio::time::timeout(Duration::from_secs(30),connection).await;
             });}
@@ -1008,14 +1065,16 @@ async fn serve_limit(mut config:BridgeConfig,cancel:KernelCancellationToken,read
     connections.abort_all();
     while connections.join_next().await.is_some() {}
     drop(tx);
-    match worker_result {
-        Some(result) => {
-            result.map_err(|_| "BRIDGE_TASK_FAILED")??;
-            Err("BRIDGE_WORKER_STOPPED")
-        }
-        None => worker.await.map_err(|_| "BRIDGE_TASK_FAILED")?,
-    }
+    let result=match worker_result {
+        Some(result)=>{match result {Ok(Ok(()))=>Err("BRIDGE_WORKER_STOPPED"),Ok(Err(code))=>Err(code),Err(_)=>Err("BRIDGE_TASK_FAILED")}},
+        None=>worker.await.map_err(|_|"BRIDGE_TASK_FAILED").and_then(|value|value),
+    };
+    // Never detach a provider writer on cancellation, coordinator error or panic.
+    let provider_result=provider.await.map_err(|_|"HOST_PROVIDER_TASK_FAILED").and_then(|value|value);
+    result.and(provider_result)?;
+    if let Some(code)=listener_error{return Err(code);}Ok(())
 }
+
 pub fn cli(args: &[String]) -> Value {
     let run = || -> R<Value> {
         if args.is_empty() || args == ["--help"] {

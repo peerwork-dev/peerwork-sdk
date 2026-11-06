@@ -167,8 +167,13 @@ impl Drop for Proxy {
         self.reader.abort();
         let _ = self.child.start_kill();
         // Reap only the proxy we own, never the daemon it forwards to.
-        let _ = self.executor.block_on(async {
-            tokio::time::timeout(Duration::from_secs(2), self.child.wait()).await
-        });
+        self.budget.phase("TERMINATING");
+        let terminal=self.executor.block_on(async{tokio::time::timeout(Duration::from_secs(2),self.child.wait()).await});
+        if !matches!(terminal,Ok(Ok(_))) {
+            self.budget.phase("STALLED_TERMINATION");
+            // A grace expiry is not termination proof. Keep the enclosing
+            // physical-owner fence until the owned proxy is actually reaped.
+            self.executor.block_on(async{loop{if self.child.wait().await.is_ok(){break;}tokio::time::sleep(Duration::from_secs(1)).await;}});
+        }
     }
 }

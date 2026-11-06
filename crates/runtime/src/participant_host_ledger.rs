@@ -523,6 +523,7 @@ pub(crate) enum HostOutcome {
     },
 }
 pub(crate) enum HostOperation {
+    Summary,
     RetirementPlan,
     RetirementCommit(Value),
     AccessScope,
@@ -1063,6 +1064,11 @@ impl InboxStore {
         )
     }
     pub fn host_scope_check(&self,namespace:&str,options:&WatchOptions)->Result<()>{self.host_link(namespace,options).map(|_|())}
+    pub fn host_summary(&self,namespace:&str,options:&WatchOptions)->Result<Value>{
+        self.host_watch_scope(namespace,options)?;
+        let pending:Option<(String,u64)>=self.db.query_row("SELECT call_id,sequence FROM inbox_host_calls WHERE workspace=?1 AND mailbox=?2 AND state='RESULT_UNKNOWN' LIMIT 1",params![options.workspace_id,options.mailbox_id],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(db_error)?;
+        Ok(match pending {Some((id,sequence))=>json!({"workspace_id":options.workspace_id,"mailbox_id":options.mailbox_id,"acceptance_unresolved":true,"code":"HOST_ACCEPTANCE_UNRESOLVED","call_id":id,"sequence":sequence}),None=>json!({"workspace_id":options.workspace_id,"mailbox_id":options.mailbox_id,"acceptance_unresolved":false})})
+    }
     pub fn host_has_unknown(&self,workspace:&str,mailbox:&str)->Result<bool>{self.db.query_row("SELECT EXISTS(SELECT 1 FROM inbox_host_calls WHERE workspace=?1 AND mailbox=?2 AND state='RESULT_UNKNOWN')",params![workspace,mailbox],|r|r.get(0)).map_err(db_error)}
 
     fn host_facts(&self, identity: &KernelIdentity, c: &HostCall) -> Result<Vec<Value>> {

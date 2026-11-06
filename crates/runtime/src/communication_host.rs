@@ -438,6 +438,20 @@ fn add_auth(config: &Value, request: &mut tungstenite::handshake::client::Reques
     Ok(())
 }
 
+pub(crate) fn sanitized_health(value:&Value)->Value {
+    let mut out=json!({});
+    for key in ["ready","can_attempt","execution_state","reason","capacity","queue_depth","result_write_pending","observation_age_ms","coordinator_age_ms","coordinator_phase"] {
+        let v=&value[key];
+        if v.is_boolean()||v.is_number()||v.as_str().is_some_and(|s|s.len()<=96&&s.bytes().all(|b|b.is_ascii_uppercase()||b.is_ascii_digit()||b==b'_')) {out[key]=v.clone();}
+    }
+    let mut diagnostic=json!({});
+    for key in ["phase","failure_phase","inflight","elapsed_ms","budget_ms","remaining_ms","last_error_code","original_error_code","rpc_error_code","last_success_at","observed_at"] {
+        let v=&value["diagnostic"][key];
+        if v.is_null()||v.is_boolean()||v.is_number()||v.as_str().is_some_and(|s|s.len()<=96&&s.bytes().all(|b|b.is_ascii_uppercase()||b.is_ascii_digit()||b==b'_')) {diagnostic[key]=v.clone();}
+    }
+    if value["diagnostic"].is_object(){out["diagnostic"]=diagnostic;}
+    out
+}
 pub(crate) struct Host {
     owner: Option<crate::communication_host_owner::HostOwner>,
     config: Value,
@@ -598,7 +612,7 @@ impl Host {
             None
         };
         let agy_stdio = if kind == "agy-stdio" {
-            Some(agy_stdio::AgyStdio::open(&config, executor.clone())?)
+            Some(agy_stdio::AgyStdio::open_budget(&config, executor.clone(),progress.clone())?)
         } else {
             None
         };
@@ -761,6 +775,7 @@ impl Host {
     }
     pub fn deliver(&mut self,binding:&Value,message:&Value)->R<Value>{
         let _operation=self.progress.scope("DELIVER");
+        if self.progress.remaining().is_err(){return Err("HOST_PREFLIGHT_DEADLINE");}
         let result=self.deliver_inner(binding,message);
         if let Err(code)=&result {self.progress.failure(code,None);}
         result
@@ -836,6 +851,7 @@ impl Host {
         {
             return Err("HOST_INPUT_INVALID");
         }
+        if self.progress.remaining().is_err(){return Err("HOST_PREFLIGHT_DEADLINE");}
         let mut child = std::process::Command::new(exe)
             .args(["send-message", conversation, &rendered])
             .stdin(std::process::Stdio::null())
@@ -852,7 +868,6 @@ impl Host {
                     "HOST_ACK_UNKNOWN"
                 }
             })?;
-        let start = Instant::now();
         loop {
             match child.try_wait() {
                 Ok(Some(status)) => {
@@ -866,8 +881,10 @@ impl Host {
                 Err(_) => return Err("HOST_ACK_UNKNOWN"),
                 _ => {}
             }
-            if start.elapsed() > Duration::from_secs(10) {
+            if self.progress.remaining().is_err() {
+                self.progress.phase("TERMINATING");
                 let _ = child.kill();
+                // Retain this physical owner until the owned helper is terminal.
                 let _ = child.wait();
                 return Err("HOST_ACK_UNKNOWN");
             }

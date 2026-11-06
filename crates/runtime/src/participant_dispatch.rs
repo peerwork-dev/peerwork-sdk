@@ -269,11 +269,11 @@ pub(crate) fn start(
                 if stop.is_cancelled(){break;}
                 let code=match result {Ok(Err(e))=>e.code,Ok(Ok(()))=>"HOST_DISPATCHER_STOPPED".into(),Err(_)=>"HOST_DISPATCHER_TASK_FAILED".into()};
                 attempts=attempts.saturating_add(1);
-                let permanent=matches!(code.as_str(),"HOST_STATE_INVALID"|"HOST_BINDING_CHANGED_REQUIRES_REVIEW"|"HOST_STATE_ALREADY_OWNED"|"HOST_SUBSCRIPTION_CONFLICT");
+                let permanent=matches!(code.as_str(),"HOST_STATE_INVALID"|"HOST_BINDING_CHANGED_REQUIRES_REVIEW"|"HOST_SUBSCRIPTION_CONFLICT");
                 let delay=Duration::from_millis((1000u64<<attempts.min(5)).min(30000)+(attempts as u64*137)%251);
                 set(&status,json!({"state":if permanent{"BLOCKED"}else{"RECONNECTING"},"code":code,"restart_attempt":attempts,"retry_after_ms":if permanent{Value::Null}else{json!(delay.as_millis() as u64)},"model_response":"NOT_ATTESTED"}));
                 if permanent {tokio::select!{_=stop.cancelled()=>break,_=signal.notified()=>{}}}
-                else {tokio::select!{_=stop.cancelled()=>break,_=tokio::time::sleep(delay)=>{}}}
+                else {tokio::select!{_=stop.cancelled()=>break,_=signal.notified()=>{},_=tokio::time::sleep(delay)=>{}}}
             }
         });
         active.push(RunningHost {
@@ -378,6 +378,8 @@ pub(crate) fn host_outcome(
         Err(
             "HOST_NOT_READY"
             | "HOST_PREFLIGHT_FAILED"
+            | "HOST_PREFLIGHT_DEADLINE"
+            | "HOST_LOCK_TIMEOUT"
             | "HOST_INPUT_TOO_LARGE"
             | "HOST_INPUT_CONFLICT"
             | "HOST_INBOX_FULL"
@@ -563,6 +565,7 @@ async fn run_owned(
     // socket/helper work stays counted in this one owned dispatcher future.
     let mut next = 0usize;
     let mut next_health = std::time::Instant::now();
+    let mut open_attempts=0u32;
     let mut next_retire = std::time::Instant::now();
     let mut retirement_scope = 0usize;
     let mut watch_tasks: BTreeMap<String, tokio::task::AbortHandle> = BTreeMap::new();
@@ -618,14 +621,14 @@ async fn run_owned(
             let host = match opened {
                 Ok(host) => host,
                 Err(code) => {
-                    set(
-                        &status,
-                        json!({"state":"BLOCKED","code":code,"model_response":"NOT_ATTESTED"}),
-                    );
-                    tokio::select! {_=cancel.cancelled()=>break,_=tokio::time::sleep(Duration::from_secs(2))=>{}}
+                    open_attempts=open_attempts.saturating_add(1);
+                    let delay=Duration::from_millis((1000u64<<open_attempts.min(5)).min(30000)+(open_attempts as u64*137)%251);
+                    set(&status,json!({"state":"BLOCKED","code":code,"restart_attempt":open_attempts,"retry_after_ms":delay.as_millis() as u64,"model_response":"NOT_ATTESTED"}));
+                    tokio::select! {_=cancel.cancelled()=>break,_=changed.notified()=>{},_=tokio::time::sleep(delay)=>{}}
                     continue;
                 }
             };
+            open_attempts=0;
             let destination = host.destination.clone();
             *adapter = Some(Arc::new(Mutex::new(host)));
             *published_adapter.lock().map_err(|_|error("HOST_STATE_INVALID"))?=Arc::downgrade(adapter.as_ref().unwrap());
@@ -717,10 +720,7 @@ async fn run_owned(
                         _ => return Err(error("HOST_STATE_INVALID")),
                     };
                     tokio::task::spawn_blocking(move || {
-                        selected
-                            .lock()
-                            .map_err(|_| "HOST_NOT_READY")?
-                            .health(&access)
+                        crate::communication_host::operation::with_host(&selected,std::time::Instant::now()+Duration::from_secs(10),|host|host.health(&access))
                     })
                     .await
                     .map_err(|_| error("HOST_TASK_FAILED"))?
@@ -755,12 +755,12 @@ async fn run_owned(
         if std::time::Instant::now() >= next_health {
             let observed_at = std::time::Instant::now();
             let selected = adapter.as_ref().unwrap().clone();
-            let observed=tokio::task::spawn_blocking(move||{
-                let mut host=selected.lock().map_err(|_|"HOST_NOT_READY")?;
+            let deadline=observed_at+Duration::from_secs(10);
+            let observed=tokio::task::spawn_blocking(move||crate::communication_host::operation::with_host(&selected,deadline,|host|{
                 let mode=if host.mode=="TOOL_ONLY"{"QUEUED_ONLY"}else{"LIVE"};
-                let health=host.health(&json!({}))?;
-                Ok::<_,&'static str>(json!({"mode":mode,"ready":mode=="LIVE"&&health["ready"]==true,"execution_state":health["execution_state"].as_str().unwrap_or("UNKNOWN")}))
-            }).await.unwrap_or(Err("HOST_NOT_READY"));
+                let mut health=crate::communication_host::sanitized_health(&host.health(&json!({}))?);
+                health["mode"]=json!(mode);health["ready"]=json!(mode=="LIVE"&&health["ready"]==true);Ok(health)
+            })).await.unwrap_or(Err("HOST_TASK_FAILED"));
             let mode = if config.adapter["kind"] == "agy-app"
                 || config.adapter["destination"]["host"] == "ANTIGRAVITY_APP"
             {
@@ -772,13 +772,24 @@ async fn run_owned(
                 .clone()
                 .unwrap_or_else(|_| json!({"mode":mode,"ready":false,"execution_state":"UNKNOWN"}));
             if let Err(code)=&observed {if let Ok(mut current)=status.lock(){current["state"]=json!("RECONNECTING");current["code"]=json!(code);current["diagnostic"]=progress.snapshot();}}
+            if let Ok(mut current)=status.lock(){
+                current["host_observation"]=value.clone();
+                if value["ready"]!=true {
+                    current["state"]=json!("BLOCKED");
+                    current["code"]=value.get("reason").cloned().unwrap_or_else(||json!(match value["execution_state"].as_str(){Some("WAITING_APPROVAL")=>"HOST_WAITING_APPROVAL",Some("BUSY")=>"HOST_BUSY",_=>"HOST_NOT_READY"}));
+                }else if current["code"]!="HOST_ACCEPTANCE_UNRESOLVED" {current["state"]=json!("HOST_ATTACHED");current.as_object_mut().unwrap().remove("code");}
+            }
+            let age=value["observation_age_ms"].as_u64().unwrap_or(0).saturating_add(value["coordinator_age_ms"].as_u64().unwrap_or(0)).min(60000);
+            let source_observed_at=observed_at.checked_sub(Duration::from_millis(age)).unwrap_or(observed_at);
+            let mut obligations=Vec::new();
             for (client, options) in watches.iter() {
+                if let Ok(HostReply::Status(summary))=client.host_operation(options,HostOperation::Summary).await{obligations.push(summary);}
                 if let Err(problem) = client
                     .host_operation(
                         options,
                         HostOperation::Presence {
-                            value: value.clone(),
-                            observed_at,
+                            value: json!({"mode":value["mode"],"ready":value["ready"],"execution_state":value["execution_state"]}),
+                            observed_at:source_observed_at,
                         },
                     )
                     .await
@@ -786,6 +797,7 @@ async fn run_owned(
                     scope_error(&status, options, &problem);
                 }
             }
+            if let Ok(mut current)=status.lock(){current["delivery_obligations"]=json!(obligations);}
             if observed.as_ref().is_ok_and(|value|value["ready"]==true) {
                 if let Ok(mut current)=status.lock() {
                     if matches!(current["code"].as_str(),Some("HOST_BUSY"|"HOST_WAITING_APPROVAL"|"HOST_NOT_READY")) {
@@ -921,14 +933,12 @@ async fn run_owned(
                 // Waiting for user approval must not burn delivery attempts.
                 let selected = adapter.as_ref().unwrap().clone();
                 let observed_at=std::time::Instant::now();
-                let health = tokio::task::spawn_blocking(move || {
-                    let mut host=selected.lock().map_err(|_|"HOST_NOT_READY")?;
-                    let mut value=host.health(&json!({}))?;
-                    value["can_attempt_queued"]=json!(host.mode=="TOOL_ONLY"&&value["can_attempt"]==true);
-                    Ok::<_,&'static str>(value)
-                })
-                .await
-                .unwrap_or(Err("HOST_NOT_READY"));
+                let deadline=observed_at+Duration::from_secs(10);
+                let health=tokio::task::spawn_blocking(move||crate::communication_host::operation::with_host(&selected,deadline,|host|{
+                    let mut value=crate::communication_host::sanitized_health(&host.health(&json!({}))?);
+                    value["can_attempt_queued"]=json!(host.mode=="TOOL_ONLY"&&value["can_attempt"]==true);Ok(value)
+                })).await.unwrap_or(Err("HOST_TASK_FAILED"));
+                if let Ok(value)=&health{if let Ok(mut current)=status.lock(){current["host_observation"]=value.clone();}}
                 match health {
                     Ok(value) if value["ready"] == true||value["can_attempt_queued"]==true => (),
                     other => {
@@ -937,11 +947,8 @@ async fn run_owned(
                             .filter(|state|matches!(*state,"IDLE"|"BUSY"|"WAITING_APPROVAL"|"OFFLINE"))
                             .unwrap_or("UNKNOWN");
                         let code=match &other {
-                            Err(code)=>*code,
-                            Ok(value)=>match execution {
-                                "BUSY"=>"HOST_BUSY","WAITING_APPROVAL"=>"HOST_WAITING_APPROVAL",
-                                _=>match value["reason"].as_str(){Some("HOST_SESSION_ERROR")=>"HOST_SESSION_ERROR",Some("HOST_STATUS_UNSUPPORTED")=>"HOST_STATUS_UNSUPPORTED",Some("HOST_SESSION_NOT_LOADED")=>"HOST_SESSION_NOT_LOADED",_=>"HOST_NOT_READY"}
-                            }
+                            Err(code)=>(*code).to_owned(),
+                            Ok(value)=>value["reason"].as_str().map(str::to_owned).unwrap_or_else(||match execution {"BUSY"=>"HOST_BUSY","WAITING_APPROVAL"=>"HOST_WAITING_APPROVAL",_=>"HOST_NOT_READY"}.to_owned()),
                         };
                         for (target,scope) in watches.iter(){if let Err(problem)=target.host_operation(scope,HostOperation::Presence{value:json!({"mode":if config.adapter["destination"]["host"]=="ANTIGRAVITY_APP"{"QUEUED_ONLY"}else{"LIVE"},"ready":false,"execution_state":execution}),observed_at}).await{scope_error(&status,scope,&problem);}}
                         client
@@ -949,7 +956,7 @@ async fn run_owned(
                                 options,
                                 HostOperation::Defer {
                                     item,
-                                    code: code.into(),
+                                    code: code.clone(),
                                 },
                             )
                             .await?;
@@ -986,12 +993,8 @@ async fn run_owned(
             let selected = adapter.as_ref().unwrap().clone();
             let message = call.frame.clone();
             let binding = call.scope.clone();
-            let delivered = tokio::task::spawn_blocking(move || {
-                selected
-                    .lock()
-                    .map_err(|_| "HOST_ACK_UNKNOWN")?
-                    .deliver(&binding, &message)
-            })
+            let deadline=std::time::Instant::now()+Duration::from_secs(10);
+            let delivered = tokio::task::spawn_blocking(move ||crate::communication_host::operation::with_host(&selected,deadline,|host|host.deliver(&binding,&message)))
             .await
             .unwrap_or(Err("HOST_ACK_UNKNOWN"));
             let outcome = host_outcome(config.adapter["kind"].as_str().unwrap_or(""), delivered);

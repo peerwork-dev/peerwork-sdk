@@ -893,10 +893,11 @@ async fn interrupted_revocation_survives_restart_and_stale_generation_cannot_rea
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires loopback IPC permission"]
-async fn host_scope_conflicts_are_rejected_before_persistence_and_terminal_dispatchers_are_not_ready(
+async fn host_scope_conflicts_are_rejected_and_owner_release_recovers_automatically(
 ) {
     use crate::participant_dispatch::{HostConfig, HostSubscription};
     let temp = crate::test_support::protected_test_dir();
+    let fixture=crate::communication_host::tests::CodexFixture::start();fixture.emit_events.store(false,std::sync::atomic::Ordering::SeqCst);
     let mut options = config(temp.path());
     options.clients.push(ClientConfig {
         name: "other".into(),
@@ -914,7 +915,7 @@ async fn host_scope_conflicts_are_rejected_before_persistence_and_terminal_dispa
     };
     let mut host = HostConfig {
         name: "selected".into(),
-        adapter: json!({"kind":"codex","endpoint":"ws://127.0.0.1:1","thread_id":"owned-synthetic-thread"}),
+        adapter: fixture.config(),
         subscriptions: vec![
             HostSubscription {
                 client_generation: None,
@@ -973,7 +974,7 @@ async fn host_scope_conflicts_are_rejected_before_persistence_and_terminal_dispa
     .await
     .unwrap();
     assert_eq!(
-        failed["error"]["code"], "HOST_DISPATCHER_RECOVERY_REQUIRED",
+        failed["value"]["state"], "HOST_SELECTION_REGISTERED",
         "{failed}"
     );
     assert_eq!(
@@ -986,8 +987,14 @@ async fn host_scope_conflicts_are_rejected_before_persistence_and_terminal_dispa
         true
     );
     drop(owner);
+    tokio::time::timeout(Duration::from_secs(5),async{loop{
+        let observed=call(&ready.admin_endpoint,json!({"method":"status"})).await.unwrap();
+        if observed["value"]["hosts"][0]["state"]=="HOST_ATTACHED"{assert_eq!(observed["value"]["hosts"][0]["dispatcher_running"],true);break;}
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }}).await.unwrap();
+    assert!(!fixture.calls().iter().any(|v|matches!(v["method"].as_str(),Some("turn/start"|"turn/steer"))));
     cancel.cancel();
-    task.await.unwrap().unwrap();
+    task.await.unwrap().unwrap();drop(fixture);
 }
 
 #[cfg(unix)]

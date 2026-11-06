@@ -76,15 +76,21 @@ impl Runtime {
         let borrowed=self.hosts.lock().await.rebind_adapter(snapshot)?;
         let adapter=snapshot.request.adapter.clone();let scopes=snapshot.access_scopes.clone();
         let wanted=snapshot.destination.clone();let executor=tokio::runtime::Handle::current();
+        let deadline=std::time::Instant::now()+Duration::from_secs(10);
         tokio::task::spawn_blocking(move||{
-            let check=|host:&mut crate::communication_host::Host|->Result<()>{
-                if crate::participant_inbox::HostBinding::new(host.destination.clone())?!=wanted{return Err(local("HOST_REBIND_TARGET_SESSION_CHANGED"));}
-                for scope in scopes {let health=host.health(&scope).map_err(local)?;
-                    if health["ready"]!=true && !(host.mode=="TOOL_ONLY"&&health["can_attempt"]==true){return Err(local("HOST_REBIND_TARGET_HOST_NOT_READY"));}
+            let check=|host:&mut crate::communication_host::Host|->std::result::Result<(),&'static str>{
+                if crate::participant_inbox::HostBinding::new(host.destination.clone()).map_err(|_|"HOST_REBIND_TARGET_SESSION_CHANGED")?!=wanted{return Err("HOST_REBIND_TARGET_SESSION_CHANGED");}
+                for scope in scopes {let health=host.health(&scope)?;
+                    if health["ready"]!=true && !(host.mode=="TOOL_ONLY"&&health["can_attempt"]==true){return Err("HOST_REBIND_TARGET_HOST_NOT_READY");}
                 }Ok(())
             };
-            if let Some(host)=borrowed {let mut selected=host.lock().map_err(|_|local("HOST_REBIND_TARGET_HOST_FAILED"))?;check(&mut selected)}
-            else{check(&mut crate::communication_host::Host::open(adapter,executor).map_err(local)?)}
+            if let Some(host)=borrowed {
+                crate::communication_host::operation::with_host(&host,deadline,check).map_err(local)
+            }else{
+                let budget=crate::communication_host::operation::Budget::new(Duration::from_secs(10));
+                let _operation=budget.scope("REBIND");budget.clamp(deadline);
+                check(&mut crate::communication_host::Host::open_progress(adapter,executor,budget).map_err(local)?).map_err(local)
+            }
         }).await.map_err(|_|local("HOST_REBIND_TARGET_HOST_FAILED"))?
     }
     async fn drive_resident_rebind(self:Arc<Self>,engine:String){

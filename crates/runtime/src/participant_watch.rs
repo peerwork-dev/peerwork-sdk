@@ -632,6 +632,7 @@ pub(crate) async fn run(
                         Ok(match operation{
                             Op::RetirementPlan=>Reply::Retirement(store.host_retirement_plan(&identity,&namespace,&options)?),
                             Op::RetirementCommit(plan)=>{store.host_retirement_commit(&identity,&namespace,&options,&plan)?;Reply::Saved},
+                            Op::Summary=>Reply::Status(store.host_summary(&namespace,&options)?),
                             Op::AccessScope=>Reply::AccessScope(store.host_access_scope(&namespace,&options)?),
                             Op::ReconcileDue=>Reply::Call(if live{store.host_reconcile_due(&identity,&namespace,&options)?}else{None}),
                             Op::Presence{value,observed_at}=>{store.host_scope_check(&namespace,&options)?;let s=slots.get_mut(&options.key()).ok_or_else(||error("WATCH_NOT_FOUND"))?;let before=s.presence.version;s.presence.host_observed(value,observed_at)?;if before!=s.presence.version{s.next_control=Instant::now();}s.notify();Reply::Saved},

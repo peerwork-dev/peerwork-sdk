@@ -60,6 +60,7 @@ pub(super) struct AgyStdio {
     io_budget: Duration,
     shutdown_budget: Duration,
     failed: bool,
+    aggregate: Option<super::operation::Budget>,
 }
 fn session_tool_settings(config: &Value) -> R<Option<String>> {
     let Some(server) = config.get("mcp_server") else {
@@ -88,6 +89,10 @@ fn session_tool_settings(config: &Value) -> R<Option<String>> {
 }
 impl AgyStdio {
     pub fn open(config: &Value, executor: Handle) -> R<Self> {
+        Self::open_inner(config,executor,None)
+    }
+    pub fn open_budget(config:&Value,executor:Handle,budget:super::operation::Budget)->R<Self>{Self::open_inner(config,executor,Some(budget))}
+    fn open_inner(config: &Value, executor: Handle,aggregate:Option<super::operation::Budget>) -> R<Self> {
         if config["managed"] != true {
             return Err("AGY_STDIO_EXPLICIT_OWNERSHIP_REQUIRED");
         }
@@ -138,6 +143,7 @@ impl AgyStdio {
                 _ => return Err("HOST_STATE_INVALID"),
             }
         }
+        if aggregate.as_ref().is_some_and(|b|b.remaining().is_err()){return Err("HOST_PREFLIGHT_DEADLINE");}
         fence.write_exact(json!({"format":"peerwork.agy-stdio-launch.v2","state":"STARTING","conversation_id":conversation}).to_string().as_bytes())
             .map_err(|_| "HOST_STATE_FAILED")?;
         let entered = executor.enter();
@@ -154,6 +160,10 @@ impl AgyStdio {
         ]);
         if let Some(settings) = settings {
             command.args(["--settings", &settings]);
+        }
+        if aggregate.as_ref().is_some_and(|b|b.remaining().is_err()){
+            fence.write_exact(json!({"format":"peerwork.agy-stdio-launch.v2","state":"STOPPED","conversation_id":conversation,"input_attempted":false}).to_string().as_bytes()).map_err(|_|"HOST_STATE_FAILED")?;
+            return Err("HOST_PREFLIGHT_DEADLINE");
         }
         let spawned = command
             .current_dir(working)
@@ -235,6 +245,7 @@ impl AgyStdio {
             io_budget: Duration::from_secs(10),
             shutdown_budget: Duration::from_secs(10),
             failed: false,
+            aggregate,
         };
         match host.next(Instant::now() + Duration::from_secs(30))? {
             Event::Init(id) if id == host.conversation => Ok(host),
@@ -242,6 +253,7 @@ impl AgyStdio {
         }
     }
     fn next(&mut self, deadline: Instant) -> R<Event> {
+        let deadline=self.aggregate.as_ref().map(|b|deadline.min(b.deadline())).unwrap_or(deadline);
         let timeout = deadline
             .checked_duration_since(Instant::now())
             .ok_or("HOST_ACK_UNKNOWN")?;
@@ -257,7 +269,8 @@ impl AgyStdio {
         if self.failed {
             return Err("HOST_ACK_UNKNOWN");
         }
-        loop {
+        for _ in 0..256 {
+            if self.aggregate.as_ref().is_some_and(|b|b.remaining().is_err()){return Err("HOST_OPERATION_TIMEOUT");}
             let next = self.events.as_mut().ok_or("HOST_DISCONNECTED")?.try_recv();
             match next {
                 Ok(Ok(Event::Result(id))) if id == self.conversation && self.busy => {
@@ -273,6 +286,7 @@ impl AgyStdio {
                 }
             }
         }
+        Ok(())
     }
     pub fn health(&mut self) -> R<Value> {
         self.drain()?;
@@ -301,14 +315,15 @@ impl AgyStdio {
         // certainty. Restarting this conversation never replays those calls.
         self.fence.write_exact(json!({"format":"peerwork.agy-stdio-launch.v2","state":"INPUT_ATTEMPTED","conversation_id":self.conversation,"pid":self.pid,"process_token":self.process_token,"input_attempted":true}).to_string().as_bytes())
             .map_err(|_| "HOST_STATE_FAILED")?;
+        if self.aggregate.as_ref().is_some_and(|b|b.remaining().is_err()){return Err("HOST_PREFLIGHT_DEADLINE");}
         self.attempted = true;
         let mut bytes = serde_json::to_vec(&json!({"event":"user","message":{"content":rendered}}))
             .map_err(|_| "HOST_INPUT_INVALID")?;
         bytes.push(b'\n');
-        let deadline = Instant::now() + self.io_budget;
+        let deadline = self.aggregate.as_ref().map(|b|b.deadline().min(Instant::now()+self.io_budget)).unwrap_or_else(||Instant::now()+self.io_budget);
         let input = self.input.as_mut().ok_or("HOST_DISCONNECTED")?;
         let written = self.executor.block_on(async {
-            tokio::time::timeout(self.io_budget, input.write_all(&bytes)).await
+            tokio::time::timeout(deadline.saturating_duration_since(Instant::now()), input.write_all(&bytes)).await
         });
         if !matches!(written, Ok(Ok(()))) {
             self.failed = true;
@@ -338,6 +353,7 @@ impl Drop for AgyStdio {
         // EOF is the vendor's normal stream shutdown. Keep draining stdout so
         // the active turn can finish and persist its host/tool state. A signed
         // reply and inbox consumption can precede the native terminal result.
+        if let Some(budget)=&self.aggregate{budget.phase("TERMINATING");}
         let (terminal, graceful) = self.executor.block_on(async {
             if let Ok(result) = tokio::time::timeout(self.shutdown_budget, self.child.wait()).await
             {
