@@ -43,7 +43,11 @@ async fn official_unloaded_codex_receives_original_pending_mail_once() {
     let client=RuntimeClient::connect(ready.client_endpoints["worker"].clone(),&engine.origin,&engine.expected_actor).await.unwrap();
     let mut watch=source.old.clone();watch.host_destination=Some(moved["destination_digest"].as_str().unwrap().into());
     let accepted=tokio::time::timeout(Duration::from_secs(25),async{loop{
-        let page=client.call(json!({"method":"inbox","options":watch,"after":0,"limit":32})).await.unwrap();
+        let page=match client.call(json!({"method":"inbox","options":watch,"after":0,"limit":32})).await {
+            Ok(page)=>page,
+            Err(error) if error.code=="WATCH_NOT_FOUND"=>{tokio::time::sleep(Duration::from_millis(50)).await;continue;},
+            Err(error)=>panic!("original receiver failed: {error:?}"),
+        };
         if let Some(item)=page["items"].as_array().and_then(|items|items.first()) {
             let selected=json!({"sequence":item["sequence"],"delivery_id":item["delivery_id"]});
             let status=client.call(json!({"method":"delivery_status","options":watch,"item":selected})).await.unwrap();
