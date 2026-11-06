@@ -621,9 +621,9 @@ async fn native_bridge_auth_scope_negative_fence_and_durable_restarts() {
         "RESULT_UNKNOWN"
     );
     assert_eq!(
-        call(&ready, "health", &json!({}), json!({})).await["health"]["ready"],
+        wait_ready(&ready).await["health"]["ready"],
         true,
-        "health must reconnect only the same pinned session"
+        "automatic recovery must reconnect only the same pinned session"
     );
     let before = fixture
         .calls()
@@ -1038,4 +1038,75 @@ async fn grant_updates_are_explicit_revocable_and_retain_unknown_original_calls(
     );
     stop.cancel();
     task.await.unwrap().unwrap();
+}
+
+async fn wait_ready(ready:&BridgeReady)->Value {
+    tokio::time::timeout(Duration::from_secs(5),async{
+        loop {let value=call(ready,"health",&json!({}),json!({})).await;
+            if value["health"]["ready"]==true{return value;}
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }).await.unwrap()
+}
+#[tokio::test(flavor="multi_thread",worker_threads=2)]
+#[ignore="requires loopback bridge and synthetic host"]
+async fn bridge_status_and_receipts_are_responsive_during_stalled_host_io(){
+    let fixture=CodexFixture::start();fixture.emit_events.store(false,Ordering::SeqCst);
+    let directory=crate::test_support::protected_test_dir();
+    let config=BridgeConfig{format:"peerwork.host-bridge.v1".into(),state_directory:directory.path().join("bridge"),host:fixture.config(),bindings:vec![grant()]};
+    let (ready,stop,task)=start(config).await;wait_ready(&ready).await;
+    let (first,frame)=self::frame(&ready.adapter["destination"],1);
+    assert_eq!(call(&ready,"deliver",&first,json!({"message":frame})).await["state"],"HOST_ACCEPTED");
+    fixture.stall_health.store(true,Ordering::SeqCst);
+    let (second,frame)=self::frame(&ready.adapter["destination"],2);let selected=ready.clone();
+    let delivery=tokio::spawn(async move{call(&selected,"deliver",&second,json!({"message":frame})).await});
+    tokio::time::timeout(Duration::from_secs(2),async{loop{
+        let health=call(&ready,"health",&json!({}),json!({})).await;
+        if health["health"]["diagnostic"]["inflight"]==true{break;}
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }}).await.unwrap();
+    let (first,frame)=self::frame(&ready.adapter["destination"],1);
+    let receipt=tokio::time::timeout(Duration::from_secs(2),call(&ready,"receipt",&first,json!({"message_id":frame["message_id"],"body_hash":first["frame_digest"]}))).await.unwrap();
+    assert_eq!(receipt["state"],"HOST_ACCEPTED");
+    fixture.stall_health.store(false,Ordering::SeqCst);
+    assert_eq!(delivery.await.unwrap()["state"],"HOST_ACCEPTED");
+    stop.cancel();task.await.unwrap().unwrap();drop(fixture);
+}
+#[tokio::test(flavor="multi_thread",worker_threads=2)]
+#[ignore="requires loopback bridge and synthetic host"]
+async fn bridge_restart_serves_persisted_receipts_while_original_host_is_offline(){
+    let fixture=CodexFixture::start();fixture.emit_events.store(false,Ordering::SeqCst);
+    let directory=crate::test_support::protected_test_dir();
+    let config=BridgeConfig{format:"peerwork.host-bridge.v1".into(),state_directory:directory.path().join("bridge"),host:fixture.config(),bindings:vec![grant()]};
+    let (ready,stop,task)=start(config.clone()).await;
+    let (binding,frame)=self::frame(&ready.adapter["destination"],1);
+    assert_eq!(call(&ready,"deliver",&binding,json!({"message":frame})).await["state"],"HOST_ACCEPTED");
+    stop.cancel();task.await.unwrap().unwrap();drop(fixture);
+    let (restarted,stop,task)=tokio::time::timeout(Duration::from_secs(2),start(config)).await.unwrap();
+    assert_eq!(restarted.adapter,ready.adapter);
+    let receipt=tokio::time::timeout(Duration::from_secs(2),call(&restarted,"receipt",&binding,json!({"message_id":frame["message_id"],"body_hash":binding["frame_digest"]}))).await.unwrap();
+    assert_eq!(receipt["state"],"HOST_ACCEPTED");
+    assert_eq!(call(&restarted,"health",&json!({}),json!({})).await["health"]["ready"],false);
+    stop.cancel();task.await.unwrap().unwrap();
+}
+#[tokio::test(flavor="multi_thread",worker_threads=2)]
+#[ignore="requires loopback bridge and synthetic host"]
+async fn bridge_aggregate_budget_blocks_stalled_preflight_without_late_input(){
+    let fixture=CodexFixture::start();fixture.emit_events.store(false,Ordering::SeqCst);
+    let directory=crate::test_support::protected_test_dir();
+    let config=BridgeConfig{format:"peerwork.host-bridge.v1".into(),state_directory:directory.path().join("bridge"),host:fixture.config(),bindings:vec![grant()]};
+    let stop=KernelCancellationToken::new();let (tx,rx)=oneshot::channel();
+    let task=tokio::spawn(serve_limit(config,stop.clone(),tx,Duration::from_millis(750)));
+    let ready=rx.await.unwrap().unwrap();wait_ready(&ready).await;
+    fixture.stall_health.store(true,Ordering::SeqCst);
+    let (one,frame)=self::frame(&ready.adapter["destination"],1);let selected=ready.clone();
+    let first=tokio::spawn(async move{call(&selected,"deliver",&one,json!({"message":frame})).await});
+    let (two,frame)=self::frame(&ready.adapter["destination"],2);
+    let result=tokio::time::timeout(Duration::from_secs(3),call(&ready,"deliver",&two,json!({"message":frame}))).await.unwrap();
+    assert_eq!(result["state"],"NOT_SENT");
+    fixture.stall_health.store(false,Ordering::SeqCst);
+    let _=first.await.unwrap();
+    assert!(!fixture.calls().iter().any(|v|matches!(v["method"].as_str(),Some("turn/start"|"turn/steer"))));
+    assert_eq!(call(&ready,"deliver",&two,json!({"message":frame})).await["state"],"NOT_SENT");
+    stop.cancel();task.await.unwrap().unwrap();drop(fixture);
 }

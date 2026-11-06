@@ -41,7 +41,7 @@ use tokio::{
     task::JoinSet,
 };
 
-pub(crate) const CONNECT_FEATURES: [&str; 9] = [
+pub(crate) const CONNECT_FEATURES: [&str; 10] = [
     "participant-connect-v1",
     "derived-client-generation-v1",
     "scoped-host-revocation-v1",
@@ -51,6 +51,7 @@ pub(crate) const CONNECT_FEATURES: [&str; 9] = [
     "workspace-collaboration-v1",
     "workspace-event-delivery-v1",
     "workspace-client-authority-v1",
+    "host-recovery-diagnostics-v1",
 ];
 const REQUEST_FORMAT: &str = "peerwork.participant-request.v1";
 const RESPONSE_FORMAT: &str = "peerwork.participant-response.v1";
@@ -212,6 +213,7 @@ struct Runtime {
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "method", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ClientRequest {
+    HostStatus,
     Derive {
         name: String,
         capability: Capability,
@@ -292,7 +294,7 @@ impl ClientRequest {
         // handwritten method/field catalog that can diverge from this enum.
         let request: Self =
             serde_json::from_value(value.clone()).map_err(|_| local("CLIENT_REQUEST_INVALID"))?;
-        if matches!(request, Self::Capabilities | Self::Bindings | Self::Binding)
+        if matches!(request, Self::Capabilities | Self::Bindings | Self::Binding | Self::HostStatus)
             && value.as_object().is_none_or(|o| o.len() != 1)
         {
             return Err(local("CLIENT_REQUEST_INVALID"));
@@ -404,6 +406,17 @@ impl Runtime {
                     let count=revoked.as_ref().map_or(0,|job|job.names().len());
                     let(cleaned,cleanup_error)=match revoked {Some(job)=>match self.cleanup_revocation(&job).await{Ok(done)=>(done,None),Err(e)=>(false,Some(e))},None=>(true,None)};
                     Ok(json!({"state":if cleaned{"LOCAL_CLIENTS_REVOKED"}else{"LOCAL_CLIENTS_REVOKED_CLEANUP_PENDING"},"count":count,"receiver_cleanup_pending":!cleaned,"cleanup_error":cleanup_error,"original_operations_retained":true,"remote_rights_revoked":false,"inflight_host_results":"RETAINED"}))
+                },
+                ClientRequest::HostStatus=>{
+                    let hosts=tokio::time::timeout(Duration::from_secs(2),self.hosts.lock()).await.map_err(|_|local("HOST_STATUS_BUSY"))?;
+                    let mut values=Vec::new();
+                    for mut value in hosts.statuses(){
+                        let selected=value["source_bindings"].as_array().map(|bindings|bindings.iter().filter(|b|b["client"]==session.name&&b.get("client_generation").and_then(Value::as_u64)==session.generation).cloned().collect::<Vec<_>>()).unwrap_or_default();
+                        if selected.is_empty(){continue;}
+                        if let Some(fields)=value.as_object_mut(){fields.retain(|key,_|["state","code","diagnostic","dispatcher_running","restart_attempt","retry_after_ms","model_response","selection_id"].contains(&key.as_str()));}
+                        value["source_bindings"]=json!(selected);values.push(value);
+                    }
+                    Ok(json!({"hosts":values,"scope":"SELECTED_CLIENT_GENERATION","model_response":"NOT_ATTESTED"}))
                 },
                 ClientRequest::Capabilities=>Ok(json!({"format":"peerwork.participant-capability.v1","sdk_version":env!("CARGO_PKG_VERSION"),"actor_id":client.actor_id(),"origin":client.origin(),"capability":client.capability(),"admin":false,"maturity":"EXPERIMENTAL","features":CONNECT_FEATURES})),
                 ClientRequest::Binding=>Ok(json!({"format":"peerwork.local-engine-binding.v1","actor_id":client.actor_id(),"origin":client.origin(),"state_binding":client.state_binding(),"engine_digest":self.engine_bindings.get(client.state_binding()),"namespace":client.local_namespace(),"client_generation":session.generation,"client_name":session.name,"features":CONNECT_FEATURES})),

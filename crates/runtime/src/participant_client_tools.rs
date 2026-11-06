@@ -12,6 +12,7 @@ fn local(code: &str) -> ParticipantError { ParticipantError::local(code, "LOCAL_
 
 pub(crate) async fn call(client: &ParticipantClient, watches: &Watches, request: ClientRequest) -> Result<Value> {
     match request {
+        ClientRequest::HostStatus=>Err(local("RESIDENT_RUNTIME_REQUIRED_FOR_HOST_STATUS")),
                 ClientRequest::DeliveryStatus{options,item}=>client.delivery_status(&options,item).await,
                 ClientRequest::Unwatch{options}=>{client.unwatch(&options).await?;watches.lock().await.remove(&options.key());Ok(json!({"state":"LOCAL_STOPPED","lease_expires_within_ms":15000,"messages_deleted":false}))},
                 ClientRequest::Watch{options}=>{

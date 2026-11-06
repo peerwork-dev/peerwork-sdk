@@ -842,8 +842,14 @@ impl AgentTools {
                 let receiving_binding = if self.receiver.is_some() {
                     Some(self.receiving().call(json!({"method":"binding"})).await?)
                 } else {None};
+                let features=receiving_binding.as_ref().map(|b|&b["features"]).unwrap_or(&capabilities["features"]);
+                let host_status=if features.as_array().is_some_and(|f|f.iter().any(|v|v=="host-recovery-diagnostics-v1")) {
+                    match self.receiving().call(json!({"method":"host_status"})).await {
+                        Ok(value)=>value,Err(problem)=>json!({"state":"UNKNOWN","code":problem.code,"phase":problem.phase})
+                    }
+                }else{json!({"state":"NOT_AVAILABLE","reason":"RESIDENT_RUNTIME_UPGRADE_REQUIRED"})};
                 Ok(
-                    json!({"actor_id":self.client.actor_id(),"origin":self.client.origin(),"maturity":"EXPERIMENTAL","local_engine":if self.client.attached_mode(){"ATTACHED_ORIGINAL_CLIENT"}else{"AUTHENTICATED"},"state_migration_required":false,"versions":{"frontend":env!("CARGO_PKG_VERSION"),"runtime":capabilities.get("sdk_version").cloned().unwrap_or(json!("NOT_REPORTED"))},"remote_or_host_readiness":"NOT_ATTESTED","workspaces":self.profile.workspaces,"scopes":self.profile.scopes,"send_scopes":self.profile.send_scopes,"contacts":self.profile.contacts.keys().collect::<Vec<_>>(),"protocols":self.profile.protocols,"management_views":self.profile.management_views,"protocol_views":self.profile.protocol_views,"bindings":bindings,"receiving_binding":receiving_binding,"capability":capabilities["capability"],"tool_discovery":{"source":"LOADED_MCP_TOOL_SCHEMAS","extra_call_required":false},"next_tools":{"reachability":"peerwork_reachability","send":"peerwork_send","inbox":"peerwork_inbox","protocol":"peerwork_protocol","management":"peerwork_manage","subscriptions":"peerwork_subscriptions"}}),
+                    json!({"actor_id":self.client.actor_id(),"origin":self.client.origin(),"maturity":"EXPERIMENTAL","local_engine":if self.client.attached_mode(){"ATTACHED_ORIGINAL_CLIENT"}else{"AUTHENTICATED"},"state_migration_required":false,"versions":{"frontend":env!("CARGO_PKG_VERSION"),"runtime":capabilities.get("sdk_version").cloned().unwrap_or(json!("NOT_REPORTED"))},"remote_or_host_readiness":"NOT_ATTESTED","host_status":host_status,"workspaces":self.profile.workspaces,"scopes":self.profile.scopes,"send_scopes":self.profile.send_scopes,"contacts":self.profile.contacts.keys().collect::<Vec<_>>(),"protocols":self.profile.protocols,"management_views":self.profile.management_views,"protocol_views":self.profile.protocol_views,"bindings":bindings,"receiving_binding":receiving_binding,"capability":capabilities["capability"],"tool_discovery":{"source":"LOADED_MCP_TOOL_SCHEMAS","extra_call_required":false},"next_tools":{"reachability":"peerwork_reachability","send":"peerwork_send","inbox":"peerwork_inbox","protocol":"peerwork_protocol","management":"peerwork_manage","subscriptions":"peerwork_subscriptions"}}),
                 )
             }
             AgentRequest::Reachability { workspace, actor, cursor, limit, scope, contact } => {

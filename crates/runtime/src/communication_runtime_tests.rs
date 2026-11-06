@@ -1182,3 +1182,22 @@ async fn existing_endpoint_attachment_needs_no_discovery_rights_and_keeps_origin
     assert_eq!(context["workspaces"]["project"],ws);
     drop(tools);drop(connect);cancel.cancel();task.await.unwrap().unwrap();
 }
+
+#[tokio::test(flavor="multi_thread",worker_threads=2)]
+#[ignore="requires loopback IPC and synthetic host"]
+async fn host_diagnostics_are_live_and_limited_to_selected_client_generation(){
+    let fixture=crate::communication_host::tests::CodexFixture::start();
+    fixture.emit_events.store(false,std::sync::atomic::Ordering::SeqCst);
+    let temp=crate::test_support::protected_test_dir();let mut options=config(temp.path());
+    options.hosts.push(crate::participant_dispatch::HostConfig{name:"diagnostic-host".into(),adapter:fixture.config(),subscriptions:vec![crate::participant_dispatch::HostSubscription{client:"creator".into(),client_generation:None,watch:WatchOptions{workspace_id:"W".repeat(43),mailbox_id:"M".repeat(43),membership_id:"G".repeat(43),consumer_id:"diagnostic".into(),host_destination:None}}]});
+    let (ready,cancel,task)=start(options).await;
+    let visible=call(&ready.client_endpoints["creator"],json!({"method":"host_status"})).await.unwrap();
+    assert_eq!(visible["ok"],true);assert_eq!(visible["value"]["hosts"].as_array().unwrap().len(),1);
+    assert!(visible["value"]["hosts"][0]["diagnostic"].is_object());
+    assert!(visible["value"]["hosts"][0].get("destination").is_none());
+    let other=call(&ready.client_endpoints["reader"],json!({"method":"host_status"})).await.unwrap();
+    assert_eq!(other["ok"],true);assert_eq!(other["value"]["hosts"],json!([]));
+    let malformed=call(&ready.client_endpoints["creator"],json!({"method":"host_status","other_client":"reader"})).await.unwrap();
+    assert_eq!(malformed["error"]["code"],"CLIENT_REQUEST_INVALID");
+    cancel.cancel();task.await.unwrap().unwrap();drop(fixture);
+}

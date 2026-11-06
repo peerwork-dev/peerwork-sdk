@@ -202,6 +202,9 @@ impl Hosts {
                     .lock()
                     .map(|v| v.clone())
                     .unwrap_or_else(|_| json!({"state":"UNKNOWN"}));
+                value["diagnostic"]=job.progress.snapshot();
+                value["dispatcher_running"]=json!(!job.task.is_finished());
+                if job.task.is_finished(){value["state"]=json!(if job.cancel.is_cancelled(){"STOPPED"}else{"FAILED"});value["code"]=json!("HOST_DISPATCHER_TERMINATED");}
                 value["selection_id"] = json!(key);
                 if let Some(config)=self.configs.iter().find(|c|c.key().ok().as_ref()==Some(key)) {
                     value["source_bindings"]=json!(config.subscriptions);
@@ -237,12 +240,10 @@ impl Hosts {
             .ok_or_else(|| local("HOST_REGISTRY_INVALID"))?
             .clone();
         let selected_sources = sources(&selected, clients, generations)?;
-        if let Some(job) = self.jobs.get(&key) {
-            if job.task.is_finished() {
-                return Err(local("HOST_DISPATCHER_RECOVERY_REQUIRED"));
-            }
-            job.validate_sources(&selected_sources)?;
+        if self.jobs.get(&key).is_some_and(|job|job.task.is_finished()) {
+            let old=self.jobs.remove(&key).unwrap();let _=old.task.await;
         }
+        if let Some(job)=self.jobs.get(&key){job.validate_sources(&selected_sources)?;}
         self.blocked = blocked;
         let wire = encoded(&desired,&self.suppressed_base)?;
         if encoded(&self.configs,&self.suppressed_base).ok().as_ref() != Some(&wire) {

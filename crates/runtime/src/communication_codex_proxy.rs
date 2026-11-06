@@ -2,6 +2,7 @@
 //! by the shared host adapter, including over these stdio proxy pipes. The only child command is the
 //! official control-socket proxy; it never creates a server, thread or model.
 use serde_json::Value;
+use super::operation::Budget;
 use std::{
     path::{Path, PathBuf},
     process::Stdio,
@@ -58,9 +59,10 @@ pub(super) struct Proxy {
     deadline: Instant,
     reader: tokio::task::JoinHandle<()>,
     executor: tokio::runtime::Handle,
+    budget: Budget,
 }
 impl Proxy {
-    pub fn open(config: &Value, executor: tokio::runtime::Handle) -> R<Self> {
+    pub fn open(config: &Value, executor: tokio::runtime::Handle,budget:Budget) -> R<Self> {
         let path = executable(config["codex_executable"].as_str())?;
         let mut command = tokio::process::Command::new(path);
         command.args(["app-server", "proxy"]);
@@ -111,10 +113,11 @@ impl Proxy {
             deadline: Instant::now() + Duration::from_secs(10),
             reader,
             executor,
+            budget,
         })
     }
     pub fn deadline(&mut self, deadline: Instant) {
-        self.deadline = deadline;
+        self.deadline = deadline.min(self.budget.deadline());
     }
 }
 impl std::io::Read for Proxy {
@@ -124,7 +127,7 @@ impl std::io::Read for Proxy {
         }
         if self.buffered.position() as usize == self.buffered.get_ref().len() {
             let remaining = self
-                .deadline
+                .deadline.min(self.budget.deadline())
                 .checked_duration_since(Instant::now())
                 .ok_or_else(|| {
                     std::io::Error::new(std::io::ErrorKind::TimedOut, "HOST_ACK_UNKNOWN")
@@ -147,7 +150,7 @@ impl std::io::Read for Proxy {
 impl std::io::Write for Proxy {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
         self.executor.block_on(async {
-            tokio::time::timeout(Duration::from_secs(10), self.input.write_all(bytes))
+            tokio::time::timeout(self.budget.remaining()?, self.input.write_all(bytes))
                 .await
                 .map_err(|_| {
                     std::io::Error::new(std::io::ErrorKind::TimedOut, "HOST_ACK_UNKNOWN")

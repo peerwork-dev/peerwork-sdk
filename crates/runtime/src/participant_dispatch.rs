@@ -104,6 +104,7 @@ type SharedAdapter=Arc<Mutex<std::sync::Weak<Mutex<Host>>>>;
 pub(crate) struct RunningHost {
     adapter:SharedAdapter,
     pub status: Arc<Mutex<Value>>,
+    pub progress: crate::communication_host::operation::Budget,
     pub task: tokio::task::JoinHandle<()>,
     pub sources: Arc<Mutex<Vec<(ParticipantClient, WatchOptions)>>>,
     pub changed: Arc<tokio::sync::Notify>,
@@ -257,18 +258,28 @@ pub(crate) fn start(
         let status = state.clone();
         let child=cancel.child_token();let stop=child.clone();
         let path = directory.join(format!("host-{key}.state"));
+        let progress=crate::communication_host::operation::Budget::new(Duration::from_secs(10));
+        let live_progress=progress.clone();
         let task = tokio::spawn(async move {
-            if let Err(e) = run(config, selected_sources, path, status.clone(), stop, signal, requested, acknowledged, published_adapter).await
-            {
-                set(
-                    &status,
-                    json!({"state":"BLOCKED","code":e.code,"model_response":"NOT_ATTESTED"}),
-                );
+            let mut attempts=0u32;
+            loop {
+                if stop.is_cancelled(){break;}
+                let child=tokio::spawn(run(config.clone(),selected_sources.clone(),path.clone(),status.clone(),stop.clone(),signal.clone(),requested.clone(),acknowledged.clone(),published_adapter.clone(),live_progress.clone()));
+                let result=child.await;
+                if stop.is_cancelled(){break;}
+                let code=match result {Ok(Err(e))=>e.code,Ok(Ok(()))=>"HOST_DISPATCHER_STOPPED".into(),Err(_)=>"HOST_DISPATCHER_TASK_FAILED".into()};
+                attempts=attempts.saturating_add(1);
+                let permanent=matches!(code.as_str(),"HOST_STATE_INVALID"|"HOST_BINDING_CHANGED_REQUIRES_REVIEW"|"HOST_STATE_ALREADY_OWNED"|"HOST_SUBSCRIPTION_CONFLICT");
+                let delay=Duration::from_millis((1000u64<<attempts.min(5)).min(30000)+(attempts as u64*137)%251);
+                set(&status,json!({"state":if permanent{"BLOCKED"}else{"RECONNECTING"},"code":code,"restart_attempt":attempts,"retry_after_ms":if permanent{Value::Null}else{json!(delay.as_millis() as u64)},"model_response":"NOT_ATTESTED"}));
+                if permanent {tokio::select!{_=stop.cancelled()=>break,_=signal.notified()=>{}}}
+                else {tokio::select!{_=stop.cancelled()=>break,_=tokio::time::sleep(delay)=>{}}}
             }
         });
         active.push(RunningHost {
             adapter,
             status: state,
+            progress,
             task,
             sources,
             changed,
@@ -366,6 +377,7 @@ pub(crate) fn host_outcome(
             }),
         Err(
             "HOST_NOT_READY"
+            | "HOST_PREFLIGHT_FAILED"
             | "HOST_INPUT_TOO_LARGE"
             | "HOST_INPUT_CONFLICT"
             | "HOST_INBOX_FULL"
@@ -478,6 +490,7 @@ async fn run(
     drain_requested: Arc<Mutex<std::collections::BTreeSet<String>>>,
     drained: Arc<Mutex<std::collections::BTreeSet<String>>>,
     published_adapter:SharedAdapter,
+    progress:crate::communication_host::operation::Budget,
 ) -> Result<()> {
     let launch_fence = path.with_extension("agy-launch.state");
     let owner = SecureStateStore::open(&path).map_err(|_| error("HOST_STATE_ALREADY_OWNED"))?;
@@ -499,7 +512,7 @@ async fn run(
         &mut adapter,
         changed,
         launch_fence,
-        drain_requested,drained,published_adapter,
+        drain_requested,drained,published_adapter,progress,
     )
     .await;
     let closed = close_adapter(&mut adapter).await;
@@ -543,6 +556,7 @@ async fn run_owned(
     drain_requested: Arc<Mutex<std::collections::BTreeSet<String>>>,
     drained: Arc<Mutex<std::collections::BTreeSet<String>>>,
     published_adapter:SharedAdapter,
+    progress:crate::communication_host::operation::Budget,
 ) -> Result<()> {
     let handle = tokio::runtime::Handle::current();
     // The adapter owns only an executor Handle, not a nested runtime. Blocking
@@ -589,8 +603,16 @@ async fn run_owned(
             if options["kind"] == "agy-stdio" {
                 options["launch_fence"] = json!(launch_fence);
             }
+            if options["kind"]=="codex" {
+                if let Some(saved)=owner.read_exact().map_err(|_|error("HOST_STATE_INVALID"))? {
+                    let binding:HostBinding=serde_json::from_slice(&saved).map_err(|_|error("HOST_STATE_INVALID"))?;
+                    if HostBinding::new(binding.destination.clone())?!=binding{return Err(error("HOST_STATE_INVALID"));}
+                    options["expected_session_id"]=binding.destination["session_id"].clone();
+                }
+            }
             let executor = handle.clone();
-            let opened = tokio::task::spawn_blocking(move || Host::open(options, executor))
+            let operation_progress=progress.clone();
+            let opened = tokio::task::spawn_blocking(move || Host::open_progress(options, executor,operation_progress))
                 .await
                 .map_err(|_| error("HOST_TASK_FAILED"))?;
             let host = match opened {
@@ -748,7 +770,8 @@ async fn run_owned(
             };
             let value = observed
                 .clone()
-                .unwrap_or_else(|_| json!({"mode":mode,"ready":false,"execution_state":"OFFLINE"}));
+                .unwrap_or_else(|_| json!({"mode":mode,"ready":false,"execution_state":"UNKNOWN"}));
+            if let Err(code)=&observed {if let Ok(mut current)=status.lock(){current["state"]=json!("RECONNECTING");current["code"]=json!(code);current["diagnostic"]=progress.snapshot();}}
             for (client, options) in watches.iter() {
                 if let Err(problem) = client
                     .host_operation(
@@ -913,10 +936,12 @@ async fn run_owned(
                             .and_then(|value|value["execution_state"].as_str())
                             .filter(|state|matches!(*state,"IDLE"|"BUSY"|"WAITING_APPROVAL"|"OFFLINE"))
                             .unwrap_or("UNKNOWN");
-                        let code=match execution {
-                            "BUSY"=>"HOST_BUSY",
-                            "WAITING_APPROVAL"=>"HOST_WAITING_APPROVAL",
-                            _=>"HOST_NOT_READY",
+                        let code=match &other {
+                            Err(code)=>*code,
+                            Ok(value)=>match execution {
+                                "BUSY"=>"HOST_BUSY","WAITING_APPROVAL"=>"HOST_WAITING_APPROVAL",
+                                _=>match value["reason"].as_str(){Some("HOST_SESSION_ERROR")=>"HOST_SESSION_ERROR",Some("HOST_STATUS_UNSUPPORTED")=>"HOST_STATUS_UNSUPPORTED",Some("HOST_SESSION_NOT_LOADED")=>"HOST_SESSION_NOT_LOADED",_=>"HOST_NOT_READY"}
+                            }
                         };
                         for (target,scope) in watches.iter(){if let Err(problem)=target.host_operation(scope,HostOperation::Presence{value:json!({"mode":if config.adapter["destination"]["host"]=="ANTIGRAVITY_APP"{"QUEUED_ONLY"}else{"LIVE"},"ready":false,"execution_state":execution}),observed_at}).await{scope_error(&status,scope,&problem);}}
                         client
@@ -983,7 +1008,8 @@ async fn run_owned(
             // the first delivery, making current-host checks unverifiable.
             if let Ok(mut current)=status.lock() {
                 current["state"]=json!(if unknown{"HOST_RESULT_UNKNOWN"}else{"HOST_ATTACHED"});
-                if let Some(fields)=current.as_object_mut(){fields.remove("code");}
+                if unknown {current["code"]=json!("HOST_ACCEPTANCE_UNRESOLVED");current["recovery"]=json!(if config.adapter["kind"]=="bridge"{"RECONCILE_ORIGINAL_BRIDGE_RECEIPT"}else{"HOST_CORRELATED_RECEIPT_REQUIRED"});}
+                else if let Some(fields)=current.as_object_mut(){fields.remove("code");fields.remove("recovery");}
                 current["last_call_id"]=json!(call.call_id);
                 current["model_response"]=json!("NOT_ATTESTED");
             }
@@ -1053,6 +1079,7 @@ mod tests {
                 Arc::new(Mutex::new(Default::default())),
                 Arc::new(Mutex::new(Default::default())),
                 Default::default(),
+                crate::communication_host::operation::Budget::new(Duration::from_secs(10)),
             )
             .await;
             stopping.await.unwrap();

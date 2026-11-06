@@ -197,6 +197,8 @@ pub(crate) struct CodexFixture {
     pub emit_events: Arc<AtomicBool>,
     pub approval_on_turn_query: Arc<AtomicBool>,
     pub current_turn: Arc<Mutex<String>>,
+    pub status_override: Arc<Mutex<Option<String>>>,
+    pub stall_health: Arc<AtomicBool>,
     stop: Arc<AtomicBool>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
@@ -235,6 +237,8 @@ impl CodexFixture {
         let query_approval = approval_on_turn_query.clone();
         let current_turn = Arc::new(Mutex::new("original-turn".to_string()));
         let actual_turn = current_turn.clone();
+        let status_override=Arc::new(Mutex::new(None::<String>));let override_status=status_override.clone();
+        let stall_health=Arc::new(AtomicBool::new(false));let stall=stall_health.clone();
         let stop = Arc::new(AtomicBool::new(false));
         let done = stop.clone();
         let thread = std::thread::spawn(move || {
@@ -267,6 +271,8 @@ impl CodexFixture {
                         "initialize" => json!({"userAgent":"synthetic-protocol-fixture"}),
                         "thread/loaded/list"=>json!({"data":["existing-thread"],"nextCursor":null}),
                         "thread/read" | "thread/resume" => {
+                            while stall.load(Ordering::SeqCst)&&!done.load(Ordering::SeqCst){std::thread::sleep(Duration::from_millis(2));}
+                            if method=="thread/resume"{*override_status.lock().unwrap()=None;}
                             if emit.load(Ordering::SeqCst)
                                 && waiting.load(Ordering::SeqCst)
                                 && !announced
@@ -284,7 +290,7 @@ impl CodexFixture {
                             for _ in 0..if emit.load(Ordering::SeqCst) { 300 } else { 0 } {
                                 if ws.send(Message::Text(json!({"method":"thread/status/changed","params":{"threadId":"existing-thread"}}).to_string().into())).is_err(){break;}
                             }
-                            json!({"thread":{"id":"existing-thread","sessionId":host_session.lock().unwrap().clone(),"name":"Worker","status":{"type":if active||waiting.load(Ordering::SeqCst){"active"}else{"idle"},"activeFlags":if waiting.load(Ordering::SeqCst){vec!["waitingOnApproval"]}else{Vec::<&str>::new()}}}})
+                            json!({"thread":{"id":"existing-thread","sessionId":host_session.lock().unwrap().clone(),"name":"Worker","status":{"type":override_status.lock().unwrap().as_deref().unwrap_or(if active||waiting.load(Ordering::SeqCst){"active"}else{"idle"}),"activeFlags":if waiting.load(Ordering::SeqCst){vec!["waitingOnApproval"]}else{Vec::<&str>::new()}}}})
                         }
                         "thread/turns/list" => {
                             if query_approval.swap(false, Ordering::SeqCst) {
@@ -334,6 +340,8 @@ impl CodexFixture {
             emit_events,
             approval_on_turn_query,
             current_turn,
+            status_override,
+            stall_health,
             stop,
             thread: Some(thread),
         }
@@ -692,4 +700,39 @@ fn bridge_receipt_reads_keep_original_call_and_reject_retargeted_evidence() {
             .count(),
         1
     );
+}
+
+#[test]
+#[ignore = "requires loopback synthetic host"]
+fn codex_unloaded_original_recovers_and_distinguishes_system_error() {
+    let fixture=CodexFixture::start();fixture.emit_events.store(false,Ordering::SeqCst);
+    let runtime=tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let mut host=Host::open(fixture.config(),runtime.handle().clone()).unwrap();
+    let original=host.destination.clone();
+    *fixture.status_override.lock().unwrap()=Some("notLoaded".into());
+    assert_eq!(host.health(&json!({})).unwrap()["ready"],true);
+    let calls=fixture.calls();let resume=calls.iter().find(|v|v["method"]=="thread/resume").unwrap();
+    assert_eq!(resume["params"],json!({"threadId":"existing-thread","excludeTurns":true}));
+    assert_eq!(host.destination,original);
+    *fixture.status_override.lock().unwrap()=Some("systemError".into());
+    let health=host.health(&json!({})).unwrap();assert_eq!(health["ready"],false);assert_eq!(health["reason"],"HOST_SESSION_ERROR");
+    assert!(!fixture.calls().iter().any(|v|matches!(v["method"].as_str(),Some("turn/start"|"turn/steer"))));
+    *fixture.status_override.lock().unwrap()=None;
+    assert_eq!(host.health(&json!({})).unwrap()["ready"],true);
+    drop(host);drop(fixture);
+}
+#[test]
+#[ignore = "requires loopback synthetic host"]
+fn host_operation_deadline_expires_while_diagnostics_remain_readable() {
+    let fixture=CodexFixture::start();fixture.emit_events.store(false,Ordering::SeqCst);
+    let runtime=tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let budget=operation::Budget::new(Duration::from_millis(300));
+    let mut host=Host::open_progress(fixture.config(),runtime.handle().clone(),budget.clone()).unwrap();
+    fixture.stall_health.store(true,Ordering::SeqCst);
+    let started=Instant::now();let worker=std::thread::spawn(move||{let result=host.health(&json!({}));drop(host);result});
+    while budget.snapshot()["inflight"]!=true&&started.elapsed()<Duration::from_secs(2){std::thread::yield_now();}
+    assert_eq!(budget.snapshot()["inflight"],true);
+    let result=worker.join().unwrap();assert!(result.is_err());assert!(started.elapsed()<Duration::from_secs(2));
+    assert!(budget.snapshot()["original_error_code"].as_str().is_some());
+    fixture.stall_health.store(false,Ordering::SeqCst);drop(fixture);
 }

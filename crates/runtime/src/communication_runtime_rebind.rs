@@ -79,7 +79,9 @@ impl Runtime {
         tokio::task::spawn_blocking(move||{
             let check=|host:&mut crate::communication_host::Host|->Result<()>{
                 if crate::participant_inbox::HostBinding::new(host.destination.clone())?!=wanted{return Err(local("HOST_REBIND_TARGET_SESSION_CHANGED"));}
-                for scope in scopes {host.health(&scope).map_err(local)?;}Ok(())
+                for scope in scopes {let health=host.health(&scope).map_err(local)?;
+                    if health["ready"]!=true && !(host.mode=="TOOL_ONLY"&&health["can_attempt"]==true){return Err(local("HOST_REBIND_TARGET_HOST_NOT_READY"));}
+                }Ok(())
             };
             if let Some(host)=borrowed {let mut selected=host.lock().map_err(|_|local("HOST_REBIND_TARGET_HOST_FAILED"))?;check(&mut selected)}
             else{check(&mut crate::communication_host::Host::open(adapter,executor).map_err(local)?)}
