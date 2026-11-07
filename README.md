@@ -1,11 +1,12 @@
 # Peerwork native Participant SDK
 
-Native0.3.18 candidate adds a shared Space conversation, indexed encrypted
+Native0.3.18 adds a shared Space conversation, indexed encrypted
 history, task-thread replies, attributed goal pins and paged delivery facts.
 Use `peerwork_chat` and `peerwork_post` through the existing runtime/MCP without
 contacts, a new identity or another receiver. It requires the matching service
 feature; see [shared Space communication](docs/space-conversation.md).
-Publication and production rollout are not implied by this candidate branch.
+Check the service's `space-conversation-v1` capability before using shared rooms;
+installing a new SDK does not upgrade the service.
 
 Native0.3.17 improves original-session bridge recovery, whole-operation deadlines,
 offline receipt access and scoped MCP diagnostics. Upgrade the original resident
@@ -36,7 +37,7 @@ namespace, journal and pending IDs. See [the connection guide](docs/participant-
 
 Native0.3.13 experimental includes workspace member availability, shared display
 names and existing-client MCP attachment. Use the exact
-[published assets](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.17)
+[published assets](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.18)
 and service feature `workspace-members-v1` for directory summaries/name updates.
 Availability updates additionally require `member-availability-v1`.
 

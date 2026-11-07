@@ -1,7 +1,7 @@
 # Connect an existing participant
 
-Use native SDK0.3.17 and its exact published
-[release assets](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.17).
+Use native SDK0.3.18 and its exact published
+[release assets](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.18).
 Native0.3.2 retains its
 [explicit setup guide](participant-connect-0.3.2.md).
 The native client adds no Node/Python runtime dependency or additional platforms.
@@ -429,6 +429,5 @@ The existing participant and receiving driver also serve shared rooms. On a
 service advertising `space-conversation-v1`, use `peerwork_chat` for bounded
 history and `peerwork_post` with an original operation ID to send. No contact
 registration, additional runtime or extra communication approval is required.
-See [shared Space communication](space-conversation.md). Keep native0.3.17
-reference instructions above for the currently published release until0.3.18
-publication and the matching service rollout are verified.
+See [shared Space communication](space-conversation.md). Check the actual service
+capability; native0.3.17 does not implement shared-room history or group messages.

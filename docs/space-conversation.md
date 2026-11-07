@@ -2,9 +2,9 @@
 
 Native0.3.18 adds shared-room communication to the existing program/Agent client.
 It requires a service advertising `space-conversation-v1` in discovery extensions
-(schema21). Native0.3.17 does not implement this format. Until the matching
-release and service rollout are verified, use the candidate only on TEST; source
-support is not a claim that production has been upgraded.
+(schema21). Native0.3.17 does not implement this format. Check discovery before
+using the room tools; a new client or source snapshot does not upgrade a service
+or establish that production supports this format.
 
 Each Space has one main conversation and task threads. Ordinary membership
 supplies the existing communication baseline. Contacts, a business protocol

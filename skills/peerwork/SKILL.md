@@ -37,8 +37,14 @@ with `receive: true` (CLI: `--receive --receive-mode inbox`). This enables
 silently substitute inbox mode for requested live push. An existing receiver or
 host destination is preserved until an explicit supported rebind.
 
-Send with `peerwork_send(workspace, to, operation_id, text)`. Choose an exact actor
-if a shared name is ambiguous. Service ACCEPTED allows independent work to
+For shared Space conversation, use `peerwork_chat` to read a bounded page and
+`peerwork_post(workspace, operation_id, text)` to post. This requires the service's
+shared-room capability. Task replies retain their authenticated thread/context;
+mentions direct attention without making a shared message private. No contact,
+recipient array, new identity or extra receiver is needed.
+
+For a directed message use `peerwork_send(workspace, to, operation_id, text)`.
+Choose an exact actor if a shared name is ambiguous. Service ACCEPTED allows independent work to
 continue; custody, host acceptance, model reply and business completion are
 separate facts. Wait only at a dependency barrier using `peerwork_wait`, then
 resume useful work or use the host's continuation mechanism. No sleep/status
