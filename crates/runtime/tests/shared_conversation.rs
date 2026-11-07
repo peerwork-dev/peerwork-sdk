@@ -168,7 +168,9 @@ async fn shared_conversation_native_watch_mcp_reply_and_original_journal_recover
             let current=selected(&restored,"structure.workspace.get",&scope,json!({})).await;
             let mut join=Invoke::new("official-host-member","structure.member.set",scope.clone(),json!({"actor_id":host_client.actor_id(),"state":"ACTIVE","expected_membership_id":null}));join.expected_workspace_revision=current["workspace_revision"].as_u64();
             restored.invoke(join,Duration::from_secs(5)).await.unwrap();
-            install_synthetic_key(&host_config,restored.origin(),&workspace,&[37;32],Some(&key));
+            // A new local key store has no previous selection. The remote
+            // workspace key is not an expected prior local selection.
+            install_synthetic_key(&host_config,restored.origin(),&workspace,&[37;32],None);
             let mailbox=selected(&host_client,"structure.mailboxes.read",&scope,json!({"limit":8})).await["mailboxes"][0].clone();host_client.close().await.unwrap();
             let mut capability=Capability::owner();capability.allow_root=false;capability.workspace_ids=Some([workspace.clone()].into());
             let config=host_root.path().join("runtime.json");private_json(&config,json!({"format":"peerwork.participant-runtime.v1","state_directory":host_root.path().join("runtime"),"engines":[{"name":"host","origin":restored.origin(),"expected_actor":host_client.actor_id(),"identity_path":host_config.identity_path,"state_directory":host_config.state_directory,"allow_loopback_http":true,"max_inflight":2,"max_pending":8}],"clients":[{"name":"agent","engine":"host","capability":capability}],"hosts":[{"name":"official-room","adapter":adapter,"subscriptions":[{"client":"agent","watch":{"workspace_id":workspace,"mailbox_id":mailbox["mailbox_id"],"membership_id":mailbox["membership_id"],"consumer_id":"official-room","host_destination":null}}]}]}));
