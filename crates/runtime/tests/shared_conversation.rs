@@ -3,7 +3,31 @@
 use peerwork_runtime::{participant::{Capability,DeliveryReference,Invoke,Operation,ParticipantClient,ParticipantConfig,Scope,WatchOptions},agent_tools::{AgentRequest,AgentSelection,AgentTools,MailScope},kernel_identity::KernelIdentity};
 use peerwork_core::crypto::sha256_hex;
 use serde_json::{json,Value};
-use std::{path::{Path,PathBuf},process::{Child,Command,Stdio},io::{BufRead,BufReader},time::Duration};
+use std::{path::{Path,PathBuf},process::{Child,Command,Stdio},io::{BufRead,BufReader,Write},time::Duration};
+
+struct InstalledProcess {child:Child,frames:std::sync::mpsc::Receiver<Value>}
+impl InstalledProcess {
+    fn start(binary:&Path,words:&[&str])->Self {
+        let mut child=Command::new(binary).args(words).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit()).spawn().unwrap();
+        let stdout=child.stdout.take().unwrap();let(tx,frames)=std::sync::mpsc::channel();
+        std::thread::spawn(move||{for line in BufReader::new(stdout).lines(){let Ok(line)=line else{break};let value=serde_json::from_str(&line).expect("installed process emitted invalid JSON");if tx.send(value).is_err(){break;}}});Self{child,frames}
+    }
+    fn write(&mut self,value:Value){let input=self.child.stdin.as_mut().unwrap();writeln!(input,"{value}").unwrap();input.flush().unwrap();}
+    fn rpc(&mut self,id:u64,method:&str,params:Value)->Value {
+        self.write(json!({"jsonrpc":"2.0","id":id,"method":method,"params":params}));
+        loop{let value=self.frames.recv_timeout(Duration::from_secs(20)).expect("installed MCP response timeout");if value.get("id").is_none(){continue;}assert_eq!(value["id"],id);assert!(value.get("error").is_none(),"{value}");return value["result"].clone();}
+    }
+    fn tool(&mut self,id:u64,name:&str,arguments:Value)->Value {
+        let result=self.rpc(id,"tools/call",json!({"name":name,"arguments":arguments}));assert_ne!(result["isError"],true,"{result}");assert!(result["structuredContent"].is_object(),"{result}");result["structuredContent"].clone()
+    }
+    fn finish(&mut self){drop(self.child.stdin.take());let end=std::time::Instant::now()+Duration::from_secs(10);loop{if let Some(status)=self.child.try_wait().unwrap(){assert!(status.success());return;}assert!(std::time::Instant::now()<end,"owned installed process did not stop");std::thread::sleep(Duration::from_millis(20));}}
+}
+impl Drop for InstalledProcess {fn drop(&mut self){if self.child.try_wait().ok().flatten().is_none(){let _=self.child.kill();let _=self.child.wait();}}}
+fn private_json(path:&Path,value:Value){
+    let mut options=std::fs::OpenOptions::new();options.write(true).create_new(true);
+    #[cfg(unix)] {use std::os::unix::fs::OpenOptionsExt;options.mode(0o600);}
+    let mut file=options.open(path).unwrap();file.write_all(value.to_string().as_bytes()).unwrap();
+}
 
 struct Service {child:Child,origin:String}
 impl Service {
@@ -113,7 +137,29 @@ async fn shared_conversation_native_watch_mcp_reply_and_original_journal_recover
     mutate(&restored,"shared-withdraw","structure.message.withdraw",&scope,json!({"message_id":sent["message_id"]})).await;
     let current=selected(&worker,"structure.conversation.messages.read",&scope,json!({"conversation_id":room,"limit":8})).await;assert_eq!(current["messages"][0]["state"],"WITHDRAWN");assert!(current["messages"][0].get("author_intent").is_none());
     let pinned=worker.request(Invoke::new("withdrawn-pin","structure.conversation.get",scope.clone(),json!({}))).await.unwrap();assert_eq!(pinned["result"]["structure"]["conversation"]["pin_message"]["state"],"WITHDRAWN");assert!(pinned["result"]["opened_messages"].as_array().unwrap().is_empty());
-    worker.unwatch(&options).await.unwrap();drop(tools);worker.close().await.unwrap();restored.close().await.unwrap();
+    worker.unwatch(&options).await.unwrap();drop(tools);worker.close().await.unwrap();
+    if let Ok(installed)=std::env::var("PEERWORK_TEST_CLI") {
+        // Exercise the actual installed stdin-MCP and scoped encrypted IPC,
+        // reopening this same synthetic identity and original journal.
+        let cli=worker_root.path().join("peerwork");std::fs::copy(installed,&cli).unwrap();
+        #[cfg(unix)] {use std::os::unix::fs::PermissionsExt;std::fs::set_permissions(&cli,std::fs::Permissions::from_mode(0o700)).unwrap();}
+        let mut capability=Capability::owner();capability.allow_root=false;capability.workspace_ids=Some([workspace.clone()].into());
+        let config=worker_root.path().join("runtime.json");private_json(&config,json!({"format":"peerwork.participant-runtime.v1","state_directory":worker_root.path().join("runtime"),"engines":[{"name":"worker","origin":restored.origin(),"expected_actor":worker.actor_id(),"identity_path":worker_config.identity_path,"state_directory":worker_config.state_directory,"allow_loopback_http":true,"max_inflight":2,"max_pending":8}],"clients":[{"name":"agent","engine":"worker","capability":capability}],"hosts":[]}));
+        let mut runtime=InstalledProcess::start(&cli,&["runtime","run",config.to_str().unwrap()]);let ready=runtime.frames.recv_timeout(Duration::from_secs(20)).unwrap();assert_eq!(ready["state"],"LOCAL_READY","{ready}");
+        let profile=worker_root.path().join("agent.json");private_json(&profile,json!({"format":"peerwork.agent-profile.v1","endpoint_path":ready["client_endpoints"]["agent"],"expected_origin":restored.origin(),"expected_actor":worker.actor_id(),"workspaces":{"team":workspace},"scopes":{}}));
+        let start_mcp=||{
+            let mut mcp=InstalledProcess::start(&cli,&["agent","--profile",profile.to_str().unwrap(),"mcp"]);
+            mcp.rpc(1,"initialize",json!({"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"installed-room-qualification","version":"1"}}));mcp.write(json!({"jsonrpc":"2.0","method":"notifications/initialized"}));mcp
+        };
+        let mut mcp=start_mcp();let catalog=mcp.rpc(2,"tools/list",json!({}));for name in ["peerwork_chat","peerwork_post"]{assert!(catalog["tools"].as_array().unwrap().iter().any(|tool|tool["name"]==name));}
+        let history=mcp.tool(3,"peerwork_chat",json!({"workspace":"team","limit":8}));assert_eq!(history["messages"].as_array().unwrap().len(),3);assert_eq!(history["messages"][0]["state"],"WITHDRAWN");assert_eq!(history["messages"][1]["body"]["text"],"Shared pong");assert!(!history.to_string().contains("author_intent"));
+        let post=json!({"workspace":"team","operation_id":"installed-room-post","text":"Installed MCP shared update","wait_ms":5000});let accepted=mcp.tool(4,"peerwork_post",post.clone());assert_eq!(accepted["state"],"ACCEPTED");mcp.finish();
+        let before=service.counts().await;mcp=start_mcp();let again=mcp.tool(2,"peerwork_post",post);assert_eq!(again["state"],"ACCEPTED");assert_eq!(service.counts().await["commands"],before["commands"],"restarting MCP must retain the original accepted intent");
+        let history=restored.request(Invoke::new("installed-group-history","structure.conversation.messages.read",scope.clone(),json!({"conversation_id":room,"limit":8}))).await.unwrap();assert_eq!(history["result"]["structure"]["messages"].as_array().unwrap().len(),4);assert_eq!(history["result"]["opened_messages"].as_array().unwrap().last().unwrap()["text"],"Installed MCP shared update");mcp.finish();
+        let stop=Command::new(&cli).args(["runtime","admin",ready["admin_endpoint"].as_str().unwrap(),"stop"]).output().unwrap();assert!(stop.status.success(),"{}",String::from_utf8_lossy(&stop.stdout));runtime.finish();
+        eprintln!("INSTALLED_STDIO_MCP_GROUP_AND_SAME_INTENT_RESTART_PASS");
+    }
+    restored.close().await.unwrap();
 }
 
 #[test]
