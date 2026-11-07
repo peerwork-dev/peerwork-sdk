@@ -65,7 +65,7 @@ pub(crate) async fn call(client: &ParticipantClient, watches: &Watches, request:
                 ClientRequest::Operations{after,limit}=>client.operations(&after,limit).await,
                 ClientRequest::Bindings=>serde_json::to_value(client.watch_bindings().await?).map_err(|_|local("IPC_RESPONSE_INVALID")),
 
-        ClientRequest::Capabilities => Ok(json!({"format":"peerwork.participant-capability.v1","actor_id":client.actor_id(),"origin":client.origin(),"capability":client.capability(),"admin":false,"maturity":"EXPERIMENTAL","features":["attached-client-tools-v1","protocol-operation-routing-v1"],"sdk_version":env!("CARGO_PKG_VERSION")})),
+        ClientRequest::Capabilities => Ok(json!({"format":"peerwork.participant-capability.v1","actor_id":client.actor_id(),"origin":client.origin(),"capability":client.capability(),"admin":false,"maturity":"EXPERIMENTAL","features":["attached-client-tools-v1","protocol-operation-routing-v1","space-conversation-v1"],"sdk_version":env!("CARGO_PKG_VERSION")})),
         ClientRequest::Binding | ClientRequest::Derive { .. } | ClientRequest::RevokeDerived { .. } => Err(local("RESIDENT_RUNTIME_REQUIRED_FOR_ADMINISTRATION")),
     }
 }
