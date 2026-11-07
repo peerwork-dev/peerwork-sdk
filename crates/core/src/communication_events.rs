@@ -60,7 +60,7 @@ pub(super) fn delivery(value: &WireValue, audience: &[u16], pins: &MailboxPins, 
             return Err(CommunicationError);
         }
     }
-    Ok(VerifiedDelivery { envelope:value.clone(), message:None })
+    Ok(VerifiedDelivery { envelope:value.clone(), message:None, conversation:None })
 }
 
 #[cfg(test)]

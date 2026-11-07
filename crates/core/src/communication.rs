@@ -4,6 +4,10 @@
 mod host_report;
 #[path = "communication_events.rs"]
 mod events;
+#[path = "communication_conversation.rs"]
+mod conversation;
+pub use conversation::{ConversationRecordContext,ConversationContentContext,NativeMessageContext,VerifiedConversationMessage,space_conversation_id,conversation_thread_id,authored_native_message_content,verify_conversation_message};
+pub use conversation::{FEATURE as CONVERSATION_FEATURE,FORMAT as CONVERSATION_FORMAT};
 pub use events::FORMAT as WORKSPACE_EVENT_FORMAT;
 
 use crate::{
@@ -505,6 +509,7 @@ impl MailboxPins {
 pub struct VerifiedDelivery {
     envelope: WireValue,
     message: Option<VerifiedMessage>,
+    conversation: Option<VerifiedConversationMessage>,
 }
 impl VerifiedDelivery {
     pub fn envelope(&self) -> &WireValue {
@@ -512,6 +517,11 @@ impl VerifiedDelivery {
     }
     pub fn message(&self) -> Option<&VerifiedMessage> {
         self.message.as_ref()
+    }
+    pub fn conversation_message(&self) -> Option<&VerifiedConversationMessage> {self.conversation.as_ref()}
+    pub fn sealed_message_content(&self) -> Option<&StructureSealedContent> {
+        if let Some(message)=&self.conversation {return Some(message.content());}
+        match self.message.as_ref()?.content() {MessageContent::WorkspaceE2ee{body}=>Some(body),_=>None}
     }
     pub fn sequence(&self) -> u64 {
         number(&self.envelope, "sequence").expect("verified")
@@ -609,7 +619,14 @@ fn delivery(
         }
     }
     let mut verified = None;
+    let mut shared = None;
     if kind == "MESSAGE" && !terminal {
+        if value.get("message").and_then(|v|v.get("conversation")).is_some() {
+            let msg=verify_conversation_message(value.get("message").ok_or(CommunicationError)?,audience,&pins.workspace_id,key)?;
+            if text(value,"delivery_id")?!=id(json!(["peerwork.delivery.v1",pins.workspace_id,pins.mailbox_id,msg.message_id(),null]))?
+                || msg.accepted_at()!=number(value,"created_at")? {return Err(CommunicationError);}
+            shared=Some(msg);
+        }else{
         let msg = message(
             value.get("message").ok_or(CommunicationError)?,
             audience,
@@ -632,6 +649,7 @@ fn delivery(
             return Err(CommunicationError);
         }
         verified = Some(msg);
+        }
     }
     if kind == "BUSINESS" {
         let sub = token_field(value, "subscription_id")?;
@@ -695,6 +713,7 @@ fn delivery(
     Ok(VerifiedDelivery {
         envelope: value.clone(),
         message: verified,
+        conversation: shared,
     })
 }
 fn control(value: &WireValue, audience: &[u16], pins: &MailboxPins, key: &str) -> Result<()> {
@@ -845,6 +864,7 @@ pub(crate) fn verify_read(
     prepared: &VerifiedPreparedCommand,
     key: &str,
 ) -> Result<()> {
+    if prepared.action_id().starts_with("structure.conversation.") {return conversation::verify_read(result,command,prepared,key);}
     let body = command.get("body").ok_or(CommunicationError)?;
     match prepared.action_id() {
         "structure.mailbox.report" => {
@@ -950,17 +970,16 @@ pub(crate) fn verify_read(
                 return Err(CommunicationError);
             }
             for (scope, request) in selected.iter().zip(requested) {
-                exact(
-                    scope,
-                    &[
+                let mut fields=vec![
                         "workspace_id",
                         "mailbox_id",
                         "receiver_id",
                         "epoch",
                         "after_sequence",
                         "after_control_sequence",
-                    ],
-                )?;
+                    ];
+                if request.get("conversation_format").is_some(){fields.push("conversation_format");if text(request,"conversation_format")?!=CONVERSATION_FORMAT || scope.get("conversation_format")!=request.get("conversation_format"){return Err(CommunicationError);}}
+                exact(scope,&fields)?;
                 for name in [
                     "workspace_id",
                     "mailbox_id",

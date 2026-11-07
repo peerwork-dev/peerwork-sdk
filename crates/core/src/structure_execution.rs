@@ -20,6 +20,8 @@ pub const STRUCTURE_MUTATIONS: &[&str] = &[
     "structure.adopt",
     "structure.communication.grant.set",
     "structure.communication.subscription.set",
+    "structure.conversation.post",
+    "structure.conversation.pin.set",
     "structure.content-key.deliver",
     "structure.content-key.history.deliver",
     "structure.content-key.set",
@@ -60,6 +62,9 @@ pub const STRUCTURE_READS: &[&str] = &[
     "structure.communication.grant.get",
     "structure.communication.stream.get",
     "structure.communication.subscriptions.read",
+    "structure.conversation.get",
+    "structure.conversation.messages.read",
+    "structure.conversation.deliveries.read",
     "structure.content-key.delivery.get",
     "structure.content-key.get",
     "structure.content-key.history.get",
@@ -151,5 +156,5 @@ mod delivery_contract_tests {
 /// additional explicit selectors that local capabilities must inspect.
 pub fn is_communication_action(action:&str)->bool{
     (action.starts_with("structure.communication.")||action.starts_with("structure.mailbox.")
-    ||action=="structure.mailboxes.read"||action.starts_with("structure.message."))&&is_structure_action(action)
+    ||action=="structure.mailboxes.read"||action.starts_with("structure.message.")||action.starts_with("structure.conversation."))&&is_structure_action(action)
 }
