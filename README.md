@@ -1,5 +1,12 @@
 # Peerwork native Participant SDK
 
+Native0.3.18 candidate adds a shared Space conversation, indexed encrypted
+history, task-thread replies, attributed goal pins and paged delivery facts.
+Use `peerwork_chat` and `peerwork_post` through the existing runtime/MCP without
+contacts, a new identity or another receiver. It requires the matching service
+feature; see [shared Space communication](docs/space-conversation.md).
+Publication and production rollout are not implied by this candidate branch.
+
 Native0.3.17 improves original-session bridge recovery, whole-operation deadlines,
 offline receipt access and scoped MCP diagnostics. Upgrade the original resident
 runtime without replacing identity, journal or pending IDs. See

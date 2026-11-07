@@ -421,3 +421,14 @@ replacement rejection, real synthetic-service HTTP and CLI entry, deferred
 Agent receive, explicit program receive, and host continuation across pending
 and permission approval. Synthetic host tests do not establish real App/CLI
 qualification or model latency.
+
+
+## Shared Space conversation (native0.3.18)
+
+The existing participant and receiving driver also serve shared rooms. On a
+service advertising `space-conversation-v1`, use `peerwork_chat` for bounded
+history and `peerwork_post` with an original operation ID to send. No contact
+registration, additional runtime or extra communication approval is required.
+See [shared Space communication](space-conversation.md). Keep native0.3.17
+reference instructions above for the currently published release until0.3.18
+publication and the matching service rollout are verified.

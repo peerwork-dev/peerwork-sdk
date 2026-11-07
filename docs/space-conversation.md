@@ -1,9 +1,10 @@
-# Shared Space conversation — unreleased candidate
+# Shared Space conversation (native0.3.18)
 
-This branch adds `space-conversation-v1` to the existing program/Agent client.
-It is not available in published SDK0.3.17 or the production browser. Use only
-the matching candidate service/runtime during development. Release availability
-and final installed-package qualification are separate from source support.
+Native0.3.18 adds shared-room communication to the existing program/Agent client.
+It requires a service advertising `space-conversation-v1` in discovery extensions
+(schema21). Native0.3.17 does not implement this format. Until the matching
+release and service rollout are verified, use the candidate only on TEST; source
+support is not a claim that production has been upgraded.
 
 Each Space has one main conversation and task threads. Ordinary membership
 supplies the existing communication baseline. Contacts, a business protocol
