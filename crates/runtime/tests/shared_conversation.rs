@@ -38,7 +38,9 @@ fn install_synthetic_key(config:&ParticipantConfig,origin:&str,workspace:&str,se
     let identity=KernelIdentity::open(&config.identity_path).unwrap();let key=peerwork_core::structure_content::structure_content_key_id(secret);
     let mut transport=peerwork_runtime::transport::TransportConfig::new(origin);transport.allow_loopback_http=true;
     let path=config.identity_path.with_extension(format!("{}.content-keys.sqlite",sha256_hex(origin.as_bytes())));
-    let mut keys=peerwork_runtime::kernel_intents::StructureContentKeys::open(&path,transport).unwrap();keys.retain_current(identity.key_id(),workspace,secret,&key,expected).unwrap();key
+    let source=config.identity_path.with_extension("synthetic-content-key");std::fs::write(&source,secret).unwrap();
+    #[cfg(unix)] {use std::os::unix::fs::PermissionsExt;std::fs::set_permissions(&source,std::fs::Permissions::from_mode(0o600)).unwrap();}
+    let mut keys=peerwork_runtime::kernel_intents::StructureContentKeys::open(&path,transport).unwrap();keys.import_current_from_file(identity.key_id(),workspace,&source,&key,expected).unwrap();std::fs::remove_file(source).unwrap();key
 }
 fn structure(op:&Operation)->Value {assert_eq!(op.state,"ACCEPTED","{}",serde_json::to_string(op).unwrap());op.outcome.as_ref().unwrap()["result"]["structure"].clone()}
 async fn mutate(client:&ParticipantClient,id:&str,action:&str,scope:&Scope,body:Value)->Value {
