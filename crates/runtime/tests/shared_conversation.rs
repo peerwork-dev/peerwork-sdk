@@ -158,6 +158,32 @@ async fn shared_conversation_native_watch_mcp_reply_and_original_journal_recover
         let history=restored.request(Invoke::new("installed-group-history","structure.conversation.messages.read",scope.clone(),json!({"conversation_id":room,"limit":8}))).await.unwrap();assert_eq!(history["result"]["structure"]["messages"].as_array().unwrap().len(),4);assert_eq!(history["result"]["opened_messages"].as_array().unwrap().last().unwrap()["text"],"Installed MCP shared update");mcp.finish();
         let stop=Command::new(&cli).args(["runtime","admin",ready["admin_endpoint"].as_str().unwrap(),"stop"]).output().unwrap();assert!(stop.status.success(),"{}",String::from_utf8_lossy(&stop.stdout));runtime.finish();
         eprintln!("INSTALLED_STDIO_MCP_GROUP_AND_SAME_INTENT_RESTART_PASS");
+        if let Ok(adapter_path)=std::env::var("PEERWORK_CODEX_CONTROL_CONFIG") {
+            // A separate synthetic member has never bound a receiver. Attach
+            // the installed runtime to an explicitly selected, isolated official
+            // host; do not replace any existing user's conversation or receiver.
+            let adapter:Value=serde_json::from_slice(&std::fs::read(adapter_path).unwrap()).unwrap();
+            let host_root=private_dir();let host_config=configuration(host_root.path(),restored.origin());
+            let host_client=ParticipantClient::open(host_config.clone()).await.unwrap();
+            let current=selected(&restored,"structure.workspace.get",&scope,json!({})).await;
+            let mut join=Invoke::new("official-host-member","structure.member.set",scope.clone(),json!({"actor_id":host_client.actor_id(),"state":"ACTIVE","expected_membership_id":null}));join.expected_workspace_revision=current["workspace_revision"].as_u64();
+            restored.invoke(join,Duration::from_secs(5)).await.unwrap();
+            install_synthetic_key(&host_config,restored.origin(),&workspace,&[37;32],Some(&key));
+            let mailbox=selected(&host_client,"structure.mailboxes.read",&scope,json!({"limit":8})).await["mailboxes"][0].clone();host_client.close().await.unwrap();
+            let mut capability=Capability::owner();capability.allow_root=false;capability.workspace_ids=Some([workspace.clone()].into());
+            let config=host_root.path().join("runtime.json");private_json(&config,json!({"format":"peerwork.participant-runtime.v1","state_directory":host_root.path().join("runtime"),"engines":[{"name":"host","origin":restored.origin(),"expected_actor":host_client.actor_id(),"identity_path":host_config.identity_path,"state_directory":host_config.state_directory,"allow_loopback_http":true,"max_inflight":2,"max_pending":8}],"clients":[{"name":"agent","engine":"host","capability":capability}],"hosts":[{"name":"official-room","adapter":adapter,"subscriptions":[{"client":"agent","watch":{"workspace_id":workspace,"mailbox_id":mailbox["mailbox_id"],"membership_id":mailbox["membership_id"],"consumer_id":"official-room","host_destination":null}}]}]}));
+            let mut runtime=InstalledProcess::start(&cli,&["runtime","run",config.to_str().unwrap()]);let ready=runtime.frames.recv_timeout(Duration::from_secs(20)).unwrap();assert_eq!(ready["state"],"LOCAL_READY","{ready}");
+            let mut post=Invoke::new("official-host-room-post","structure.conversation.post",scope.clone(),json!({"conversation_id":room,"audience":"SPACE_MEMBERS","thread_root":null,"reply_to":null,"context":null,"mentions":[host_client.actor_id()],"content":{"mode":"WORKSPACE_E2EE"}}));post.plaintext_message=Some("PW-SHARED-INSTALLED-HOST-20261107".into());
+            let sent=structure(&restored.invoke(post,Duration::from_secs(5)).await.unwrap());
+            let accepted=tokio::time::timeout(Duration::from_secs(30),async{loop{
+                let facts=selected(&restored,"structure.conversation.deliveries.read",&scope,json!({"message_id":sent["message_id"],"limit":8})).await;
+                if let Some(target)=facts["deliveries"].as_array().unwrap().iter().find(|v|v["actor_id"]==host_client.actor_id()&&v["host_report"]["state"]=="HOST_ACCEPTED"){break target.clone();}
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }}).await;
+            let stop=Command::new(&cli).args(["runtime","admin",ready["admin_endpoint"].as_str().unwrap(),"stop"]).output().unwrap();assert!(stop.status.success());runtime.finish();
+            let accepted=accepted.expect("installed shared-room message did not reach the selected official host");assert_eq!(accepted["host_report"]["model_response"],"NOT_ATTESTED");
+            eprintln!("INSTALLED_SHARED_ROOM_OFFICIAL_CODEX_HOST_ACCEPTED_PASS");
+        }
     }
     restored.close().await.unwrap();
 }
