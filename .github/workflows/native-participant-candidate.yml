@@ -14,6 +14,11 @@ on:
         description: Exact existing source commit; empty uses the workflow commit
         type: string
         default: ''
+      integration_target:
+        description: Also build this public API test binary for execution on local TEST
+        type: choice
+        options: [none, shared_conversation]
+        default: none
   push:
     branches: [work/native-participant-qualification]
 
@@ -67,6 +72,12 @@ jobs:
           python tests/native-participant-build-contract.py
           python tests/native-release-policy.py
           python tools/release/qualify-participant.py --target linux-x64-gnu
+      - name: Build selected public API qualification executable
+        if: ${{ inputs.integration_target == 'shared_conversation' }}
+        shell: bash
+        run: |
+          cargo test --release --locked -p peerwork-runtime --test shared_conversation --no-run --message-format=json > .participant-ci/linux-x64-gnu/integration-build.jsonl
+          python tools/release/stage-public-api-test.py shared_conversation .participant-ci/linux-x64-gnu/integration-build.jsonl .participant-ci/linux-x64-gnu/
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: ${{ always() }}
         with:

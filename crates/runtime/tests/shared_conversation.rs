@@ -9,7 +9,7 @@ struct Service {child:Child,origin:String}
 impl Service {
     fn start()->Self {
         let node=std::env::var("PEERWORK_TEST_NODE").expect("explicit TEST Node");
-        let script=PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/participant-service.mjs");
+        let script=PathBuf::from(std::env::var("PEERWORK_SDK_REFERENCE_ROOT").expect("explicit matching SDK fixture root")).join("tests/participant-service.mjs");
         let mut child=Command::new(node).arg(script).stdout(Stdio::piped()).stderr(Stdio::inherit()).spawn().unwrap();
         let stdout=child.stdout.take().unwrap();let(tx,rx)=std::sync::mpsc::channel();
         let reader=std::thread::spawn(move||{let mut text=String::new();let _=BufReader::new(stdout).read_line(&mut text);let _=tx.send(text);});
