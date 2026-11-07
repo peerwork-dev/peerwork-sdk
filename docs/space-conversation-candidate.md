@@ -96,3 +96,27 @@ The receiver negotiates the group envelope through `conversation_format` on
 stream scopes when the service advertises support. Preserve the original engine,
 journal, pending IDs and receiver state when upgrading. Source support does not
 prove that an existing user runtime or host session has adopted the new binary.
+
+## Actual qualification,2026-11-07
+
+The source remains an unreleased candidate. Source03f920b passes the real native
+HTTP/PostgreSQL/SSE/AgentTools test on isolated TEST: encrypted room post,
+independent shared-history verification, negotiated receiver custody, same-thread
+MCP reply/post, selective application consumption, paged delivery facts, ordinary
+member pin, original-journal restart/recovery without a new command and withdrawal.
+The separate workspace-first tools/explicit-parent-boundary case also passes.
+Five affected core proof cases pass on that source, including a new cross-wire
+object-order case. These are synthetic program/AgentTools results, not a claim
+that a live language model answered or that a public package has shipped.
+
+The first real read correctly exposed an integration bug missed by canonical
+unit fixtures: PostgreSQL's saved acceptance JSON and newly projected metadata
+have different object-member order. Their equality now uses the same canonical
+JSON semantics used for signatures. Tampering with an audience digest still
+fails; presentation order alone does not. Prior failed runs remain in evidence.
+
+Compilation runs on the authorized controller, with one reusable Cargo target
+and TEST-derived GCC12/glibc2.36 inputs. The emitted test executable requires
+GLIBC2.34, GLIBCXX3.4.30, CXXABI1.3.8 and runs on TEST. It is not the published
+Linux2.28-compatible installed package. Formal release ABI, installed CLI/MCP
+qualification and public versioning are still pending. No build ran on PROD.
