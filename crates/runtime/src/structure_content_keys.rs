@@ -296,10 +296,16 @@ impl StructureContentKeys {
     }
     pub fn open_message(&self,local:&str,author:&peerwork_core::prepared_command::VerifiedStructureAuthorIntent)
         ->Result<Zeroizing<Vec<u8>>,ContentKeyError>{
-        let (context,content)=peerwork_core::communication::authored_message_content(author).map_err(|_|ContentKeyError::Integrity)?;
+        let (context,content)=peerwork_core::communication::authored_native_message_content(author).map_err(|_|ContentKeyError::Integrity)?;
         let peerwork_core::communication::MessageContent::WorkspaceE2ee{body}=content else{return Err(ContentKeyError::Selection);};
-        let secret=load(&self.db,local,&context.workspace_id,&body.key_id)?;
-        Ok(peerwork_core::communication::open_message_content(&secret,&body,&context)?)
+        let secret=load(&self.db,local,context.workspace_id(),&body.key_id)?;
+        Ok(peerwork_core::structure_content::open_content_with_aad(&secret,&body,&context.canonical_aad()?)?)
+    }
+    pub fn seal_native_message(&self,local:&str,plaintext:&[u8],context:&peerwork_core::communication::NativeMessageContext)
+        ->Result<StructureSealedContent,ContentKeyError>{
+        let id=current(&self.db,local,context.workspace_id())?.ok_or(ContentKeyError::Missing)?;
+        let secret=load(&self.db,local,context.workspace_id(),&id)?;
+        Ok(peerwork_core::structure_content::seal_content_with_aad(&secret,plaintext,&context.canonical_aad()?)?)
     }
     pub fn open_authored_body(&self,local:&str,author:&peerwork_core::prepared_command::VerifiedStructureAuthorIntent,index:u8)
         ->Result<Zeroizing<Vec<u8>>,ContentKeyError>{

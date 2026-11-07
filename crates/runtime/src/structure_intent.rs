@@ -373,6 +373,7 @@ impl KernelClient {
         if fields.iter().any(|(key, _)| !allowed.iter().any(|name| key.iter().copied().eq(name.encode_utf16()))) { return Err(invalid()); }
         let action = request.get("action").and_then(WireValue::as_string).ok_or_else(invalid)?;
         if !is_structure_action(&action) { return Err(invalid()); }
+        if action.starts_with("structure.conversation.")&&!self.discovery.protocol_features().contains(&peerwork_core::communication::CONVERSATION_FEATURE.encode_utf16().collect::<Vec<_>>()){return Err(KernelClientError::UnsupportedStructureProfile);}
         if action=="structure.protocol.upgrade"||action=="structure.instance.records.read"||request.get("body").and_then(|b|b.get("execution_context_id")).is_some() {
             if !self.discovery.protocol_features().contains(&peerwork_core::structure_execution::PROTOCOL_UPGRADE_FEATURE.encode_utf16().collect::<Vec<_>>()){return Err(KernelClientError::UnsupportedStructureProfile);}
             if request.get("body").and_then(|b|b.get("execution_context_id")).is_some_and(|v|v.as_string().is_none_or(|s|!crate::workspace_urls::token(&s))){return Err(invalid());}
@@ -418,7 +419,7 @@ impl KernelClient {
         // ordinary structural fields or reaches the transport journal in clear.
         if let Some(text)=request.get("plaintext_message"){
             let text=text.as_string().ok_or_else(invalid)?;
-            if action!="structure.message.send"||request.get("plaintext_contents").is_some(){return Err(invalid());}
+            if !matches!(action.as_str(),"structure.message.send"|"structure.conversation.post")||request.get("plaintext_contents").is_some(){return Err(invalid());}
             if text.len()>peerwork_core::structure_content::MAX_BODY_BYTES{return Err(crate::kernel_intents::ContentKeyError::Content(peerwork_core::structure_content::StructureContentError::TooLarge).into());}
             if text.len()>peerwork_core::structure_content::INLINE_BODY_BYTES&&!self.discovery.protocol_features().contains(&"chunked-content-bodies-v1".encode_utf16().collect::<Vec<_>>()){return Err(KernelClientError::UnsupportedStructureProfile);}
             let content=body.get("content").ok_or_else(invalid)?;
@@ -568,21 +569,21 @@ impl KernelClient {
     fn prepare_plaintext_message(&mut self,identity:&KernelIdentity,request:&WireValue,command:&mut WireValue,opened_keys:Option<crate::kernel_intents::StructureContentKeys>,cancel:&CancellationToken)
         ->Result<Option<SignedPreparedCommand>,KernelClientError>{
         use crate::kernel_intents::{StructureContentKeys,ContentKeyError};
-        use peerwork_core::{communication::MessageContentContext,prepared_command::verify_structure_author_intent};
+        use peerwork_core::{communication::NativeMessageContext,prepared_command::verify_structure_author_intent};
         use zeroize::Zeroizing;
         if cancel.is_cancelled(){return Err(TransportError::Cancelled.into());}
         let text=Zeroizing::new(required_text(request,"plaintext_message")?);
-        let context=MessageContentContext::from_command(command).map_err(|_|KernelClientError::InvalidCommand)?;
+        let context=NativeMessageContext::from_command(command).map_err(|_|KernelClientError::InvalidCommand)?;
         let keys=match opened_keys{Some(keys)=>keys,None=>{
             let key_path=self.content_key_store_path();if !key_path.is_file(){return Err(ContentKeyError::Missing.into());}
             let mut config=crate::transport::TransportConfig::new(self.origin());config.allow_loopback_http=self.origin().starts_with("http://");
             let _key_phase=self.transport.phase(crate::transport::ClientPhase::BodyKeySelection);
             StructureContentKeys::open(&key_path,config)?
         }};
-        let existing=self.journal.verified_pending(&context.command_id,identity.key_id(),self.discovery.audience_utf16())?;
+        let existing=self.journal.verified_pending(context.command_id(),identity.key_id(),self.discovery.audience_utf16())?;
         if existing.is_none(){
             let crypto_phase=self.transport.phase(crate::transport::ClientPhase::BodySealSign);
-            let sealed=keys.seal_message(identity.key_id(),text.as_bytes(),&context)?;
+            let sealed=keys.seal_native_message(identity.key_id(),text.as_bytes(),&context)?;
             let content=serde_json::to_vec(&serde_json::json!({"mode":"WORKSPACE_E2EE","body":sealed})).map_err(|_|KernelClientError::InvalidCommand)?;
             let content=parse_wire_json_bounded(&content,8,100_000).map_err(|_|KernelClientError::InvalidCommand)?;
             let mut body=command.get("body").cloned().ok_or(KernelClientError::InvalidCommand)?;set(&mut body,"content",content);set(command,"body",body);
@@ -590,13 +591,13 @@ impl KernelClient {
             drop(crypto_phase);
             if cancel.is_cancelled(){return Err(TransportError::Cancelled.into());}
             let journal_phase=self.transport.phase(crate::transport::ClientPhase::BodyPersist);
-            let elected=self.journal.prepare(&context.command_id,KernelPath::Command,signed.jws(),signed.http_body());
+            let elected=self.journal.prepare(context.command_id(),KernelPath::Command,signed.jws(),signed.http_body());
             drop(journal_phase);
             match elected{
                 Ok(_)=>return Ok(Some(signed)),Err(JournalError::IntentConflict)=>(),Err(e)=>return Err(e.into()),
             }
         }
-        let saved=self.journal.verified_pending(&context.command_id,identity.key_id(),self.discovery.audience_utf16())?.ok_or(JournalError::IncompatibleStore)?;
+        let saved=self.journal.verified_pending(context.command_id(),identity.key_id(),self.discovery.audience_utf16())?.ok_or(JournalError::IncompatibleStore)?;
         let author=verify_structure_author_intent(&saved.jws,self.discovery.audience_utf16()).map_err(|_|JournalError::IncompatibleStore)?;
         let original=keys.open_message(identity.key_id(),&author)?;
         if original.as_slice()!=text.as_bytes(){return Err(JournalError::IntentConflict.into());}

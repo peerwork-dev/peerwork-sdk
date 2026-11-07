@@ -1,7 +1,6 @@
 //! Indexed receive-only key prerequisites. Tiny sealed derived references avoid
 //! reopening large frames just to select a key. Original signed frames stay intact.
 use super::*;
-use peerwork_core::communication::MessageContent;
 use std::collections::BTreeSet;
 
 pub(super) fn initialize(db: &Connection) -> Result<()> {
@@ -43,8 +42,7 @@ pub(super) fn prepare_refs(
     let pins = page.mailbox();
     page.items().iter().map(|item| {
         if item.envelope().get("terminal_reason").is_some_and(|v|v.as_string().is_some()) { return Ok(None); }
-        let Some(message)=item.message() else { return Ok(None); };
-        let MessageContent::WorkspaceE2ee{body}=message.content() else { return Ok(None); };
+        let Some(body)=item.sealed_message_content() else {return Ok(None);};
         let proof=json!({"key_id":body.key_id,"delivery_id":item.delivery_id(),"frame":frame,"membership":pins.membership_id});
         let evidence=seal_bounded(identity,&aad(binding,&pins.workspace_id,&pins.mailbox_id,item.sequence()),&proof.to_string(),1024).map_err(|_|invalid())?;
         Ok(Some(Reference{key_id:body.key_id.clone(),evidence}))

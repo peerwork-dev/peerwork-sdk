@@ -19,11 +19,13 @@ pub struct OpenedStructureBody {
 pub struct OpenedMessageBody {
     pub message_id:String,pub source_command_id:String,pub key_id:Option<String>,
     pub state:&'static str,pub text:Option<String>,pub assurance:Option<&'static str>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub routing:Option<serde_json::Value>,
 }
 impl KernelClient {
     pub(super) fn open_selected_structure_bodies(&self,result:&mut KernelAcceptedResult,action:&str,local_key:&str)
         ->Result<(),KernelClientError>{
-        if matches!(action,"structure.message.get"|"structure.mailbox.inbox.read"){return self.open_selected_message_bodies(result,action,local_key);}
+        if matches!(action,"structure.message.get"|"structure.mailbox.inbox.read"|"structure.conversation.messages.read"){return self.open_selected_message_bodies(result,action,local_key);}
         if result.opened_contents.is_some()||!matches!(action,"structure.record.get"|"structure.publication.prepare.get"|"structure.records.read"|"structure.instance.records.read"){return Ok(());}
         let data=parse_wire_json_bounded(result.structure_result_json.as_deref().ok_or(KernelClientError::InvalidResult)?.as_bytes(),32,1024*1024)
             .map_err(|_|KernelClientError::InvalidResult)?;
@@ -82,6 +84,7 @@ impl KernelClient {
         let data=parse_wire_json_bounded(result.structure_result_json.as_deref().ok_or(KernelClientError::InvalidResult)?.as_bytes(),40,2*1024*1024).map_err(|_|KernelClientError::InvalidResult)?;
         if data.get("status").and_then(WireValue::as_string).as_deref()==Some("REJECTED_NO_EFFECT"){return Ok(());}
         let messages=if action=="structure.message.get"{vec![data.get("message").ok_or(KernelClientError::InvalidResult)?]}
+            else if action=="structure.conversation.messages.read" {let Some(WireValue::Array(items))=data.get("messages") else{return Err(KernelClientError::InvalidResult);};if items.len()>32{return Err(KernelClientError::InvalidResult);}items.iter().filter(|v|v.get("state").and_then(WireValue::as_string).as_deref()==Some("ACTIVE")).collect()}
             else{let Some(WireValue::Array(items))=data.get("items")else{return Err(KernelClientError::InvalidResult);};if items.len()>32{return Err(KernelClientError::InvalidResult);}items.iter().filter_map(|v|v.get("message")).collect()};
         let path=self.content_key_store_path();
         let keys=if path.is_file(){Some(StructureContentKeys::open(&path,self.content_config()))}else{None};
@@ -89,8 +92,9 @@ impl KernelClient {
         for message in messages {
             // Original source/recipient bindings were checked by receipt_wire.
             let author=verify_structure_author_intent(&required_text(message,"author_intent")?,self.discovery.audience_utf16()).map_err(|_|KernelClientError::InvalidResult)?;
-            let (_,content)=peerwork_core::communication::authored_message_content(&author).map_err(|_|KernelClientError::InvalidResult)?;
-            let mut body=OpenedMessageBody{message_id:required_text(message,"message_id")?,source_command_id:author.command_id().into(),key_id:None,state:"SOURCE_REFERENCE",text:None,assurance:None};
+            let (context,content)=peerwork_core::communication::authored_native_message_content(&author).map_err(|_|KernelClientError::InvalidResult)?;
+            let routing=match context {peerwork_core::communication::NativeMessageContext::Conversation(v)=>Some(serde_json::json!({"message_kind":"SPACE_CONVERSATION","sender":v.actor_id,"workspace_id":v.workspace_id,"conversation_id":v.conversation_id,"reply_to":v.reply_to,"context":v.context,"mentions":v.mentions})),_=>None};
+            let mut body=OpenedMessageBody{message_id:required_text(message,"message_id")?,source_command_id:author.command_id().into(),key_id:None,state:"SOURCE_REFERENCE",text:None,assurance:None,routing};
             if let peerwork_core::communication::MessageContent::WorkspaceE2ee{body:sealed}=content {
                 body.key_id=Some(sealed.key_id);
                 let bytes=match &keys{None=>Err(ContentKeyError::Missing),Some(Err(_))=>Err(ContentKeyError::Integrity),Some(Ok(keys))=>keys.open_message(local_key,&author)};

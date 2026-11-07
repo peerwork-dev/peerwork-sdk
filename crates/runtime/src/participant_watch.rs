@@ -158,6 +158,7 @@ pub(crate) struct MailSession {
     pub transport: HttpTransport,
     pub audience: Vec<u16>,
     pub service_key: String,
+    pub conversation_format: bool,
 }
 impl MailSession {
     fn now(&self) -> Result<u64> {
@@ -771,7 +772,7 @@ pub(crate) async fn run(
                     else if !slot.binding.pins.as_ref().is_some_and(|p|p.epoch==page.mailbox().epoch&&p.receiver_id==page.mailbox().receiver_id){Err(error("MAILBOX_EPOCH_MISMATCH"))}
                     else if slot.receive_fault.is_some(){Err(error("STREAM_SCOPE_QUARANTINED"))}
                     else{
-                        let ids=page.items().iter().filter_map(|item| match item.message()?.content(){peerwork_core::communication::MessageContent::WorkspaceE2ee{body}=>Some(body.key_id.clone()),_=>None}).collect::<std::collections::BTreeSet<_>>().into_iter().collect::<Vec<_>>();
+                        let ids=page.items().iter().filter_map(|item|item.sealed_message_content().map(|body|body.key_id.clone())).collect::<std::collections::BTreeSet<_>>().into_iter().collect::<Vec<_>>();
                         let known=access.cached_mail_keys(&page.mailbox().workspace_id,&ids).unwrap_or_default();
                         store.ingest_with_keys(&identity,&page,64*1024*1024,&known).map(|cursor|{
                         // Wake consumers immediately. Only custody upload has
@@ -1372,7 +1373,7 @@ async fn stream(
     generation: u64,
     cancel: &KernelCancellationToken,
 ) -> std::result::Result<(), Failure> {
-    let scopes=pins.iter().map(|p|json!({"workspace_id":p.workspace_id,"mailbox_id":p.mailbox_id,"receiver_id":p.receiver_id,"epoch":p.epoch,"after_sequence":p.after_sequence,"after_control_sequence":p.after_control_sequence})).collect::<Vec<_>>();
+    let scopes=pins.iter().map(|p|{let mut value=json!({"workspace_id":p.workspace_id,"mailbox_id":p.mailbox_id,"receiver_id":p.receiver_id,"epoch":p.epoch,"after_sequence":p.after_sequence,"after_control_sequence":p.after_control_sequence});if session.conversation_format{value["conversation_format"]=json!(peerwork_core::communication::CONVERSATION_FORMAT);}value}).collect::<Vec<_>>();
     let result = call(
         access,
         "structure.communication.stream.get",

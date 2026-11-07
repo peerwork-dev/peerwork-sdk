@@ -710,6 +710,8 @@ impl InboxStore {
             }
             let lane = if let Some(message) = item.message() {
                 format!("MESSAGE:{}", message.context().conversation_id)
+            } else if let Some(message)=item.conversation_message() {
+                format!("CONVERSATION:{}:{}",message.context().conversation_id,message.thread_root())
             } else {
                 format!(
                     "BUSINESS:{}",

@@ -400,6 +400,9 @@ impl Capability {
     }
     fn authorize_communication(&self, r: &Invoke) -> Result<()> {
         let denied = || self.denied(r);
+        // A deliberately mailbox-narrowed credential cannot acquire access to
+        // the entire shared room. Ordinary workspace clients have no such cap.
+        if r.action.starts_with("structure.conversation.") && self.mailbox_ids.is_some() {return Err(denied());}
         let mailbox = |v: &Value| -> Result<()> {
             let id = v
                 .as_str()

@@ -633,7 +633,7 @@ impl KernelAccess {
         client.refresh_authorization_context(cancel).await?;
         let discovery=client.discovery();
         if !discovery.protocol_features().contains(&peerwork_core::communication::FEATURE.encode_utf16().collect::<Vec<_>>()){return Err(KernelClientError::UnsupportedStructureProfile.into());}
-        Ok(crate::participant_watch::MailSession{transport:client.transport().clone(),audience:discovery.audience_utf16().to_vec(),service_key:discovery.receipt_public_key().into()})
+        Ok(crate::participant_watch::MailSession{transport:client.transport().clone(),audience:discovery.audience_utf16().to_vec(),service_key:discovery.receipt_public_key().into(),conversation_format:discovery.protocol_features().contains(&peerwork_core::communication::CONVERSATION_FEATURE.encode_utf16().collect::<Vec<_>>())})
     }
     pub(crate) fn open_cached_mail(&self,entry:&mut serde_json::Value,audience:&[u16]){
         use crate::kernel_intents::{ContentKeyError,StructureContentKeys};
@@ -641,8 +641,11 @@ impl KernelAccess {
         let opened=(||->Result<serde_json::Value,KernelAccessError>{
             let identity=self.identity()?;
             let author=peerwork_core::prepared_command::verify_structure_author_intent(message["author_intent"].as_str().ok_or(KernelClientError::InvalidResult)?,audience).map_err(|_|KernelClientError::InvalidResult)?;
-            let (context,content)=peerwork_core::communication::authored_message_content(&author).map_err(|_|KernelClientError::InvalidResult)?;
-            let mut out=serde_json::json!({"message_id":message["message_id"],"sender":context.actor_id,"workspace_id":context.workspace_id,"conversation_id":context.conversation_id,"reply_to":context.reply_to,"reply_address":context.reply_address,"recipients":context.recipients,"assurance":"AUTHOR_SIGNATURE"});
+            let (context,content)=peerwork_core::communication::authored_native_message_content(&author).map_err(|_|KernelClientError::InvalidResult)?;
+            let mut out=match &context {
+                peerwork_core::communication::NativeMessageContext::Directed(v)=>serde_json::json!({"message_id":message["message_id"],"sender":v.actor_id,"workspace_id":v.workspace_id,"conversation_id":v.conversation_id,"reply_to":v.reply_to,"reply_address":v.reply_address,"recipients":v.recipients,"assurance":"AUTHOR_SIGNATURE"}),
+                peerwork_core::communication::NativeMessageContext::Conversation(v)=>serde_json::json!({"message_id":message["message_id"],"sender":v.actor_id,"workspace_id":v.workspace_id,"conversation_id":v.conversation_id,"reply_to":v.reply_to,"thread_root":message["conversation"]["thread_root"],"context":v.context,"mentions":v.mentions,"message_kind":"SPACE_CONVERSATION","audience":"SPACE_MEMBERS","assurance":"AUTHOR_SIGNATURE"}),
+            };
             let peerwork_core::communication::MessageContent::WorkspaceE2ee{body}=content else{out["state"]=serde_json::json!("SOURCE_REFERENCE");return Ok(out);};
             let path=self.content_key_path_for_origin(&self.origin);
             let plain=if path.is_file(){StructureContentKeys::open(&path,self.transport_config()).map_err(KernelClientError::from)?.open_message(identity.key_id(),&author)}else{Err(ContentKeyError::Missing)};

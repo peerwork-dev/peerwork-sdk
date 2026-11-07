@@ -149,7 +149,7 @@ pub fn verify_conversation_message(value:&WireValue,audience:&[u16],workspace:&s
     let result=acceptance.get("result").ok_or(CommunicationError)?;
     if result.get("author_intent").is_some() || result.get("conversation")!=Some(meta) || text(result,"message_id")?!=mid
         || text(result,"status")?!="APPLIED" || text(result,"profile")?!=PROFILE || text(result,"assurance")?!="BACKEND_CURRENT_STATE"
-        || text(result,"workspace_id")?!=workspace || number(result,"accepted_at")?!=number(value,"accepted_at")? {return Err(CommunicationError);}
+        || result.get("sender_membership")!=value.get("sender_membership") || text(result,"workspace_id")?!=workspace || number(result,"accepted_at")?!=number(value,"accepted_at")? {return Err(CommunicationError);}
     let mut restored:serde_json::Value=wire(result)?;restored["author_intent"]=json!(jws);
     let response=json!({"command_id":context.command_id,"receipt":text(acceptance,"receipt")?,"result":restored});
     verify_http_response_with_path(response.to_string().as_bytes(),&WireReceiptExpectation{audience_utf16:audience,receipt_key_id:key,actor_id:author.actor_id(),command_id:author.command_id(),intent_digest:author.intent_digest(),workspace_id:Some(workspace),protocol_digest:None},Path::STRUCTURED).map_err(|_|CommunicationError)?;
@@ -202,4 +202,60 @@ pub(super) fn verify_read(result:&WireValue,command:&WireValue,prepared:&Verifie
         _=>return Err(CommunicationError),
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ed25519_dalek::{Signer,SigningKey};
+    fn as_wire(value:&serde_json::Value)->WireValue {parse_wire_json_bounded(value.to_string().as_bytes(),40,16000).unwrap()}
+    fn sign(value:&serde_json::Value,typ:&str,key:&SigningKey)->String {
+        let header=base64url(json!({"alg":"EdDSA","typ":typ,"kid":base64url(key.verifying_key().as_bytes())}).to_string().as_bytes());
+        let input=format!("{header}.{}",base64url(value.to_string().as_bytes()));format!("{input}.{}",base64url(&key.sign(input.as_bytes()).to_bytes()))
+    }
+    fn fixture()->(serde_json::Value,String,Vec<u16>) {
+        let sender=SigningKey::from_bytes(&[23;32]);let service=SigningKey::from_bytes(&[7;32]);
+        let actor=base64url(&sha256(&[b"peerwork.identity.v1\0".as_slice(),sender.verifying_key().as_bytes()].concat()));
+        let workspace="W".repeat(43);let room=space_conversation_id(&workspace).unwrap();
+        let mut command=json!({"v":1,"audience":"unit","command_id":"C".repeat(43),"actor_id":actor,"authority":sha256_hex(actor.as_bytes()),"method":"POST","path":"/api/workspace/v1/commands","workspace_id":workspace,"instance_id":null,"protocol_digest":null,"action_id":"structure.conversation.post","expected_workspace_revision":null,"expected_instance_revision":null,"exact_input_refs":[],"issued_at":1800000000000_u64,"expires_at":1800000060000_u64,
+            "body":{"profile":PROFILE,"conversation_id":room,"audience":"SPACE_MEMBERS","thread_root":null,"reply_to":null,"context":null,"mentions":[],"content":{"mode":"WORKSPACE_E2EE"}}});
+        let context=ConversationContentContext::from_command(&as_wire(&command)).unwrap();
+        let sealed=seal_content_with_aad(&[37;32],b"Shared verified message",&context.canonical_aad().unwrap()).unwrap();
+        command["body"]["content"]["body"]=serde_json::to_value(sealed).unwrap();
+        let author=sign(&command,"peerwork.kernel-command.v1+jws",&sender);let intent=sha256_hex(author.as_bytes());
+        let metadata=json!({"conversation_id":room,"sequence":1,"thread_root":context.message_id().unwrap(),"audience_digest":"a".repeat(64),"audience_count":2});
+        let mut accepted=json!({"profile":PROFILE,"assurance":"BACKEND_CURRENT_STATE","workspace_id":workspace,"instance_id":null,"protocol_digest":null,"status":"APPLIED","message_id":context.message_id().unwrap(),"sender_membership":"S".repeat(43),"accepted_at":1800000000000_u64,"conversation":metadata,"author_intent":author});
+        let result_digest=sha256_hex(canonical_wire_value(&as_wire(&accepted),Path::STRUCTURED).unwrap().as_bytes());
+        let receipt=sign(&json!({"v":1,"audience":"unit","actor_id":actor,"workspace_id":workspace,"command_id":"C".repeat(43),"intent_digest":intent,"result_digest":result_digest,"protocol_digest":null,"event_sequence":null,"instance_revision":null,"accepted_at":1800000000000_u64}),"peerwork.kernel-receipt.v1+jws",&service);
+        accepted.as_object_mut().unwrap().remove("author_intent");
+        (json!({"state":"ACTIVE","message_id":context.message_id().unwrap(),"sender_actor":actor,"sender_membership":"S".repeat(43),"accepted_at":1800000000000_u64,"command_id":"C".repeat(43),"intent_digest":intent,"author_intent":author,"conversation":metadata,"acceptance":{"receipt":receipt,"result":accepted}}),base64url(service.verifying_key().as_bytes()),"unit".encode_utf16().collect())
+    }
+    #[test]
+    fn conversation_authenticates_author_service_cut_body_and_physical_recipient() {
+        let (value,key,audience)=fixture();let workspace="W".repeat(43);let verified=verify_conversation_message(&as_wire(&value),&audience,&workspace,&key).unwrap();
+        let bytes=open_content_with_aad(&[37;32],verified.content(),&verified.context().canonical_aad().unwrap()).unwrap();assert_eq!(bytes.as_slice(),b"Shared verified message");
+        let pins=MailboxPins{workspace_id:workspace.clone(),mailbox_id:"M".repeat(43),membership_id:"G".repeat(43),receiver_id:"R".repeat(43),epoch:1,destination_digest:"d".repeat(64),binding_version:1,after_sequence:0,after_control_sequence:None};
+        let item=json!({"delivery_id":id(json!(["peerwork.delivery.v1",workspace,pins.mailbox_id,verified.message_id(),null])).unwrap(),"sequence":1,"kind":"MESSAGE","created_at":verified.accepted_at(),"message":value});
+        let delivery=super::super::delivery(&as_wire(&item),&audience,&"A".repeat(43),&pins,&key).unwrap();assert!(delivery.message().is_none());assert_eq!(delivery.conversation_message().unwrap().message_id(),verified.message_id());assert!(delivery.sealed_message_content().is_some());
+        let mut other=pins.clone();other.mailbox_id="N".repeat(43);assert!(super::super::delivery(&as_wire(&item),&audience,&"A".repeat(43),&other,&key).is_err());
+        assert!(verify_conversation_message(&as_wire(&value),&audience,&"Q".repeat(43),&key).is_err());
+        assert!(verify_conversation_message(&as_wire(&value),&audience,&workspace,&base64url(SigningKey::from_bytes(&[9;32]).verifying_key().as_bytes())).is_err());
+        for (field,changed) in [("sequence",json!(2)),("thread_root",json!("T".repeat(43))),("audience_digest",json!("b".repeat(64))),("audience_count",json!(3))] {
+            let mut bad=value.clone();bad["conversation"][field]=changed.clone();bad["acceptance"]["result"]["conversation"][field]=changed;assert!(verify_conversation_message(&as_wire(&bad),&audience,&workspace,&key).is_err(),"{field}");
+        }
+        for field in ["sender_actor","sender_membership","message_id","command_id","intent_digest","author_intent"] {
+            let mut bad=value.clone();bad[field]=json!("X".repeat(43));assert!(verify_conversation_message(&as_wire(&bad),&audience,&workspace,&key).is_err(),"{field}");
+        }
+    }
+    #[test]
+    fn conversation_context_binds_all_metadata_without_reinterpreting_directed_mail() {
+        let (value,_,audience)=fixture();let author=verify_structure_author_intent(value["author_intent"].as_str().unwrap(),&audience).unwrap();
+        assert!(authored_message_content(&author).is_err());let (NativeMessageContext::Conversation(mut context),_)=authored_native_message_content(&author).unwrap() else{panic!("wrong domain");};
+        let original=context.canonical_aad().unwrap();let sealed=seal_content_with_aad(&[37;32],b"context",&original).unwrap();
+        context.mentions.push("A".repeat(43));assert!(open_content_with_aad(&[37;32],&sealed,&context.canonical_aad().unwrap()).is_err());context.mentions.push("A".repeat(43));assert!(context.canonical_aad().is_err());
+        let mut command:serde_json::Value=wire(author.command()).unwrap();command["body"]["audience"]=json!("ONLINE_MEMBERS");assert!(ConversationContentContext::from_command(&as_wire(&command)).is_err());
+        command["body"]["audience"]=json!("SPACE_MEMBERS");command["body"]["recipients"]=json!([]);assert!(ConversationContentContext::from_command(&as_wire(&command)).is_err());
+        let mut record=ConversationRecordContext{kind:"RECORD".into(),instance_id:"I".repeat(43),execution_context_id:"E".repeat(43),protocol_digest:"f".repeat(64),entity_id:"O".repeat(43),record_id:"R".repeat(43),revision:1};
+        let first=conversation_thread_id(&context.workspace_id,&record).unwrap();record.record_id="V".repeat(43);record.revision=2;assert_eq!(first,conversation_thread_id(&context.workspace_id,&record).unwrap());record.entity_id="Q".repeat(43);assert_ne!(first,conversation_thread_id(&context.workspace_id,&record).unwrap());
+    }
 }
