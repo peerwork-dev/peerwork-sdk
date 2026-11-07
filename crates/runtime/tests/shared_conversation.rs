@@ -1,14 +1,61 @@
-//! Synthetic real HTTP/PostgreSQL/native-engine qualification. A group post,
-//! shared read, watch and MCP reply all use the original participant clients.
-use super::*;
-use super::http_tests::{configuration,install_synthetic_key,mutate,selected,structure,Service};
-use crate::agent_tools::{AgentRequest,AgentSelection,AgentTools,MailScope};
+//! Public-API qualification avoids compiling the runtime's entire legacy unit
+//! test harness. All service data, identities and keys here are synthetic.
+use peerwork_runtime::{participant::{Capability,DeliveryReference,Invoke,Operation,ParticipantClient,ParticipantConfig,Scope,WatchOptions},agent_tools::{AgentRequest,AgentSelection,AgentTools,MailScope},kernel_identity::KernelIdentity};
+use peerwork_core::crypto::sha256_hex;
+use serde_json::{json,Value};
+use std::{path::{Path,PathBuf},process::{Child,Command,Stdio},io::{BufRead,BufReader},time::Duration};
+
+struct Service {child:Child,origin:String}
+impl Service {
+    fn start()->Self {
+        let node=std::env::var("PEERWORK_TEST_NODE").expect("explicit TEST Node");
+        let script=PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/participant-service.mjs");
+        let mut child=Command::new(node).arg(script).stdout(Stdio::piped()).stderr(Stdio::inherit()).spawn().unwrap();
+        let stdout=child.stdout.take().unwrap();let(tx,rx)=std::sync::mpsc::channel();
+        let reader=std::thread::spawn(move||{let mut text=String::new();let _=BufReader::new(stdout).read_line(&mut text);let _=tx.send(text);});
+        let text=match rx.recv_timeout(Duration::from_secs(30)){Ok(v)=>v,Err(e)=>{let _=child.kill();let _=child.wait();panic!("fixture start: {e}")}};reader.join().unwrap();
+        let data:Value=serde_json::from_str(&text).expect("fixture endpoint");Self{child,origin:data["origin"].as_str().unwrap().into()}
+    }
+    async fn config(&self,value:Value){reqwest::Client::new().post(format!("{}/__test/config",self.origin)).body(value.to_string()).send().await.unwrap().error_for_status().unwrap();}
+    async fn counts(&self)->Value {reqwest::get(format!("{}/__test/counts",self.origin)).await.unwrap().text().await.map(|v|serde_json::from_str(&v).unwrap()).unwrap()}
+}
+impl Drop for Service {
+    fn drop(&mut self){
+        #[cfg(unix)] unsafe{libc::kill(self.child.id() as i32,libc::SIGTERM);}
+        for _ in 0..250{if self.child.try_wait().ok().flatten().is_some(){return;}std::thread::sleep(Duration::from_millis(20));}
+        let _=self.child.kill();let _=self.child.wait();
+    }
+}
+fn private_dir()->tempfile::TempDir {
+    let path=tempfile::tempdir().unwrap();
+    #[cfg(unix)] {use std::os::unix::fs::PermissionsExt;std::fs::set_permissions(path.path(),std::fs::Permissions::from_mode(0o700)).unwrap();}
+    path
+}
+fn configuration(directory:&Path,origin:&str)->ParticipantConfig {
+    let path=directory.join("identity");let identity=KernelIdentity::create(&path).unwrap();let mut config=ParticipantConfig::new(origin,identity.actor_id(),path,directory.join("engine"));config.allow_loopback_http=true;config.transport.request_timeout_ms=2000;config
+}
+fn install_synthetic_key(config:&ParticipantConfig,origin:&str,workspace:&str,secret:&[u8;32],expected:Option<&str>)->String {
+    let identity=KernelIdentity::open(&config.identity_path).unwrap();let key=peerwork_core::structure_content::structure_content_key_id(secret);
+    let mut transport=peerwork_runtime::transport::TransportConfig::new(origin);transport.allow_loopback_http=true;
+    let path=config.identity_path.with_extension(format!("{}.content-keys.sqlite",sha256_hex(origin.as_bytes())));
+    let mut keys=peerwork_runtime::kernel_intents::StructureContentKeys::open(&path,transport).unwrap();keys.retain_current(identity.key_id(),workspace,secret,&key,expected).unwrap();key
+}
+fn structure(op:&Operation)->Value {assert_eq!(op.state,"ACCEPTED","{}",serde_json::to_string(op).unwrap());op.outcome.as_ref().unwrap()["result"]["structure"].clone()}
+async fn mutate(client:&ParticipantClient,id:&str,action:&str,scope:&Scope,body:Value)->Value {
+    let mut op=client.invoke(Invoke::new(id,action,scope.clone(),body),Duration::from_secs(5)).await.unwrap();
+    let end=std::time::Instant::now()+Duration::from_secs(10);
+    while !op.is_terminal(){assert!(std::time::Instant::now()<end,"operation did not settle");tokio::time::sleep(Duration::from_millis(20)).await;op=client.operation(id).await.unwrap();}
+    structure(&op)
+}
+async fn selected(client:&ParticipantClient,action:&str,scope:&Scope,body:Value)->Value {
+    let value=client.request(Invoke::new("selected",action,scope.clone(),body)).await.unwrap();assert_eq!(value["state"],"ACCEPTED","{action}: {value}");value["result"]["structure"].clone()
+}
 
 #[tokio::test(flavor="multi_thread",worker_threads=2)]
 #[ignore="requires explicit local TEST PostgreSQL and compiled product fixture"]
 async fn shared_conversation_native_watch_mcp_reply_and_original_journal_recovery(){
     let service=Service::start();
-    let owner_root=crate::test_support::protected_test_dir();let worker_root=crate::test_support::protected_test_dir();
+    let owner_root=private_dir();let worker_root=private_dir();
     let owner_config=configuration(owner_root.path(),&service.origin);let worker_config=configuration(worker_root.path(),&service.origin);
     let owner=ParticipantClient::open(owner_config.clone()).await.unwrap();let worker=ParticipantClient::open(worker_config.clone()).await.unwrap();
     let created=mutate(&owner,"shared-space","structure.workspace.create",&Scope::default(),json!({"name":"Shared conversation"})).await;
@@ -16,7 +63,7 @@ async fn shared_conversation_native_watch_mcp_reply_and_original_journal_recover
     let meta=selected(&owner,"structure.workspace.get",&scope,json!({})).await;
     let mut join=Invoke::new("shared-join","structure.member.set",scope.clone(),json!({"actor_id":worker.actor_id(),"state":"ACTIVE","expected_membership_id":null}));join.expected_workspace_revision=meta["workspace_revision"].as_u64();
     let joined=structure(&owner.invoke(join,Duration::from_secs(5)).await.unwrap());
-    let key=install_synthetic_key(&owner_config,&workspace,&[37;32],None);install_synthetic_key(&worker_config,&workspace,&[37;32],None);
+    let key=install_synthetic_key(&owner_config,owner.origin(),&workspace,&[37;32],None);install_synthetic_key(&worker_config,worker.origin(),&workspace,&[37;32],None);
     mutate(&owner,"shared-key","structure.content-key.set",&scope,json!({"key_id":key,"expected_epoch":0,"expected_head_revision":null})).await;
     let mailbox=selected(&worker,"structure.mailboxes.read",&scope,json!({"limit":8})).await["mailboxes"][0].clone();
     assert_eq!(mailbox["membership_id"],joined["membership_id"]);
@@ -60,7 +107,7 @@ async fn shared_conversation_native_watch_mcp_reply_and_original_journal_recover
 
 #[test]
 fn shared_conversation_tools_are_workspace_first_and_keep_explicit_parent_boundaries(){
-    let names=crate::agent_tools::catalog().into_iter().map(|v|v["name"].as_str().unwrap().to_owned()).collect::<Vec<_>>();assert!(names.contains(&"peerwork_chat".into()));assert!(names.contains(&"peerwork_post".into()));
+    let names=peerwork_runtime::agent_tools::catalog().into_iter().map(|v|v["name"].as_str().unwrap().to_owned()).collect::<Vec<_>>();assert!(names.contains(&"peerwork_chat".into()));assert!(names.contains(&"peerwork_post".into()));
     let post=AgentRequest::parse("post",json!({"operation_id":"one","text":"group"})).unwrap();assert!(matches!(post,AgentRequest::Post{workspace:None,..}));
     assert!(AgentRequest::parse("post",json!({"operation_id":"one","text":"group","identity_path":"/wrong"})).is_err());
     let mut capability=Capability::owner();capability.allow_root=false;capability.workspace_ids=Some(["W".repeat(43)].into());
