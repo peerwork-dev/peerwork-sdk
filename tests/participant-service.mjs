@@ -38,6 +38,7 @@ async function startResidentWorker(){
   if(Date.now()>end)throw Error('synthetic resident worker readiness timeout');await pause(25);
  }
 }
+let captureDisclosure=false,lastDisclosure=null;
 let reportQuotaBlocked=false;const reportQuotaLimits=new Map();
 let clockOffset=0;const ticker=setInterval(()=>{f.clock.now=Date.now()+clockOffset;},10);
 const app=createPostgresControlApp(f.kernel,{source:()=> '127.0.0.1'});
@@ -61,6 +62,7 @@ const handle=async request=>{
  const path=new URL(request.url).pathname;
  if(path==='/__test/config'){
   const options=await request.json();
+  if(options.capture_disclosure!==undefined)captureDisclosure=options.capture_disclosure===true;
   if(options.resident_worker===true)await startResidentWorker();
   if(options.pump_events){for(let i=0;i<256;i++){const step=await stepEventDelivery(f.kernel);if(step.job_id===null)break;}}
   if(options.early_eof_count!==undefined){if(!Number.isSafeInteger(options.early_eof_count)||options.early_eof_count<0||options.early_eof_count>16)throw Error('invalid synthetic EOF count');earlyEofCount=options.early_eof_count;}
@@ -85,7 +87,7 @@ const handle=async request=>{
   if(options.release){release?.();release=null;delayName=null;timeoutAction=null;for(const fn of timeoutReleases)fn();timeoutReleases.clear();}
   return Response.json({ok:true});
  }
- if(path==='/__test/counts')return Response.json({...counts,unique_commands:commandIds.size,resident_worker_running:residentWorker!==null&&residentWorker.exitCode===null,
+ if(path==='/__test/counts')return Response.json({...counts,...(captureDisclosure?{last_disclosure:lastDisclosure}:{}),unique_commands:commandIds.size,resident_worker_running:residentWorker!==null&&residentWorker.exitCode===null,
   workspaces:Number((await f.store.pool.query(`SELECT count(*) n FROM "${f.schema}".workspaces`)).rows[0].n),
   key_epochs:Number((await f.store.pool.query(`SELECT count(*) n FROM "${f.schema}".structure_content_key_epochs`)).rows[0].n),
   events:Number((await f.store.pool.query(`SELECT count(*) n FROM "${f.schema}".events`)).rows[0].n),
@@ -146,6 +148,7 @@ const handle=async request=>{
     if(buffer.length>3*1024*1024)throw Error('synthetic frame exceeds bound');
     let end;
     while((end=buffer.indexOf('\n\n'))>=0){let block=buffer.slice(0,end+2);buffer=buffer.slice(end+2);
+     if(captureDisclosure&&block.startsWith('event: delivery\n')){const frame=JSON.parse(block.split('\ndata: ')[1]);const message=frame.items.find(v=>v.message?.conversation)?.message;if(message)lastDisclosure=message;}
      if(corruptFrame&&block.startsWith('event: delivery\n')){
       const frame=JSON.parse(block.split('\ndata: ')[1]),proof=JSON.parse(Buffer.from(frame.proof.split('.')[1],'base64url').toString('utf8'));
       if(proof.mailbox_id===corruptFrame.mailbox_id&&frame.items.length){

@@ -69,7 +69,7 @@ async fn shared_conversation_native_watch_mcp_reply_and_original_journal_recover
     mutate(&owner,"shared-key","structure.content-key.set",&scope,json!({"key_id":key,"expected_epoch":0,"expected_head_revision":null})).await;
     let mailbox=selected(&worker,"structure.mailboxes.read",&scope,json!({"limit":8})).await["mailboxes"][0].clone();
     assert_eq!(mailbox["membership_id"],joined["membership_id"]);
-    service.config(json!({"resident_worker":true})).await;
+    service.config(json!({"resident_worker":true,"capture_disclosure":true})).await;
     let options=WatchOptions{workspace_id:workspace.clone(),mailbox_id:mailbox["mailbox_id"].as_str().unwrap().into(),membership_id:mailbox["membership_id"].as_str().unwrap().into(),consumer_id:"room-native".into(),host_destination:None};
     let watch=worker.watch(options.clone()).await.unwrap();
     let room=peerwork_core::communication::space_conversation_id(&workspace).unwrap();
@@ -77,10 +77,11 @@ async fn shared_conversation_native_watch_mcp_reply_and_original_journal_recover
     let sent=structure(&owner.invoke(send.clone(),Duration::from_secs(5)).await.unwrap());
     assert_eq!(sent["conversation"]["audience_count"],2);assert_eq!(sent["sender_membership"],meta["membership"]["membership_id"]);
     assert_eq!(structure(&owner.invoke(send,Duration::from_secs(5)).await.unwrap()),sent);
+    let initial=selected(&owner,"structure.conversation.messages.read",&scope,json!({"conversation_id":room,"limit":8})).await;assert_eq!(initial["messages"].as_array().unwrap().len(),1);
     let entry=tokio::time::timeout(Duration::from_secs(12),async{loop{
         let page=watch.page(0,32).await.unwrap();
         if let Some(item)=page.items.iter().find(|v|v["envelope"]["message"]["message_id"]==sent["message_id"]).cloned(){break item;}
-        assert!(!matches!(page.state.as_str(),"BLOCKED"|"STREAM_VERIFICATION_FAILED"),"{}",serde_json::to_string(&page).unwrap());
+        assert!(!matches!(page.state.as_str(),"BLOCKED"|"STREAM_VERIFICATION_FAILED"),"{} fixture: {}",serde_json::to_string(&page).unwrap(),service.counts().await);
         tokio::time::sleep(Duration::from_millis(20)).await;
     }}).await.expect("shared group message not delivered");
     assert_eq!(entry["opened_message"]["text"],"Shared ping 📨");assert_eq!(entry["opened_message"]["message_kind"],"SPACE_CONVERSATION");assert_eq!(entry["opened_message"]["mentions"][0],worker.actor_id());
