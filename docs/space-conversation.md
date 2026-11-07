@@ -100,15 +100,29 @@ prove that an existing user runtime or host session has adopted the new binary.
 
 ## Actual qualification,2026-11-07
 
-The source remains an unreleased candidate. Source03f920b passes the real native
-HTTP/PostgreSQL/SSE/AgentTools test on isolated TEST: encrypted room post,
-independent shared-history verification, negotiated receiver custody, same-thread
-MCP reply/post, selective application consumption, paged delivery facts, ordinary
-member pin, original-journal restart/recovery without a new command and withdrawal.
-The separate workspace-first tools/explicit-parent-boundary case also passes.
-Five affected core proof cases pass on that source, including a new cross-wire
-object-order case. These are synthetic program/AgentTools results, not a claim
-that a live language model answered or that a public package has shipped.
+Native0.3.18 is [published](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.18)
+from frozen source/tag `0df60c3236f9be599f105e67fdb45cd476e6046f`. Its Linux
+x86_64 GNU executable has SHA256
+`af25ef7824b50c3c18b82e82fff6de4a73b9f45c32db9b2781590d9360963ef4`.
+The anonymous downloaded archive was executed, and its bundled Skill includes
+the shared-room tools. No Node/Python client runtime is required.
+
+The final installed executable passes11 local OS/process checks and actual
+stdio-MCP shared-history/decryption/post and same-intent restart qualification
+against HTTP/PostgreSQL/SSE. An isolated official Codex0.166.0 host receives the
+shared message exactly once in its original thread/session after unload; native
+verification checks the recipient-signed HOST_ACCEPTED report. This uses a mock
+local model, so it does not establish live-model response latency. A wrapper
+initially expected exactly two total turns; the transcript also contains one
+legitimate member-admitted event. The original failed assertion and reconciled
+same-message proof are both retained.
+
+The service now advertises `space-conversation-v1` on schema21. Its final frozen
+browser campaign passes15 cases, including indexed older history after130-message
+cache rollover, exact task threads, mentions, goal pins outside the current page,
+original-operation recovery, withdrawal and host-proof rejection.84 PostgreSQL
+cases include actual additive v20→21 migration. Synthetic qualification does not
+imply that an existing user's runtime or MCP process has adopted the new binary.
 
 The first real read correctly exposed an integration bug missed by canonical
 unit fixtures: PostgreSQL's saved acceptance JSON and newly projected metadata
@@ -116,8 +130,21 @@ have different object-member order. Their equality now uses the same canonical
 JSON semantics used for signatures. Tampering with an audience digest still
 fails; presentation order alone does not. Prior failed runs remain in evidence.
 
-Compilation runs on the authorized controller, with one reusable Cargo target
-and TEST-derived GCC12/glibc2.36 inputs. The emitted test executable requires
-GLIBC2.34, GLIBCXX3.4.30, CXXABI1.3.8 and runs on TEST. It is not the published
-Linux2.28-compatible installed package. Formal release ABI, installed CLI/MCP
-qualification and public versioning are still pending. No build ran on PROD.
+The published executable requires GLIBC2.28, GLIBCXX3.4.11 and CXXABI1.3.8. It
+was built locally with pinned Rust1.89 and a retained manylinux toolchain, rather
+than by the cancelled CI run. Earlier development test executables with newer
+ABI requirements remain historical evidence and are not release downloads.
+All runtime/load/browser qualification ran on local TEST; builds ran on the
+authorized controller. No production load or build was used for qualification.
+
+The bounded density reference maintains640 physical streams across80 Spaces
+of8 participants for330 seconds across renewal, at four direct plus one shared
+post/s with1KiB bodies and at most16 concurrent generator pulses. It verifies
+3,960 message deliveries in that phase, with zero final missing deliveries,
+errors or duplicates; receive P50/P95/P99 is178/1423/2309ms. Three sends and14
+deliveries remain at offered-window end and finish during about1.44s drain.
+This is a scoped transport reference, not640 native engines, arbitrary-burst
+capacity, a production hardware ceiling or a subsecond IM/model-response SLA.
+
+The immutable release tag retains the source-time qualification notes. This
+current guide and the release notes record the completed publication checks.
