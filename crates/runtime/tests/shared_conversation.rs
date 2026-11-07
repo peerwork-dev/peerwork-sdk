@@ -93,6 +93,12 @@ async fn shared_conversation_native_watch_mcp_reply_and_original_journal_recover
     let history=tools.call(AgentRequest::parse("chat",json!({"workspace":"team","limit":8})).unwrap()).await.unwrap();
     assert_eq!(history["messages"].as_array().unwrap().len(),3);assert_eq!(history["messages"][0]["body"]["text"],"Shared ping 📨");assert_eq!(history["messages"][1]["body"]["text"],"Shared pong");assert_eq!(history["messages"][0]["conversation"]["thread_root"],history["messages"][1]["conversation"]["thread_root"]);
     assert!(!history.to_string().contains("author_intent"));assert!(!history.to_string().contains("ciphertext"));assert_eq!(history["authority"],"EXTERNAL_PEER_DATA");
+    let address=selected(&worker,"structure.mailbox.get",&scope,json!({"mailbox_id":options.mailbox_id})).await["mailbox"].clone();
+    let host_scope=json!({"format":"peerwork.host-call.v1","owner":"synthetic-public-client","namespace":"program:synthetic","workspace_id":workspace,"mailbox_id":options.mailbox_id,"membership_id":options.membership_id,"sequence":reference.sequence,"delivery_id":reference.delivery_id,"receiver_id":address["receiver_id"],"epoch":address["epoch"],"binding_version":address["binding_version"],"destination_digest":address["destination_digest"],"call_id":"H".repeat(43),"frame_digest":"e".repeat(64),"source_digest":"f".repeat(64)});
+    let host_report=json!({"sequence":reference.sequence,"delivery_id":reference.delivery_id,"call_id":"H".repeat(43),"attempt":1,"scope":host_scope,"frame_digest":"e".repeat(64),"state":"HOST_QUEUED","facts":[{"state":"HOST_QUEUED","receipt":"synthetic-program-queue"}],"report_sequence":1});
+    selected(&worker,"structure.mailbox.report",&scope,json!({"mailbox_id":options.mailbox_id,"receiver_id":address["receiver_id"],"epoch":address["epoch"],"report":host_report})).await;
+    let host_receipts=tools.call(AgentRequest::parse("receipts",json!({"scope":"team","message_id":sent["message_id"],"conversation":true})).unwrap()).await.unwrap();
+    let target=host_receipts["deliveries"].as_array().unwrap().iter().find(|v|v["actor_id"]==worker.actor_id()).unwrap();assert_eq!(target["host_report"]["state"],"HOST_QUEUED");assert_eq!(target["host_report"]["model_response"],"NOT_ATTESTED");assert!(target["application_consumed_at"].is_null());
     watch.consume(vec![reference]).await.unwrap();
     let receipts=tokio::time::timeout(Duration::from_secs(8),async{loop{
         let current=tools.call(AgentRequest::parse("receipts",json!({"scope":"team","message_id":sent["message_id"],"conversation":true})).unwrap()).await.unwrap();
@@ -100,11 +106,13 @@ async fn shared_conversation_native_watch_mcp_reply_and_original_journal_recover
         tokio::time::sleep(Duration::from_millis(20)).await;
     }}).await.expect("native consumption not recorded");assert_eq!(receipts["counts"]["targets"],2);assert_eq!(receipts["model_response"],"NOT_ATTESTED");
     mutate(&worker,"shared-pin","structure.conversation.pin.set",&scope,json!({"conversation_id":room,"expected_revision":0,"reference":{"kind":"MESSAGE","message_id":sent["message_id"]}})).await;
-    let head=selected(&owner,"structure.conversation.get",&scope,json!({})).await;assert_eq!(head["conversation"]["pin_author"],worker.actor_id());
+    let pinned=owner.request(Invoke::new("pinned-room","structure.conversation.get",scope.clone(),json!({}))).await.unwrap();
+    assert_eq!(pinned["result"]["structure"]["conversation"]["pin_author"],worker.actor_id());assert_eq!(pinned["result"]["opened_messages"][0]["text"],"Shared ping 📨");
     let before=service.counts().await;owner.close().await.unwrap();
     let restored=ParticipantClient::open(owner_config).await.unwrap();let recovered=restored.recover("shared-original-post").await.unwrap();assert_eq!(structure(&recovered),sent);assert_eq!(before["commands"],service.counts().await["commands"]);
     mutate(&restored,"shared-withdraw","structure.message.withdraw",&scope,json!({"message_id":sent["message_id"]})).await;
     let current=selected(&worker,"structure.conversation.messages.read",&scope,json!({"conversation_id":room,"limit":8})).await;assert_eq!(current["messages"][0]["state"],"WITHDRAWN");assert!(current["messages"][0].get("author_intent").is_none());
+    let pinned=worker.request(Invoke::new("withdrawn-pin","structure.conversation.get",scope.clone(),json!({}))).await.unwrap();assert_eq!(pinned["result"]["structure"]["conversation"]["pin_message"]["state"],"WITHDRAWN");assert!(pinned["result"]["opened_messages"].as_array().unwrap().is_empty());
     worker.unwatch(&options).await.unwrap();drop(tools);worker.close().await.unwrap();restored.close().await.unwrap();
 }
 

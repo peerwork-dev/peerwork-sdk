@@ -25,7 +25,7 @@ pub struct OpenedMessageBody {
 impl KernelClient {
     pub(super) fn open_selected_structure_bodies(&self,result:&mut KernelAcceptedResult,action:&str,local_key:&str)
         ->Result<(),KernelClientError>{
-        if matches!(action,"structure.message.get"|"structure.mailbox.inbox.read"|"structure.conversation.messages.read"){return self.open_selected_message_bodies(result,action,local_key);}
+        if matches!(action,"structure.message.get"|"structure.mailbox.inbox.read"|"structure.conversation.messages.read"|"structure.conversation.get"){return self.open_selected_message_bodies(result,action,local_key);}
         if result.opened_contents.is_some()||!matches!(action,"structure.record.get"|"structure.publication.prepare.get"|"structure.records.read"|"structure.instance.records.read"){return Ok(());}
         let data=parse_wire_json_bounded(result.structure_result_json.as_deref().ok_or(KernelClientError::InvalidResult)?.as_bytes(),32,1024*1024)
             .map_err(|_|KernelClientError::InvalidResult)?;
@@ -84,6 +84,7 @@ impl KernelClient {
         let data=parse_wire_json_bounded(result.structure_result_json.as_deref().ok_or(KernelClientError::InvalidResult)?.as_bytes(),40,2*1024*1024).map_err(|_|KernelClientError::InvalidResult)?;
         if data.get("status").and_then(WireValue::as_string).as_deref()==Some("REJECTED_NO_EFFECT"){return Ok(());}
         let messages=if action=="structure.message.get"{vec![data.get("message").ok_or(KernelClientError::InvalidResult)?]}
+            else if action=="structure.conversation.get" {data.get("conversation").and_then(|v|v.get("pin_message")).filter(|v|v.get("state").and_then(WireValue::as_string).as_deref()==Some("ACTIVE")).into_iter().collect()}
             else if action=="structure.conversation.messages.read" {let Some(WireValue::Array(items))=data.get("messages") else{return Err(KernelClientError::InvalidResult);};if items.len()>32{return Err(KernelClientError::InvalidResult);}items.iter().filter(|v|v.get("state").and_then(WireValue::as_string).as_deref()==Some("ACTIVE")).collect()}
             else{let Some(WireValue::Array(items))=data.get("items")else{return Err(KernelClientError::InvalidResult);};if items.len()>32{return Err(KernelClientError::InvalidResult);}items.iter().filter_map(|v|v.get("message")).collect()};
         let path=self.content_key_store_path();

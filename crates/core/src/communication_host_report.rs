@@ -36,9 +36,9 @@ pub(super) fn verify(
         "facts",
         "report_sequence",
     ] {
-        if value.get(key) != report.get(key) {
-            return Err(CommunicationError);
-        }
+        let observed=value.get(key).ok_or(CommunicationError)?;let authored=report.get(key).ok_or(CommunicationError)?;
+        if canonical_wire_value(observed,Path::STRUCTURED).map_err(|_|CommunicationError)?
+            !=canonical_wire_value(authored,Path::STRUCTURED).map_err(|_|CommunicationError)? {return Err(CommunicationError);}
     }
     let scope = report.get("scope").ok_or(CommunicationError)?;
     if text(scope, "workspace_id")? != workspace
@@ -133,6 +133,9 @@ mod tests {
         snapshot["assurance"] = json!("SERVICE_RECORDED_RECEIVER_ATTESTATION");
         snapshot["model_response"] = json!("NOT_ATTESTED");
         assert!(verify(&wire(&snapshot), &audience, &ws, &actor).is_ok());
+        let mut presented=wire(&snapshot);
+        fn reverse_objects(value:&mut WireValue){match value{WireValue::Object(fields)=>{fields.reverse();for (_,value) in fields {reverse_objects(value);}},WireValue::Array(items)=>for value in items {reverse_objects(value);},_=>{}}}
+        reverse_objects(&mut presented);assert!(verify(&presented,&audience,&ws,&actor).is_ok());
         assert!(
             crate::prepared_command::verify_structure_author_intent(&jws, &audience).is_err(),
             "control reports never qualify as business intent"
