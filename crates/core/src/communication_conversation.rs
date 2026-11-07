@@ -95,6 +95,8 @@ impl NativeMessageContext {
     pub fn actor_id(&self)->&str {match self {Self::Directed(v)=>&v.actor_id,Self::Conversation(v)=>&v.actor_id}}
     pub fn command_id(&self)->&str {match self {Self::Directed(v)=>&v.command_id,Self::Conversation(v)=>&v.command_id}}
     pub fn canonical_aad(&self)->std::result::Result<String,StructureContentError> {match self {Self::Directed(v)=>v.canonical_aad(),Self::Conversation(v)=>v.canonical_aad()}}
+    pub fn seal(&self,key:&[u8;32],plaintext:&[u8])->std::result::Result<StructureSealedContent,StructureContentError>{seal_content_with_aad(key,plaintext,&self.canonical_aad()?)}
+    pub fn open(&self,key:&[u8;32],sealed:&StructureSealedContent)->std::result::Result<Zeroizing<Vec<u8>>,StructureContentError>{open_content_with_aad(key,sealed,&self.canonical_aad()?)}
 }
 pub fn authored_native_message_content(author:&VerifiedStructureAuthorIntent)->Result<(NativeMessageContext,MessageContent)> {
     if author.action_id()!="structure.conversation.post" {let (context,content)=authored_message_content(author)?;return Ok((NativeMessageContext::Directed(context),content));}
