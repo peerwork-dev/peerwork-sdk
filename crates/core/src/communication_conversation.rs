@@ -132,6 +132,22 @@ fn metadata(value:&WireValue,workspace:&str)->Result<()> {
         || !digest(&text(value,"audience_digest")?) || !(1..=256).contains(&number(value,"audience_count")?) {return Err(CommunicationError);}
     token_field(value,"thread_root")?;Ok(())
 }
+fn verify_pin_source(head:&WireValue,audience:&[u16],workspace:&str,key:&str)->Result<()> {
+    let revision=number(head,"pin_revision")?;
+    if revision==0 {
+        if ["pin_reference","pin_author","pin_command","pin_source"].iter().any(|name|head.get(name)!=Some(&WireValue::Null)){return Err(CommunicationError);}return Ok(());
+    }
+    let source=head.get("pin_source").ok_or(CommunicationError)?;let result=source.get("result").ok_or(CommunicationError)?;
+    let jws=text(result,"author_intent")?;let author=verify_structure_author_intent(&jws,audience).map_err(|_|CommunicationError)?;
+    if author.action_id()!="structure.conversation.pin.set" || author.workspace_id()!=Some(workspace)
+        || author.actor_id()!=text(head,"pin_author")? || author.command_id()!=text(head,"pin_command")? || text(result,"status")?!="APPLIED" {return Err(CommunicationError);}
+    let body=author.command().get("body").ok_or(CommunicationError)?;
+    if body.get("reference")!=head.get("pin_reference") || number(body,"expected_revision")?.checked_add(1)!=Some(revision) {return Err(CommunicationError);}
+    let accepted=result.get("conversation").ok_or(CommunicationError)?;
+    for name in ["conversation_id","workspace_id","pin_reference","pin_revision","pin_author","pin_command"] {if accepted.get(name)!=head.get(name) {return Err(CommunicationError);}}
+    let response=canonical_wire_value(source,Path::STRUCTURED).map_err(|_|CommunicationError)?;
+    verify_http_response_with_path(response.as_bytes(),&WireReceiptExpectation{audience_utf16:audience,receipt_key_id:key,actor_id:author.actor_id(),command_id:author.command_id(),intent_digest:author.intent_digest(),workspace_id:Some(workspace),protocol_digest:None},Path::STRUCTURED).map_err(|_|CommunicationError)?;Ok(())
+}
 pub fn verify_conversation_message(value:&WireValue,audience:&[u16],workspace:&str,key:&str)->Result<VerifiedConversationMessage> {
     exact(value,&["state","message_id","sender_actor","sender_membership","accepted_at","command_id","intent_digest","author_intent","conversation","acceptance"])?;
     if text(value,"state")?!="ACTIVE" {return Err(CommunicationError);}
@@ -166,11 +182,15 @@ pub(super) fn verify_read(result:&WireValue,command:&WireValue,prepared:&Verifie
             let ctx=ConversationContentContext::from_command(command)?;let meta=result.get("conversation").ok_or(CommunicationError)?;metadata(meta,workspace)?;
             if text(result,"message_id")?!=ctx.message_id()? || text(result,"status")?!="APPLIED" {return Err(CommunicationError);}
             if ctx.thread_root.as_ref().is_some_and(|s|Some(s.as_str())!=meta.get("thread_root").and_then(WireValue::as_string).as_deref()) {return Err(CommunicationError);}
+            let thread=text(meta,"thread_root")?;
+            if ctx.context.as_ref().is_some_and(|c|conversation_thread_id(workspace,c).ok().as_deref()!=Some(thread.as_str()))
+                || ctx.context.is_none()&&ctx.reply_to.is_none()&&ctx.thread_root.is_none()&&thread!=ctx.message_id()? {return Err(CommunicationError);}
         }
         "structure.conversation.get"|"structure.conversation.pin.set"=>{
             let head=result.get("conversation").ok_or(CommunicationError)?;
             if text(head,"conversation_id")?!=space_conversation_id(workspace)? || text(head,"workspace_id")?!=workspace || text(head,"message_format")?!=FORMAT {return Err(CommunicationError);}
             number(head,"sequence")?;number(head,"pin_revision")?;
+            if prepared.action_id()=="structure.conversation.get" {verify_pin_source(head,prepared.audience_utf16(),workspace,key)?;}
             if prepared.action_id()=="structure.conversation.pin.set" && (number(head,"pin_revision")?!=number(body,"expected_revision")?.checked_add(1).ok_or(CommunicationError)? || head.get("pin_reference")!=body.get("reference") || text(head,"pin_author")?!=prepared.actor_id() || text(head,"pin_command")?!=prepared.command_id()) {return Err(CommunicationError);}
         }
         "structure.conversation.messages.read"=>{

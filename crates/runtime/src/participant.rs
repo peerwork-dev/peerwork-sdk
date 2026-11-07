@@ -4,6 +4,9 @@
 #[cfg(test)]
 #[path = "participant_http_tests.rs"]
 pub(crate) mod http_tests;
+#[cfg(test)]
+#[path="participant_conversation_http_tests.rs"]
+mod conversation_http_tests;
 pub use crate::participant_migration::MigrationSource;
 pub use crate::participant_result::ResultSelection;
 pub use crate::participant_watch::{DeliveryReference, WatchOptions, WatchSnapshot};
