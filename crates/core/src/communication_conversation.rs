@@ -134,6 +134,14 @@ fn metadata(value:&WireValue,workspace:&str)->Result<()> {
         || !digest(&text(value,"audience_digest")?) || !(1..=256).contains(&number(value,"audience_count")?) {return Err(CommunicationError);}
     token_field(value,"thread_root")?;Ok(())
 }
+// Object member order is transport presentation, not signed JSON semantics.
+// PostgreSQL source JSON and a newly projected room DTO can have different
+// insertion order while authenticating the exact same canonical fields.
+fn same(a:Option<&WireValue>,b:Option<&WireValue>)->Result<bool> {
+    let (a,b)=(a.ok_or(CommunicationError)?,b.ok_or(CommunicationError)?);
+    Ok(canonical_wire_value(a,Path::STRUCTURED).map_err(|_|CommunicationError)?
+        ==canonical_wire_value(b,Path::STRUCTURED).map_err(|_|CommunicationError)?)
+}
 fn verify_pin_source(head:&WireValue,audience:&[u16],workspace:&str,key:&str)->Result<()> {
     let revision=number(head,"pin_revision")?;
     if revision==0 {
@@ -144,9 +152,9 @@ fn verify_pin_source(head:&WireValue,audience:&[u16],workspace:&str,key:&str)->R
     if author.action_id()!="structure.conversation.pin.set" || author.workspace_id()!=Some(workspace)
         || author.actor_id()!=text(head,"pin_author")? || author.command_id()!=text(head,"pin_command")? || text(result,"status")?!="APPLIED" {return Err(CommunicationError);}
     let body=author.command().get("body").ok_or(CommunicationError)?;
-    if body.get("reference")!=head.get("pin_reference") || number(body,"expected_revision")?.checked_add(1)!=Some(revision) {return Err(CommunicationError);}
+    if !same(body.get("reference"),head.get("pin_reference"))? || number(body,"expected_revision")?.checked_add(1)!=Some(revision) {return Err(CommunicationError);}
     let accepted=result.get("conversation").ok_or(CommunicationError)?;
-    for name in ["conversation_id","workspace_id","pin_reference","pin_revision","pin_author","pin_command"] {if accepted.get(name)!=head.get(name) {return Err(CommunicationError);}}
+    for name in ["conversation_id","workspace_id","pin_reference","pin_revision","pin_author","pin_command"] {if !same(accepted.get(name),head.get(name))? {return Err(CommunicationError);}}
     let response=canonical_wire_value(source,Path::STRUCTURED).map_err(|_|CommunicationError)?;
     verify_http_response_with_path(response.as_bytes(),&WireReceiptExpectation{audience_utf16:audience,receipt_key_id:key,actor_id:author.actor_id(),command_id:author.command_id(),intent_digest:author.intent_digest(),workspace_id:Some(workspace),protocol_digest:None},Path::STRUCTURED).map_err(|_|CommunicationError)?;Ok(())
 }
@@ -165,7 +173,7 @@ pub fn verify_conversation_message(value:&WireValue,audience:&[u16],workspace:&s
         || context.context.is_none() && context.reply_to.is_none() && context.thread_root.is_none() && thread!=mid {return Err(CommunicationError);}
     let acceptance=value.get("acceptance").ok_or(CommunicationError)?;exact(acceptance,&["receipt","result"])?;
     let result=acceptance.get("result").ok_or(CommunicationError)?;
-    if result.get("author_intent").is_some() || result.get("conversation")!=Some(meta) || text(result,"message_id")?!=mid
+    if result.get("author_intent").is_some() || !same(result.get("conversation"),Some(meta))? || text(result,"message_id")?!=mid
         || text(result,"status")?!="APPLIED" || text(result,"profile")?!=PROFILE || text(result,"assurance")?!="BACKEND_CURRENT_STATE"
         || result.get("sender_membership")!=value.get("sender_membership") || text(result,"workspace_id")?!=workspace || number(result,"accepted_at")?!=number(value,"accepted_at")? {return Err(CommunicationError);}
     let mut restored:serde_json::Value=wire(result)?;restored["author_intent"]=json!(jws);
@@ -193,7 +201,7 @@ pub(super) fn verify_read(result:&WireValue,command:&WireValue,prepared:&Verifie
             if text(head,"conversation_id")?!=space_conversation_id(workspace)? || text(head,"workspace_id")?!=workspace || text(head,"message_format")?!=FORMAT {return Err(CommunicationError);}
             number(head,"sequence")?;number(head,"pin_revision")?;
             if prepared.action_id()=="structure.conversation.get" {verify_pin_source(head,prepared.audience_utf16(),workspace,key)?;}
-            if prepared.action_id()=="structure.conversation.pin.set" && (number(head,"pin_revision")?!=number(body,"expected_revision")?.checked_add(1).ok_or(CommunicationError)? || head.get("pin_reference")!=body.get("reference") || text(head,"pin_author")?!=prepared.actor_id() || text(head,"pin_command")?!=prepared.command_id()) {return Err(CommunicationError);}
+            if prepared.action_id()=="structure.conversation.pin.set" && (number(head,"pin_revision")?!=number(body,"expected_revision")?.checked_add(1).ok_or(CommunicationError)? || !same(head.get("pin_reference"),body.get("reference"))? || text(head,"pin_author")?!=prepared.actor_id() || text(head,"pin_command")?!=prepared.command_id()) {return Err(CommunicationError);}
         }
         "structure.conversation.messages.read"=>{
             let head=result.get("conversation").ok_or(CommunicationError)?;
@@ -267,6 +275,21 @@ mod tests {
         }
         for field in ["sender_actor","sender_membership","message_id","command_id","intent_digest","author_intent"] {
             let mut bad=value.clone();bad[field]=json!("X".repeat(43));assert!(verify_conversation_message(&as_wire(&bad),&audience,&workspace,&key).is_err(),"{field}");
+        }
+    }
+    #[test]
+    fn conversation_proof_ignores_object_presentation_order_but_keeps_its_signed_fields() {
+        let (value,key,audience)=fixture();let mut wire=as_wire(&value);
+        let WireValue::Object(fields)=&mut wire else{panic!("fixture object");};
+        let (_,meta)=fields.iter_mut().find(|(name,_)|name.iter().copied().eq("conversation".encode_utf16())).unwrap();
+        let WireValue::Object(metadata)=meta else{panic!("room metadata");};metadata.reverse();
+        assert!(verify_conversation_message(&wire,&audience,&"W".repeat(43),&key).is_ok());
+        metadata_tamper(&mut wire);
+        assert!(verify_conversation_message(&wire,&audience,&"W".repeat(43),&key).is_err());
+        fn metadata_tamper(value:&mut WireValue){
+            let WireValue::Object(fields)=value else{unreachable!()};
+            let (_,WireValue::Object(meta))=fields.iter_mut().find(|(name,_)|name.iter().copied().eq("conversation".encode_utf16())).unwrap() else{unreachable!()};
+            let (_,digest)=meta.iter_mut().find(|(name,_)|name.iter().copied().eq("audience_digest".encode_utf16())).unwrap();*digest=as_wire(&json!("b".repeat(64)));
         }
     }
     #[test]
