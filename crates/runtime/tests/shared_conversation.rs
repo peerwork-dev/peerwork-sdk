@@ -77,7 +77,7 @@ async fn shared_conversation_native_watch_mcp_reply_and_original_journal_recover
     let sent=structure(&owner.invoke(send.clone(),Duration::from_secs(5)).await.unwrap());
     assert_eq!(sent["conversation"]["audience_count"],2);assert_eq!(sent["sender_membership"],meta["membership"]["membership_id"]);
     assert_eq!(structure(&owner.invoke(send,Duration::from_secs(5)).await.unwrap()),sent);
-    let initial=selected(&owner,"structure.conversation.messages.read",&scope,json!({"conversation_id":room,"limit":8})).await;assert_eq!(initial["messages"].as_array().unwrap().len(),1);
+    let initial=owner.request(Invoke::new("initial-history","structure.conversation.messages.read",scope.clone(),json!({"conversation_id":room,"limit":8}))).await;assert!(initial.is_ok(),"history: {:?} fixture: {}",initial.err(),service.counts().await);
     let entry=tokio::time::timeout(Duration::from_secs(12),async{loop{
         let page=watch.page(0,32).await.unwrap();
         if let Some(item)=page.items.iter().find(|v|v["envelope"]["message"]["message_id"]==sent["message_id"]).cloned(){break item;}

@@ -126,6 +126,7 @@ const handle=async request=>{
  }
  const measured=queryObserver?await queryObserver.measure(()=>app.fetch(request)):null;
  const response=measured?measured.value:await app.fetch(request);
+ if(captureDisclosure&&command?.action_id==='structure.conversation.messages.read'&&response.ok){const value=await response.clone().json();lastDisclosure=value.result?.messages?.[0]??lastDisclosure;}
  if(wasDelayed)counts.delayed_completed++;
  if(command)counts.command_response_bytes+=(await response.clone().arrayBuffer()).byteLength;
  if(timingOutput&&command){
