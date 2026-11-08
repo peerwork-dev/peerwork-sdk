@@ -1,0 +1,685 @@
+[
+  {
+    "name": "existing_target",
+    "prior_objects": [
+      {
+        "kind": "protocols",
+        "id": "protocol",
+        "revision": 1,
+        "value": {
+          "digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "resolved_manifest": {
+            "record_schemas": {
+              "entry": {
+                "type": "object",
+                "fields": {
+                  "text": "string"
+                },
+                "required": [
+                  "text"
+                ],
+                "max_bytes": 16384
+              }
+            },
+            "role_conflicts": [],
+            "historical_role_conflicts": [],
+            "actions": [
+              {
+                "id": "test.set",
+                "reads": [
+                  [
+                    "count"
+                  ]
+                ],
+                "writes": [
+                  [
+                    "count"
+                  ]
+                ],
+                "revisionEffects": {
+                  "control": true,
+                  "contentEntities": []
+                },
+                "variants": [
+                  {
+                    "when": [
+                      {
+                        "op": "eq",
+                        "left": {
+                          "from": "state",
+                          "path": [
+                            "count"
+                          ]
+                        },
+                        "right": {
+                          "from": "literal",
+                          "value": 0
+                        }
+                      }
+                    ],
+                    "effects": [
+                      {
+                        "op": "append",
+                        "schema": "entry",
+                        "recordSlot": "created",
+                        "value": {
+                          "from": "literal",
+                          "value": {
+                            "text": "hello"
+                          }
+                        },
+                        "relations": [
+                          {
+                            "kind": "links",
+                            "target": {
+                              "from": "ref",
+                              "source": "body",
+                              "path": [
+                                "target"
+                              ],
+                              "schema": "entry",
+                              "scope": "INSTANCE"
+                            }
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        "provenance": "AUTHOR_SIGNED"
+      },
+      {
+        "kind": "instances",
+        "id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+        "revision": 1,
+        "value": {
+          "id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+          "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+          "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "state": {
+            "count": 0
+          },
+          "revision": 1,
+          "event_revision": 0
+        },
+        "provenance": "AUTHOR_SIGNED"
+      },
+      {
+        "kind": "records",
+        "id": "QQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ",
+        "revision": 1,
+        "value": {
+          "id": "QQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ",
+          "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+          "instance_id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+          "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "entity_id": "YYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYY",
+          "schema_ref": "entry",
+          "payload": {
+            "text": "target"
+          },
+          "revision": 1
+        },
+        "provenance": "AUTHOR_SIGNED"
+      }
+    ],
+    "pending": [
+      {
+        "position": 1,
+        "source_id": "RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR",
+        "relation": {
+          "kind": "links",
+          "target": {
+            "recordId": "QQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ",
+            "revision": 1
+          }
+        }
+      }
+    ],
+    "record_slots": {},
+    "entity_slots": {},
+    "assigned_records": {
+      "RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR": 1
+    },
+    "expected": [
+      {
+        "position": 1,
+        "object": {
+          "kind": "record_relations",
+          "id": "[\"RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR\",\"links\",\"QQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ\",1]",
+          "revision": 1,
+          "value": {
+            "record_id": "RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR",
+            "kind": "links",
+            "target_record": "QQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ",
+            "target_revision": 1
+          },
+          "provenance": "AUTHOR_SIGNED"
+        }
+      }
+    ]
+  },
+  {
+    "name": "forward_produced_target",
+    "prior_objects": [
+      {
+        "kind": "protocols",
+        "id": "protocol",
+        "revision": 1,
+        "value": {
+          "digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "resolved_manifest": {
+            "record_schemas": {
+              "entry": {
+                "type": "object",
+                "fields": {
+                  "text": "string",
+                  "peer": "json"
+                },
+                "required": [
+                  "text"
+                ],
+                "max_bytes": 16384
+              }
+            },
+            "role_conflicts": [],
+            "historical_role_conflicts": [],
+            "actions": [
+              {
+                "id": "test.set",
+                "reads": [
+                  [
+                    "count"
+                  ]
+                ],
+                "writes": [
+                  [
+                    "linked"
+                  ]
+                ],
+                "revisionEffects": {
+                  "control": true,
+                  "contentEntities": [
+                    "buddy"
+                  ]
+                },
+                "variants": [
+                  {
+                    "when": [
+                      {
+                        "op": "eq",
+                        "left": {
+                          "from": "state",
+                          "path": [
+                            "count"
+                          ]
+                        },
+                        "right": {
+                          "from": "literal",
+                          "value": 0
+                        }
+                      }
+                    ],
+                    "effects": [
+                      {
+                        "op": "set",
+                        "path": [
+                          "linked"
+                        ],
+                        "value": {
+                          "from": "produced_entity",
+                          "slot": "buddy"
+                        }
+                      },
+                      {
+                        "op": "append",
+                        "schema": "entry",
+                        "recordSlot": "first",
+                        "value": {
+                          "from": "object",
+                          "fields": {
+                            "text": {
+                              "from": "literal",
+                              "value": "first"
+                            },
+                            "peer": {
+                              "from": "produced_ref",
+                              "slot": "later"
+                            }
+                          }
+                        },
+                        "relations": [
+                          {
+                            "kind": "links",
+                            "target": {
+                              "from": "produced_ref",
+                              "slot": "later"
+                            }
+                          }
+                        ]
+                      },
+                      {
+                        "op": "append",
+                        "schema": "entry",
+                        "recordSlot": "later",
+                        "entitySlot": "buddy",
+                        "value": {
+                          "from": "literal",
+                          "value": {
+                            "text": "later"
+                          }
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        "provenance": "AUTHOR_SIGNED"
+      },
+      {
+        "kind": "instances",
+        "id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+        "revision": 1,
+        "value": {
+          "id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+          "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+          "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "state": {
+            "count": 0
+          },
+          "revision": 1,
+          "event_revision": 0
+        },
+        "provenance": "AUTHOR_SIGNED"
+      }
+    ],
+    "pending": [
+      {
+        "position": 1,
+        "source_id": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+        "relation": {
+          "kind": "links",
+          "target": {
+            "$produced": "record",
+            "slot": "later"
+          }
+        }
+      }
+    ],
+    "record_slots": {
+      "later": {
+        "record_id": "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD",
+        "revision": 1
+      }
+    },
+    "entity_slots": {},
+    "assigned_records": {
+      "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB": 1,
+      "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD": 1
+    },
+    "expected": [
+      {
+        "position": 1,
+        "object": {
+          "kind": "record_relations",
+          "id": "[\"BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB\",\"links\",\"DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD\",1]",
+          "revision": 1,
+          "value": {
+            "record_id": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+            "kind": "links",
+            "target_record": "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD",
+            "target_revision": 1
+          },
+          "provenance": "AUTHOR_SIGNED"
+        }
+      }
+    ]
+  },
+  {
+    "name": "prior_relation_revision",
+    "prior_objects": [
+      {
+        "kind": "protocols",
+        "id": "protocol",
+        "revision": 1,
+        "value": {
+          "digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "resolved_manifest": {
+            "record_schemas": {
+              "entry": {
+                "type": "object",
+                "fields": {
+                  "text": "string"
+                },
+                "required": [
+                  "text"
+                ],
+                "max_bytes": 16384
+              }
+            },
+            "role_conflicts": [],
+            "historical_role_conflicts": [],
+            "actions": [
+              {
+                "id": "test.set",
+                "reads": [
+                  [
+                    "count"
+                  ]
+                ],
+                "writes": [
+                  [
+                    "count"
+                  ]
+                ],
+                "revisionEffects": {
+                  "control": true,
+                  "contentEntities": []
+                },
+                "variants": [
+                  {
+                    "when": [
+                      {
+                        "op": "eq",
+                        "left": {
+                          "from": "state",
+                          "path": [
+                            "count"
+                          ]
+                        },
+                        "right": {
+                          "from": "literal",
+                          "value": 0
+                        }
+                      }
+                    ],
+                    "effects": [
+                      {
+                        "op": "append",
+                        "schema": "entry",
+                        "recordSlot": "created",
+                        "value": {
+                          "from": "literal",
+                          "value": {
+                            "text": "hello"
+                          }
+                        },
+                        "relations": [
+                          {
+                            "kind": "links",
+                            "target": {
+                              "from": "ref",
+                              "source": "body",
+                              "path": [
+                                "target"
+                              ],
+                              "schema": "entry",
+                              "scope": "INSTANCE"
+                            }
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        "provenance": "AUTHOR_SIGNED"
+      },
+      {
+        "kind": "instances",
+        "id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+        "revision": 1,
+        "value": {
+          "id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+          "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+          "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "state": {
+            "count": 0
+          },
+          "revision": 1,
+          "event_revision": 0
+        },
+        "provenance": "AUTHOR_SIGNED"
+      },
+      {
+        "kind": "records",
+        "id": "QQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ",
+        "revision": 1,
+        "value": {
+          "id": "QQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ",
+          "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+          "instance_id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+          "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "entity_id": "YYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYY",
+          "schema_ref": "entry",
+          "payload": {
+            "text": "target"
+          },
+          "revision": 1
+        },
+        "provenance": "AUTHOR_SIGNED"
+      },
+      {
+        "kind": "record_relations",
+        "id": "[\"RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR\",\"links\",\"QQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ\",1]",
+        "revision": 1,
+        "value": {
+          "record_id": "RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR",
+          "kind": "links",
+          "target_record": "QQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ",
+          "target_revision": 1
+        },
+        "provenance": "AUTHOR_SIGNED"
+      }
+    ],
+    "pending": [
+      {
+        "position": 1,
+        "source_id": "RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR",
+        "relation": {
+          "kind": "links",
+          "target": {
+            "recordId": "QQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ",
+            "revision": 1
+          }
+        }
+      }
+    ],
+    "record_slots": {},
+    "entity_slots": {},
+    "assigned_records": {
+      "RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR": 1
+    },
+    "expected": [
+      {
+        "position": 1,
+        "object": {
+          "kind": "record_relations",
+          "id": "[\"RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR\",\"links\",\"QQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ\",1]",
+          "revision": 2,
+          "value": {
+            "record_id": "RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR",
+            "kind": "links",
+            "target_record": "QQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ",
+            "target_revision": 1
+          },
+          "provenance": "AUTHOR_SIGNED"
+        }
+      }
+    ]
+  },
+  {
+    "name": "unicode_relation_kind",
+    "prior_objects": [
+      {
+        "kind": "protocols",
+        "id": "protocol",
+        "revision": 1,
+        "value": {
+          "digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "resolved_manifest": {
+            "record_schemas": {
+              "entry": {
+                "type": "object",
+                "fields": {
+                  "text": "string"
+                },
+                "required": [
+                  "text"
+                ],
+                "max_bytes": 16384
+              }
+            },
+            "role_conflicts": [],
+            "historical_role_conflicts": [],
+            "actions": [
+              {
+                "id": "test.set",
+                "reads": [
+                  [
+                    "count"
+                  ]
+                ],
+                "writes": [
+                  [
+                    "count"
+                  ]
+                ],
+                "revisionEffects": {
+                  "control": true,
+                  "contentEntities": []
+                },
+                "variants": [
+                  {
+                    "when": [
+                      {
+                        "op": "eq",
+                        "left": {
+                          "from": "state",
+                          "path": [
+                            "count"
+                          ]
+                        },
+                        "right": {
+                          "from": "literal",
+                          "value": 0
+                        }
+                      }
+                    ],
+                    "effects": [
+                      {
+                        "op": "append",
+                        "schema": "entry",
+                        "recordSlot": "created",
+                        "value": {
+                          "from": "literal",
+                          "value": {
+                            "text": "hello"
+                          }
+                        },
+                        "relations": [
+                          {
+                            "kind": "é😀",
+                            "target": {
+                              "from": "ref",
+                              "source": "body",
+                              "path": [
+                                "target"
+                              ],
+                              "schema": "entry",
+                              "scope": "INSTANCE"
+                            }
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        "provenance": "AUTHOR_SIGNED"
+      },
+      {
+        "kind": "instances",
+        "id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+        "revision": 1,
+        "value": {
+          "id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+          "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+          "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "state": {
+            "count": 0
+          },
+          "revision": 1,
+          "event_revision": 0
+        },
+        "provenance": "AUTHOR_SIGNED"
+      },
+      {
+        "kind": "records",
+        "id": "QQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ",
+        "revision": 1,
+        "value": {
+          "id": "QQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ",
+          "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+          "instance_id": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+          "protocol_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "entity_id": "YYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYY",
+          "schema_ref": "entry",
+          "payload": {
+            "text": "target"
+          },
+          "revision": 1
+        },
+        "provenance": "AUTHOR_SIGNED"
+      }
+    ],
+    "pending": [
+      {
+        "position": 1,
+        "source_id": "RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR",
+        "relation": {
+          "kind": "é😀",
+          "target": {
+            "recordId": "QQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ",
+            "revision": 1
+          }
+        }
+      }
+    ],
+    "record_slots": {},
+    "entity_slots": {},
+    "assigned_records": {
+      "RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR": 1
+    },
+    "expected": [
+      {
+        "position": 1,
+        "object": {
+          "kind": "record_relations",
+          "id": "[\"RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR\",\"é😀\",\"QQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ\",1]",
+          "revision": 1,
+          "value": {
+            "record_id": "RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR",
+            "kind": "é😀",
+            "target_record": "QQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ",
+            "target_revision": 1
+          },
+          "provenance": "AUTHOR_SIGNED"
+        }
+      }
+    ]
+  }
+]

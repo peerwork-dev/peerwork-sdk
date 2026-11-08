@@ -1,0 +1,293 @@
+[
+  {
+    "name": "empty",
+    "objects": [],
+    "ceiling": 1,
+    "ok": true
+  },
+  {
+    "name": "author_v1",
+    "objects": [
+      {
+        "kind": "protocols",
+        "id": "p",
+        "revision": 1,
+        "provenance": "AUTHOR_SIGNED",
+        "value": {
+          "manifest": {
+            "name": "simple"
+          },
+          "resolved_manifest": {
+            "name": "simple"
+          }
+        }
+      }
+    ],
+    "ceiling": 1,
+    "ok": true
+  },
+  {
+    "name": "author_v2_denied",
+    "objects": [
+      {
+        "kind": "protocols",
+        "id": "p",
+        "revision": 1,
+        "provenance": "AUTHOR_SIGNED",
+        "value": {
+          "manifest": {
+            "name": "simple",
+            "format_version": 2
+          },
+          "resolved_manifest": {
+            "name": "simple",
+            "format_version": 2
+          }
+        }
+      }
+    ],
+    "ceiling": 1,
+    "ok": false,
+    "error": "PROTOCOL_FORMAT_CEILING_VIOLATION"
+  },
+  {
+    "name": "author_v2_allowed",
+    "objects": [
+      {
+        "kind": "protocols",
+        "id": "p",
+        "revision": 1,
+        "provenance": "AUTHOR_SIGNED",
+        "value": {
+          "manifest": {
+            "name": "simple",
+            "format_version": 2
+          },
+          "resolved_manifest": {
+            "name": "simple",
+            "format_version": 2
+          }
+        }
+      }
+    ],
+    "ceiling": 2,
+    "ok": true
+  },
+  {
+    "name": "author_v3_denied",
+    "objects": [
+      {
+        "kind": "protocols",
+        "id": "p",
+        "revision": 1,
+        "provenance": "AUTHOR_SIGNED",
+        "value": {
+          "manifest": {
+            "format_version": 3
+          },
+          "resolved_manifest": {
+            "format_version": 3
+          }
+        }
+      }
+    ],
+    "ceiling": 2,
+    "ok": false,
+    "error": "PROTOCOL_FORMAT_CEILING_VIOLATION"
+  },
+  {
+    "name": "archive_v2_denied",
+    "objects": [
+      {
+        "kind": "secure_commits",
+        "id": "c",
+        "revision": 1,
+        "provenance": "LEGACY_OWNER_ATTESTED",
+        "value": {
+          "payload": {
+            "mode": "PUBLIC",
+            "body": {
+              "objects": [
+                {
+                  "kind": "protocols",
+                  "id": "p",
+                  "revision": 1,
+                  "provenance": "AUTHOR_SIGNED",
+                  "value": {
+                    "manifest": {
+                      "name": "simple",
+                      "format_version": 2
+                    },
+                    "resolved_manifest": {
+                      "name": "simple",
+                      "format_version": 2
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
+    ],
+    "ceiling": 1,
+    "ok": false,
+    "error": "PROTOCOL_FORMAT_CEILING_VIOLATION"
+  },
+  {
+    "name": "archive_private_denied",
+    "objects": [
+      {
+        "kind": "secure_commits",
+        "id": "c",
+        "revision": 1,
+        "provenance": "LEGACY_OWNER_ATTESTED",
+        "value": {
+          "payload": {
+            "mode": "PRIVATE",
+            "body": {
+              "objects": [
+                {
+                  "kind": "protocols",
+                  "id": "p",
+                  "revision": 1,
+                  "provenance": "AUTHOR_SIGNED",
+                  "value": {
+                    "manifest": {
+                      "name": "simple"
+                    },
+                    "resolved_manifest": {
+                      "name": "simple"
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
+    ],
+    "ceiling": 1,
+    "ok": false,
+    "error": "PROTOCOL_FORMAT_CEILING_VIOLATION"
+  },
+  {
+    "name": "fragment_v2_denied",
+    "objects": [
+      {
+        "kind": "secure_fragment",
+        "id": "1ec8dd816c30fc2371ab318dbc9591beec2f58aaad89255bf6558e5cda3f8b0c-0",
+        "revision": 1,
+        "provenance": "AUTHOR_SIGNED",
+        "value": {
+          "fragment": {
+            "kind": "protocols",
+            "id": "p",
+            "revision": 1,
+            "index": 0,
+            "count": 1,
+            "provenance": "AUTHOR_SIGNED"
+          },
+          "data": "eyJtYW5pZmVzdCI6eyJmb3JtYXRfdmVyc2lvbiI6MiwibmFtZSI6InNpbXBsZSJ9LCJyZXNvbHZlZF9tYW5pZmVzdCI6eyJmb3JtYXRfdmVyc2lvbiI6MiwibmFtZSI6InNpbXBsZSJ9fQ"
+        }
+      }
+    ],
+    "ceiling": 1,
+    "ok": false,
+    "error": "PROTOCOL_FORMAT_CEILING_VIOLATION"
+  },
+  {
+    "name": "legacy_v2_denied",
+    "objects": [
+      {
+        "kind": "protocols",
+        "id": "p",
+        "revision": 1,
+        "provenance": "LEGACY_OWNER_ATTESTED",
+        "value": {
+          "manifest": "{\"manifest\":{\"name\":\"simple\",\"format_version\":2}}",
+          "resolved_manifest": "{\"name\":\"simple\",\"format_version\":2}"
+        }
+      }
+    ],
+    "ceiling": 1,
+    "ok": false,
+    "error": "PROTOCOL_FORMAT_CEILING_VIOLATION"
+  },
+  {
+    "name": "missing_resolved_denied",
+    "objects": [
+      {
+        "kind": "protocols",
+        "id": "p",
+        "revision": 1,
+        "provenance": "AUTHOR_SIGNED",
+        "value": {
+          "manifest": {
+            "name": "simple"
+          }
+        }
+      }
+    ],
+    "ceiling": 1,
+    "ok": false,
+    "error": "PROTOCOL_FORMAT_CEILING_VIOLATION"
+  },
+  {
+    "name": "composition_dependency_v2_denied",
+    "objects": [
+      {
+        "kind": "protocols",
+        "id": "p",
+        "revision": 1,
+        "provenance": "AUTHOR_SIGNED",
+        "value": {
+          "manifest": {
+            "name": "simple"
+          },
+          "resolved_manifest": {
+            "name": "simple"
+          },
+          "composition": {
+            "source_manifest": {
+              "name": "simple"
+            },
+            "dependencies": [
+              {
+                "manifest": {
+                  "name": "simple",
+                  "format_version": 2
+                }
+              }
+            ]
+          }
+        }
+      }
+    ],
+    "ceiling": 1,
+    "ok": false,
+    "error": "PROTOCOL_FORMAT_CEILING_VIOLATION"
+  },
+  {
+    "name": "wrong_provenance_denied",
+    "objects": [
+      {
+        "kind": "protocols",
+        "id": "p",
+        "revision": 1,
+        "provenance": "OTHER",
+        "value": {
+          "manifest": {
+            "name": "simple"
+          },
+          "resolved_manifest": {
+            "name": "simple"
+          }
+        }
+      }
+    ],
+    "ceiling": 1,
+    "ok": false,
+    "error": "PROTOCOL_FORMAT_CEILING_VIOLATION"
+  }
+]

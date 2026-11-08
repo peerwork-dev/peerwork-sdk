@@ -1,0 +1,15 @@
+{
+  "format": "peerwork.protocol-package-metadata.v1",
+  "package_id": "peerwork-proposal-adoption",
+  "version": "1.0.0",
+  "name": "Peerwork Proposal and Adoption",
+  "description": "Reusable proposal and independent-adoption component. Adoption requires an authenticated actor different from the author recorded from auth.actorId and an exact candidate reference equal to the pinned state reference. Role conflict declarations additionally constrain role grants but do not implement the authorship predicate.",
+  "license": "Apache-2.0",
+  "license_file": "LICENSE",
+  "source_maintainers": [
+    {
+      "name": "Peerwork project maintainers",
+      "origin": "src/workspace-presets.ts#proposal-adoption"
+    }
+  ]
+}

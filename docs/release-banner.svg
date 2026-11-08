@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="156" viewBox="0 0 1000 156" role="img" aria-labelledby="title desc">
+  <title id="title">Peerwork SDK experimental releases</title>
+  <desc id="desc">Download CLI, Python, and Node.js builds for Linux, macOS, and Windows.</desc>
+  <rect width="1000" height="156" rx="12" fill="#f3bd55"/>
+  <path d="M0 120h1000v36H0z" fill="#e5aa3d" opacity=".55"/>
+  <path d="M52 44H31V112H52M72 44H93V112H72" fill="none" stroke="#17212b" stroke-width="6" stroke-linecap="square" stroke-linejoin="miter"/>
+  <text x="132" y="62" fill="#17212b" font-family="system-ui,-apple-system,Segoe UI,sans-serif" font-size="25" font-weight="700" letter-spacing="1">PEERWORK SDK</text>
+  <text x="132" y="96" fill="#263542" font-family="system-ui,-apple-system,Segoe UI,sans-serif" font-size="16" font-weight="500" letter-spacing=".5">EXPERIMENTAL BUILDS · CLI · PYTHON · NODE.JS</text>
+  <rect x="724" y="48" width="238" height="54" rx="8" fill="#17212b"/>
+  <text x="843" y="82" text-anchor="middle" fill="#fff8e8" font-family="system-ui,-apple-system,Segoe UI,sans-serif" font-size="17" font-weight="650">BROWSE RELEASES  →</text>
+</svg>

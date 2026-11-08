@@ -1,0 +1,121 @@
+{
+  "kind": "sequence",
+  "id": "request-ack-cancel-terminal",
+  "state": {},
+  "steps": [
+    {
+      "action_id": "request.open",
+      "body": {
+        "responder": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+        "message": "Produce the requested artifact.",
+        "deadline": 1000
+      },
+      "auth": {
+        "actorId": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "workspaceRoles": [],
+        "protocolRoles": [
+          "REQUESTER"
+        ],
+        "capabilities": [
+          "REQUEST"
+        ]
+      },
+      "time_ms": 100,
+      "expected": {
+        "accepted": true
+      },
+      "bind_refs": [
+        {
+          "name": "request",
+          "record_slot": "request"
+        }
+      ]
+    },
+    {
+      "action_id": "request.ack",
+      "body": {},
+      "auth": {
+        "actorId": "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+        "workspaceRoles": [],
+        "protocolRoles": [
+          "RESPONDER"
+        ],
+        "capabilities": [
+          "RESPOND"
+        ]
+      },
+      "time_ms": 100,
+      "expected": {
+        "accepted": false,
+        "code": "CONSTRAINT_FAILED"
+      },
+      "exact_inputs": [
+        "request"
+      ]
+    },
+    {
+      "action_id": "request.ack",
+      "body": {},
+      "auth": {
+        "actorId": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+        "workspaceRoles": [],
+        "protocolRoles": [
+          "RESPONDER"
+        ],
+        "capabilities": [
+          "RESPOND"
+        ]
+      },
+      "time_ms": 100,
+      "expected": {
+        "accepted": true
+      },
+      "exact_inputs": [
+        "request"
+      ]
+    },
+    {
+      "action_id": "request.cancel",
+      "body": {},
+      "auth": {
+        "actorId": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "workspaceRoles": [],
+        "protocolRoles": [
+          "REQUESTER"
+        ],
+        "capabilities": [
+          "REQUEST"
+        ]
+      },
+      "time_ms": 100,
+      "expected": {
+        "accepted": true
+      },
+      "exact_inputs": [
+        "request"
+      ]
+    },
+    {
+      "action_id": "request.ack",
+      "body": {},
+      "auth": {
+        "actorId": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+        "workspaceRoles": [],
+        "protocolRoles": [
+          "RESPONDER"
+        ],
+        "capabilities": [
+          "RESPOND"
+        ]
+      },
+      "time_ms": 100,
+      "expected": {
+        "accepted": false,
+        "code": "CONSTRAINT_FAILED"
+      },
+      "exact_inputs": [
+        "request"
+      ]
+    }
+  ]
+}

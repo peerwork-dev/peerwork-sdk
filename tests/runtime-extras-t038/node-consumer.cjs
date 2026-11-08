@@ -1,0 +1,35 @@
+'use strict';
+const fs=require('node:fs'),crypto=require('node:crypto'),path=require('node:path'),assert=require('node:assert/strict'),cp=require('node:child_process');
+const state=process.env.PEERWORK_TEST_STATE,f=JSON.parse(fs.readFileSync(state+'/host-fixture.json')),root=process.env.PEERWORK_TEST_NODE_CONSUMER;
+const sha=p=>crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex');
+const sdkPath=require.resolve(root+'/node_modules/@peerwork/agent-sdk');
+const addon=root+'/node_modules/@peerwork/agent-sdk-linux-x64-gnu/index.node';
+assert.equal(sha(sdkPath),'d89711417ffe49db256b25675cfb7c526d7420ac8361c81e260529606de9f7f5');
+assert.equal(sha(addon),'60697f141fb04c34112e31f375be932f037e591299c21ce636f9cf8087dca792');
+assert.equal(process.version,'v22.23.0');assert.equal(process.platform,'linux');assert.equal(process.arch,'x64');
+const sdk=require(root+'/node_modules/@peerwork/agent-sdk'),native=state+'/native',config={origin:f.origin,stateDir:native,allowLoopbackHttp:true};
+assert(!fs.existsSync(native));const configFile=state+'/config.json';fs.writeFileSync(configFile,JSON.stringify({origin:f.origin,state_dir:native,allow_loopback_http:true}),{mode:0o600});
+const log=[];async function call(op,fn){const value=await fn();log.push({operation:op,value});fs.writeFileSync(state+'/calls.json',JSON.stringify(log),{mode:0o600});return value;}
+const owner=()=>sdk.openSecureOwnerWorkspaces(config);
+const requests=()=>fs.readFileSync(f.request_log,'utf8').split('\n').filter(Boolean).map(JSON.parse).filter(r=>r.host===new URL(f.origin).host);
+void(async()=>{
+ assert.equal(requests().length,0);
+ const identity=await call('import',()=>sdk.importLegacyOwnerIdentity(configFile,f.pem));assert.deepEqual(identity,f.identity);
+ assert.deepEqual(await call('identity',()=>sdk.openIdentity(native+'/identity.state')),identity);
+ assert.deepEqual(await call('operations',()=>owner().operations()),[]);
+ const created=await call('create',()=>owner().create({name:'Node22 PUBLIC runtime genesis',visibility:'PUBLIC',structured:true}));
+ assert.equal(created.status,'CREATED');assert.equal(created.visibility,'PUBLIC');assert.equal(created.sequence,1);
+ const read=await call('read',()=>owner().read(created.workspace_id));assert.equal(read.workspace_id,created.workspace_id);assert.equal(read.head,created.head);assert.equal(read.sequence,1);assert.equal(read.structure_status,'ACTIVE');
+ const workspaces=read.objects.filter(o=>o.kind==='workspaces');assert.equal(workspaces.length,1);assert.equal(workspaces[0].value.visibility,'PUBLIC');assert.equal(workspaces[0].value.owner,identity.actor_id);
+ const before=requests();assert.equal(before.length,1);assert.equal(before[0].method,'POST');assert.equal(before[0].path,'/api/workspace/v1/secure/workspaces');assert.equal(before[0].command_id,created.command_id);
+ assert.deepEqual(await call('operations',()=>owner().operations()),[{...created,status:'CREATED_LOCAL'}]);
+ assert.deepEqual(await call('resume',()=>owner().resume(created.command_id)),created);
+ assert.deepEqual(await call('read',()=>owner().read(created.workspace_id)),read);assert.deepEqual(requests(),before);
+ const info=JSON.parse(cp.execFileSync(process.env.PEERWORK_TEST_CLI,['identity','info',native+'/identity.state'],{encoding:'utf8'}));assert.deepEqual(info,identity);
+ fs.writeFileSync(state+'/cli-identity.json',JSON.stringify(info),{mode:0o600});
+ fs.writeFileSync(state+'/verified-read.json',JSON.stringify(read),{mode:0o600});
+ fs.writeFileSync(state+'/import.json',JSON.stringify({version:process.version,executable:process.execPath,wrapper:sdkPath,wrapper_sha256:sha(sdkPath),native:addon,native_sha256:sha(addon),actual_loaded_addon:Object.keys(require.cache).filter(p=>p.endsWith('.node'))}),{mode:0o600});
+ assert(Object.keys(require.cache).includes(addon));
+ const result={result:'PASS',profile:'node22-gnu',classification:'operator_synthetic',interface:'node',visibility:'PUBLIC',workspace_id:created.workspace_id,command_id:created.command_id,head:created.head,policy_hash:read.policy_hash,selected_identity_matches:true,bootstrap_posts:1,original_command_resume_idempotent:true,node_cli_identity_reopen:true};
+ fs.writeFileSync(state+'/effects.json',JSON.stringify(result),{mode:0o600});console.log(JSON.stringify(result));
+})().catch(e=>{console.error(e);process.exitCode=1;});

@@ -1,0 +1,298 @@
+[
+  {
+    "name": "valid",
+    "proof": {
+      "v": 1,
+      "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+      "source": {
+        "v": 1,
+        "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+        "owner_id": "OOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO",
+        "owner_key": "KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK",
+        "sequence": 1,
+        "head": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "policy_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      },
+      "source_id": "6dd71a6554947e31c4531701a047c0cfcd9654ddb5add4dabaa8bedde133fca6",
+      "protocol_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "value_sha256": "8a652594b4ba365499d753c1fe7a2a7e33af623a7a00a818399b85ee27271b79",
+      "bytes": 265,
+      "parts": [
+        {
+          "id": "a4dcec50b2a9c9764227fa68ce3e6baaa10043f511ffaaaa6a98202def975114",
+          "index": 0,
+          "sha256": "8a652594b4ba365499d753c1fe7a2a7e33af623a7a00a818399b85ee27271b79",
+          "bytes": 265
+        }
+      ]
+    },
+    "parts": [
+      {
+        "kind": "protocol_object_part",
+        "id": "a4dcec50b2a9c9764227fa68ce3e6baaa10043f511ffaaaa6a98202def975114",
+        "revision": 1,
+        "provenance": "AUTHOR_SIGNED",
+        "value": {
+          "v": 1,
+          "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+          "source_id": "6dd71a6554947e31c4531701a047c0cfcd9654ddb5add4dabaa8bedde133fca6",
+          "index": 0,
+          "bytes": 265,
+          "sha256": "8a652594b4ba365499d753c1fe7a2a7e33af623a7a00a818399b85ee27271b79",
+          "text": "{\"digest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"manifest\":{\"array\":[1,2,3],\"name\":\"demo\",\"text\":\"\\ud800\"},\"resolved_manifest\":{\"array\":[1,2,3],\"name\":\"demo\",\"text\":\"\\ud800\"},\"workspace_id\":\"WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW\"}"
+        }
+      }
+    ],
+    "result": {
+      "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "manifest": {
+        "array": [
+          1,
+          2,
+          3
+        ],
+        "name": "demo",
+        "text": "\ud800"
+      },
+      "resolved_manifest": {
+        "array": [
+          1,
+          2,
+          3
+        ],
+        "name": "demo",
+        "text": "\ud800"
+      },
+      "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW"
+    }
+  },
+  {
+    "name": "changed_text",
+    "proof": {
+      "v": 1,
+      "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+      "source": {
+        "v": 1,
+        "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+        "owner_id": "OOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO",
+        "owner_key": "KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK",
+        "sequence": 1,
+        "head": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "policy_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      },
+      "source_id": "6dd71a6554947e31c4531701a047c0cfcd9654ddb5add4dabaa8bedde133fca6",
+      "protocol_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "value_sha256": "8a652594b4ba365499d753c1fe7a2a7e33af623a7a00a818399b85ee27271b79",
+      "bytes": 265,
+      "parts": [
+        {
+          "id": "a4dcec50b2a9c9764227fa68ce3e6baaa10043f511ffaaaa6a98202def975114",
+          "index": 0,
+          "sha256": "8a652594b4ba365499d753c1fe7a2a7e33af623a7a00a818399b85ee27271b79",
+          "bytes": 265
+        }
+      ]
+    },
+    "parts": [
+      {
+        "kind": "protocol_object_part",
+        "id": "a4dcec50b2a9c9764227fa68ce3e6baaa10043f511ffaaaa6a98202def975114",
+        "revision": 1,
+        "provenance": "AUTHOR_SIGNED",
+        "value": {
+          "v": 1,
+          "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+          "source_id": "6dd71a6554947e31c4531701a047c0cfcd9654ddb5add4dabaa8bedde133fca6",
+          "index": 0,
+          "bytes": 265,
+          "sha256": "8a652594b4ba365499d753c1fe7a2a7e33af623a7a00a818399b85ee27271b79",
+          "text": "{\"digest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"manifest\":{\"array\":[1,2,3],\"name\":\"demo\",\"text\":\"\\ud800\"},\"resolved_manifest\":{\"array\":[1,2,3],\"name\":\"demo\",\"text\":\"\\ud800\"},\"workspace_id\":\"WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW\"}x"
+        }
+      }
+    ],
+    "error": "PROTOCOL_OBJECT_SOURCE_INVALID"
+  },
+  {
+    "name": "missing_part",
+    "proof": {
+      "v": 1,
+      "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+      "source": {
+        "v": 1,
+        "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+        "owner_id": "OOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO",
+        "owner_key": "KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK",
+        "sequence": 1,
+        "head": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "policy_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      },
+      "source_id": "6dd71a6554947e31c4531701a047c0cfcd9654ddb5add4dabaa8bedde133fca6",
+      "protocol_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "value_sha256": "8a652594b4ba365499d753c1fe7a2a7e33af623a7a00a818399b85ee27271b79",
+      "bytes": 265,
+      "parts": [
+        {
+          "id": "a4dcec50b2a9c9764227fa68ce3e6baaa10043f511ffaaaa6a98202def975114",
+          "index": 0,
+          "sha256": "8a652594b4ba365499d753c1fe7a2a7e33af623a7a00a818399b85ee27271b79",
+          "bytes": 265
+        }
+      ]
+    },
+    "parts": [],
+    "error": "PROTOCOL_OBJECT_SOURCE_INVALID"
+  },
+  {
+    "name": "duplicate_part",
+    "proof": {
+      "v": 1,
+      "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+      "source": {
+        "v": 1,
+        "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+        "owner_id": "OOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO",
+        "owner_key": "KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK",
+        "sequence": 1,
+        "head": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "policy_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      },
+      "source_id": "6dd71a6554947e31c4531701a047c0cfcd9654ddb5add4dabaa8bedde133fca6",
+      "protocol_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "value_sha256": "8a652594b4ba365499d753c1fe7a2a7e33af623a7a00a818399b85ee27271b79",
+      "bytes": 265,
+      "parts": [
+        {
+          "id": "a4dcec50b2a9c9764227fa68ce3e6baaa10043f511ffaaaa6a98202def975114",
+          "index": 0,
+          "sha256": "8a652594b4ba365499d753c1fe7a2a7e33af623a7a00a818399b85ee27271b79",
+          "bytes": 265
+        }
+      ]
+    },
+    "parts": [
+      {
+        "kind": "protocol_object_part",
+        "id": "a4dcec50b2a9c9764227fa68ce3e6baaa10043f511ffaaaa6a98202def975114",
+        "revision": 1,
+        "provenance": "AUTHOR_SIGNED",
+        "value": {
+          "v": 1,
+          "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+          "source_id": "6dd71a6554947e31c4531701a047c0cfcd9654ddb5add4dabaa8bedde133fca6",
+          "index": 0,
+          "bytes": 265,
+          "sha256": "8a652594b4ba365499d753c1fe7a2a7e33af623a7a00a818399b85ee27271b79",
+          "text": "{\"digest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"manifest\":{\"array\":[1,2,3],\"name\":\"demo\",\"text\":\"\\ud800\"},\"resolved_manifest\":{\"array\":[1,2,3],\"name\":\"demo\",\"text\":\"\\ud800\"},\"workspace_id\":\"WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW\"}"
+        }
+      },
+      {
+        "kind": "protocol_object_part",
+        "id": "a4dcec50b2a9c9764227fa68ce3e6baaa10043f511ffaaaa6a98202def975114",
+        "revision": 1,
+        "provenance": "AUTHOR_SIGNED",
+        "value": {
+          "v": 1,
+          "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+          "source_id": "6dd71a6554947e31c4531701a047c0cfcd9654ddb5add4dabaa8bedde133fca6",
+          "index": 0,
+          "bytes": 265,
+          "sha256": "8a652594b4ba365499d753c1fe7a2a7e33af623a7a00a818399b85ee27271b79",
+          "text": "{\"digest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"manifest\":{\"array\":[1,2,3],\"name\":\"demo\",\"text\":\"\\ud800\"},\"resolved_manifest\":{\"array\":[1,2,3],\"name\":\"demo\",\"text\":\"\\ud800\"},\"workspace_id\":\"WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW\"}"
+        }
+      }
+    ],
+    "error": "PROTOCOL_OBJECT_SOURCE_INVALID"
+  },
+  {
+    "name": "wrong_descriptor_bytes",
+    "proof": {
+      "v": 1,
+      "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+      "source": {
+        "v": 1,
+        "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+        "owner_id": "OOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO",
+        "owner_key": "KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK",
+        "sequence": 1,
+        "head": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "policy_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      },
+      "source_id": "6dd71a6554947e31c4531701a047c0cfcd9654ddb5add4dabaa8bedde133fca6",
+      "protocol_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "value_sha256": "8a652594b4ba365499d753c1fe7a2a7e33af623a7a00a818399b85ee27271b79",
+      "bytes": 265,
+      "parts": [
+        {
+          "id": "a4dcec50b2a9c9764227fa68ce3e6baaa10043f511ffaaaa6a98202def975114",
+          "index": 0,
+          "sha256": "8a652594b4ba365499d753c1fe7a2a7e33af623a7a00a818399b85ee27271b79",
+          "bytes": 266
+        }
+      ]
+    },
+    "parts": [
+      {
+        "kind": "protocol_object_part",
+        "id": "a4dcec50b2a9c9764227fa68ce3e6baaa10043f511ffaaaa6a98202def975114",
+        "revision": 1,
+        "provenance": "AUTHOR_SIGNED",
+        "value": {
+          "v": 1,
+          "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+          "source_id": "6dd71a6554947e31c4531701a047c0cfcd9654ddb5add4dabaa8bedde133fca6",
+          "index": 0,
+          "bytes": 265,
+          "sha256": "8a652594b4ba365499d753c1fe7a2a7e33af623a7a00a818399b85ee27271b79",
+          "text": "{\"digest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"manifest\":{\"array\":[1,2,3],\"name\":\"demo\",\"text\":\"\\ud800\"},\"resolved_manifest\":{\"array\":[1,2,3],\"name\":\"demo\",\"text\":\"\\ud800\"},\"workspace_id\":\"WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW\"}"
+        }
+      }
+    ],
+    "error": "PROTOCOL_OBJECT_SOURCE_INVALID"
+  },
+  {
+    "name": "wrong_source_id",
+    "proof": {
+      "v": 1,
+      "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+      "source": {
+        "v": 1,
+        "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+        "owner_id": "OOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO",
+        "owner_key": "KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK",
+        "sequence": 1,
+        "head": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "policy_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      },
+      "source_id": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "protocol_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "value_sha256": "8a652594b4ba365499d753c1fe7a2a7e33af623a7a00a818399b85ee27271b79",
+      "bytes": 265,
+      "parts": [
+        {
+          "id": "a4dcec50b2a9c9764227fa68ce3e6baaa10043f511ffaaaa6a98202def975114",
+          "index": 0,
+          "sha256": "8a652594b4ba365499d753c1fe7a2a7e33af623a7a00a818399b85ee27271b79",
+          "bytes": 265
+        }
+      ]
+    },
+    "parts": [
+      {
+        "kind": "protocol_object_part",
+        "id": "a4dcec50b2a9c9764227fa68ce3e6baaa10043f511ffaaaa6a98202def975114",
+        "revision": 1,
+        "provenance": "AUTHOR_SIGNED",
+        "value": {
+          "v": 1,
+          "workspace_id": "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+          "source_id": "6dd71a6554947e31c4531701a047c0cfcd9654ddb5add4dabaa8bedde133fca6",
+          "index": 0,
+          "bytes": 265,
+          "sha256": "8a652594b4ba365499d753c1fe7a2a7e33af623a7a00a818399b85ee27271b79",
+          "text": "{\"digest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"manifest\":{\"array\":[1,2,3],\"name\":\"demo\",\"text\":\"\\ud800\"},\"resolved_manifest\":{\"array\":[1,2,3],\"name\":\"demo\",\"text\":\"\\ud800\"},\"workspace_id\":\"WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW\"}"
+        }
+      }
+    ],
+    "error": "PROTOCOL_OBJECT_SOURCE_INVALID"
+  }
+]

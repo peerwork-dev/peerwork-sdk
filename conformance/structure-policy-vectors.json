@@ -1,0 +1,673 @@
+[
+  {
+    "name": "empty",
+    "input": {
+      "v": 1,
+      "protocols": [],
+      "disclosure": [],
+      "instances": []
+    },
+    "ok": true
+  },
+  {
+    "name": "task_valid",
+    "input": {
+      "v": 1,
+      "protocols": [
+        {
+          "v": 1,
+          "protocol_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "schemas": {
+            "task.revision": {
+              "fields": {
+                "status": {
+                  "protection": "server_readable",
+                  "type": "task_status"
+                },
+                "parent": {
+                  "protection": "server_readable",
+                  "type": "optional_reference"
+                }
+              },
+              "required": [
+                "status",
+                "parent"
+              ]
+            }
+          },
+          "actions": {
+            "task.create": {
+              "schemas": [
+                "task.revision"
+              ],
+              "roles": [],
+              "capabilities": [],
+              "heads": "APPEND",
+              "task_transition": [
+                {
+                  "from": null,
+                  "to": "OPEN"
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "disclosure": [
+        {
+          "protocol_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "schema": "task.revision",
+          "fields": [
+            "status",
+            "parent"
+          ]
+        }
+      ],
+      "instances": [
+        {
+          "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+          "protocol_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    "ok": true
+  },
+  {
+    "name": "null_coordination",
+    "input": {
+      "v": 1,
+      "protocols": [
+        {
+          "v": 1,
+          "protocol_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "schemas": {
+            "task.revision": {
+              "fields": {
+                "status": {
+                  "protection": "server_readable",
+                  "type": "task_status"
+                },
+                "parent": {
+                  "protection": "server_readable",
+                  "type": "optional_reference"
+                }
+              },
+              "required": [
+                "status",
+                "parent"
+              ]
+            }
+          },
+          "actions": {
+            "task.create": {
+              "schemas": [
+                "task.revision"
+              ],
+              "roles": [],
+              "capabilities": [],
+              "heads": "APPEND",
+              "task_transition": [
+                {
+                  "from": null,
+                  "to": "OPEN"
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "disclosure": [
+        {
+          "protocol_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "schema": "task.revision",
+          "fields": [
+            "status",
+            "parent"
+          ]
+        }
+      ],
+      "instances": [
+        {
+          "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+          "protocol_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ],
+      "coordination": null
+    },
+    "ok": true
+  },
+  {
+    "name": "missing_disclosure",
+    "input": {
+      "v": 1,
+      "protocols": [
+        {
+          "v": 1,
+          "protocol_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "schemas": {
+            "task.revision": {
+              "fields": {
+                "status": {
+                  "protection": "server_readable",
+                  "type": "task_status"
+                },
+                "parent": {
+                  "protection": "server_readable",
+                  "type": "optional_reference"
+                }
+              },
+              "required": [
+                "status",
+                "parent"
+              ]
+            }
+          },
+          "actions": {
+            "task.create": {
+              "schemas": [
+                "task.revision"
+              ],
+              "roles": [],
+              "capabilities": [],
+              "heads": "APPEND",
+              "task_transition": [
+                {
+                  "from": null,
+                  "to": "OPEN"
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "disclosure": [],
+      "instances": [
+        {
+          "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+          "protocol_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    "ok": false,
+    "error": "STRUCTURE_DISCLOSURE_REQUIRED"
+  },
+  {
+    "name": "bad_task_transition",
+    "input": {
+      "v": 1,
+      "protocols": [
+        {
+          "v": 1,
+          "protocol_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "schemas": {
+            "task.revision": {
+              "fields": {
+                "status": {
+                  "protection": "server_readable",
+                  "type": "task_status"
+                },
+                "parent": {
+                  "protection": "server_readable",
+                  "type": "optional_reference"
+                }
+              },
+              "required": [
+                "status",
+                "parent"
+              ]
+            }
+          },
+          "actions": {
+            "task.create": {
+              "schemas": [
+                "task.revision"
+              ],
+              "roles": [],
+              "capabilities": [],
+              "heads": "APPEND",
+              "task_transition": [
+                {
+                  "from": "MISSING",
+                  "to": "OPEN"
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "disclosure": [
+        {
+          "protocol_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "schema": "task.revision",
+          "fields": [
+            "status",
+            "parent"
+          ]
+        }
+      ],
+      "instances": [
+        {
+          "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+          "protocol_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    "ok": false,
+    "error": "STRUCTURE_TRANSITION_INVALID"
+  },
+  {
+    "name": "extra_protocol_field",
+    "input": {
+      "v": 1,
+      "protocols": [
+        {
+          "v": 1,
+          "protocol_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "schemas": {
+            "task.revision": {
+              "fields": {
+                "status": {
+                  "protection": "server_readable",
+                  "type": "task_status"
+                },
+                "parent": {
+                  "protection": "server_readable",
+                  "type": "optional_reference"
+                }
+              },
+              "required": [
+                "status",
+                "parent"
+              ]
+            }
+          },
+          "actions": {
+            "task.create": {
+              "schemas": [
+                "task.revision"
+              ],
+              "roles": [],
+              "capabilities": [],
+              "heads": "APPEND",
+              "task_transition": [
+                {
+                  "from": null,
+                  "to": "OPEN"
+                }
+              ]
+            }
+          },
+          "extra": 1
+        }
+      ],
+      "disclosure": [
+        {
+          "protocol_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "schema": "task.revision",
+          "fields": [
+            "status",
+            "parent"
+          ]
+        }
+      ],
+      "instances": [
+        {
+          "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+          "protocol_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    "ok": false,
+    "error": "STRUCTURE_UNKNOWN_OR_MISSING_FIELD"
+  },
+  {
+    "name": "duplicate_instance",
+    "input": {
+      "v": 1,
+      "protocols": [
+        {
+          "v": 1,
+          "protocol_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "schemas": {
+            "task.revision": {
+              "fields": {
+                "status": {
+                  "protection": "server_readable",
+                  "type": "task_status"
+                },
+                "parent": {
+                  "protection": "server_readable",
+                  "type": "optional_reference"
+                }
+              },
+              "required": [
+                "status",
+                "parent"
+              ]
+            }
+          },
+          "actions": {
+            "task.create": {
+              "schemas": [
+                "task.revision"
+              ],
+              "roles": [],
+              "capabilities": [],
+              "heads": "APPEND",
+              "task_transition": [
+                {
+                  "from": null,
+                  "to": "OPEN"
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "disclosure": [
+        {
+          "protocol_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "schema": "task.revision",
+          "fields": [
+            "status",
+            "parent"
+          ]
+        }
+      ],
+      "instances": [
+        {
+          "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+          "protocol_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        {
+          "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+          "protocol_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    "ok": false,
+    "error": "STRUCTURE_INSTANCE_INVALID"
+  },
+  {
+    "name": "unknown_action_schema",
+    "input": {
+      "v": 1,
+      "protocols": [
+        {
+          "v": 1,
+          "protocol_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "schemas": {
+            "task.revision": {
+              "fields": {
+                "status": {
+                  "protection": "server_readable",
+                  "type": "task_status"
+                },
+                "parent": {
+                  "protection": "server_readable",
+                  "type": "optional_reference"
+                }
+              },
+              "required": [
+                "status",
+                "parent"
+              ]
+            }
+          },
+          "actions": {
+            "task.create": {
+              "schemas": [
+                "missing"
+              ],
+              "roles": [],
+              "capabilities": [],
+              "heads": "APPEND",
+              "task_transition": [
+                {
+                  "from": null,
+                  "to": "OPEN"
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "disclosure": [
+        {
+          "protocol_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "schema": "task.revision",
+          "fields": [
+            "status",
+            "parent"
+          ]
+        }
+      ],
+      "instances": [
+        {
+          "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+          "protocol_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    "ok": false,
+    "error": "STRUCTURE_LIST_INVALID"
+  },
+  {
+    "name": "falsy_workflow",
+    "input": {
+      "v": 1,
+      "protocols": [
+        {
+          "v": 1,
+          "protocol_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "schemas": {
+            "task.revision": {
+              "fields": {
+                "status": {
+                  "protection": "server_readable",
+                  "type": "task_status"
+                },
+                "parent": {
+                  "protection": "server_readable",
+                  "type": "optional_reference"
+                }
+              },
+              "required": [
+                "status",
+                "parent"
+              ],
+              "workflow": null
+            }
+          },
+          "actions": {
+            "task.create": {
+              "schemas": [
+                "task.revision"
+              ],
+              "roles": [],
+              "capabilities": [],
+              "heads": "APPEND",
+              "task_transition": [
+                {
+                  "from": null,
+                  "to": "OPEN"
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "disclosure": [
+        {
+          "protocol_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "schema": "task.revision",
+          "fields": [
+            "status",
+            "parent"
+          ]
+        }
+      ],
+      "instances": [
+        {
+          "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+          "protocol_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    "ok": true
+  },
+  {
+    "name": "workflow_readable",
+    "input": {
+      "v": 1,
+      "protocols": [
+        {
+          "v": 1,
+          "protocol_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "schemas": {
+            "task.revision": {
+              "fields": {
+                "status": {
+                  "protection": "server_readable",
+                  "type": "enum",
+                  "values": [
+                    "OPEN",
+                    "DONE"
+                  ]
+                },
+                "parent": {
+                  "protection": "server_readable",
+                  "type": "optional_reference"
+                }
+              },
+              "required": [
+                "status",
+                "parent"
+              ],
+              "workflow": {
+                "v": 1,
+                "status_field": "status",
+                "parent_field": "parent",
+                "states": [
+                  "OPEN",
+                  "DONE"
+                ],
+                "transitions": [
+                  {
+                    "action": "task.create",
+                    "from": null,
+                    "to": "OPEN"
+                  }
+                ]
+              }
+            }
+          },
+          "actions": {
+            "task.create": {
+              "schemas": [
+                "task.revision"
+              ],
+              "roles": [],
+              "capabilities": [],
+              "heads": "APPEND"
+            }
+          }
+        }
+      ],
+      "disclosure": [
+        {
+          "protocol_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "schema": "task.revision",
+          "fields": [
+            "status",
+            "parent"
+          ]
+        }
+      ],
+      "instances": [
+        {
+          "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+          "protocol_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    "ok": true
+  },
+  {
+    "name": "workflow_partial_disclosure",
+    "input": {
+      "v": 1,
+      "protocols": [
+        {
+          "v": 1,
+          "protocol_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "schemas": {
+            "task.revision": {
+              "fields": {
+                "status": {
+                  "protection": "server_readable",
+                  "type": "enum",
+                  "values": [
+                    "OPEN",
+                    "DONE"
+                  ]
+                },
+                "parent": {
+                  "protection": "e2ee",
+                  "type": "json"
+                }
+              },
+              "required": [
+                "status",
+                "parent"
+              ],
+              "workflow": {
+                "v": 1,
+                "status_field": "status",
+                "parent_field": "parent",
+                "states": [
+                  "OPEN",
+                  "DONE"
+                ],
+                "transitions": [
+                  {
+                    "action": "task.create",
+                    "from": null,
+                    "to": "OPEN"
+                  }
+                ]
+              }
+            }
+          },
+          "actions": {
+            "task.create": {
+              "schemas": [
+                "task.revision"
+              ],
+              "roles": [],
+              "capabilities": [],
+              "heads": "APPEND"
+            }
+          }
+        }
+      ],
+      "disclosure": [
+        {
+          "protocol_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "schema": "task.revision",
+          "fields": [
+            "status"
+          ]
+        }
+      ],
+      "instances": [
+        {
+          "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+          "protocol_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    "ok": false,
+    "error": "WORKFLOW_PARTIAL_DISCLOSURE"
+  }
+]

@@ -1,0 +1,261 @@
+{
+  "format": "peerwork.protocol-source.v2",
+  "semantics": "peerwork.kernel.v1",
+  "manifest": {
+    "name": "peerwork.gather-two.v1",
+    "display_version": "1",
+    "semantics": "peerwork.kernel.v1",
+    "dependencies": [],
+    "protocol_roles": [
+      "COORDINATOR"
+    ],
+    "capabilities": [
+      "GATHER"
+    ],
+    "role_conflicts": [],
+    "historical_role_conflicts": [],
+    "constraints": {},
+    "record_schemas": {
+      "comm.aggregate": {
+        "type": "object",
+        "fields": {
+          "left_ref": "json",
+          "right_ref": "json",
+          "collector": "string"
+        },
+        "required": [
+          "left_ref",
+          "right_ref",
+          "collector"
+        ],
+        "max_bytes": 16384
+      }
+    },
+    "initial_state": {
+      "collected": false,
+      "aggregate_ref": null
+    },
+    "actions": [
+      {
+        "id": "gather.collect",
+        "reads": [
+          [
+            "collected"
+          ]
+        ],
+        "writes": [
+          [
+            "collected"
+          ],
+          [
+            "aggregate_ref"
+          ]
+        ],
+        "revisionEffects": {
+          "control": true,
+          "contentEntities": []
+        },
+        "variants": [
+          {
+            "when": [
+              {
+                "op": "has_protocol_role",
+                "role": "COORDINATOR"
+              },
+              {
+                "op": "has_capability",
+                "capability": "GATHER"
+              },
+              {
+                "op": "eq",
+                "left": {
+                  "from": "state",
+                  "path": [
+                    "collected"
+                  ]
+                },
+                "right": {
+                  "from": "literal",
+                  "value": false
+                }
+              }
+            ],
+            "effects": [
+              {
+                "op": "append",
+                "schema": "comm.aggregate",
+                "recordSlot": "aggregate",
+                "value": {
+                  "from": "object",
+                  "fields": {
+                    "left_ref": {
+                      "from": "ref",
+                      "source": "body",
+                      "path": [
+                        "left_ref"
+                      ],
+                      "scope": "INSTANCE"
+                    },
+                    "right_ref": {
+                      "from": "ref",
+                      "source": "body",
+                      "path": [
+                        "right_ref"
+                      ],
+                      "scope": "INSTANCE"
+                    },
+                    "collector": {
+                      "from": "auth",
+                      "field": "actorId"
+                    }
+                  }
+                },
+                "relations": [
+                  {
+                    "kind": "left",
+                    "target": {
+                      "from": "ref",
+                      "source": "body",
+                      "path": [
+                        "left_ref"
+                      ],
+                      "scope": "INSTANCE"
+                    }
+                  },
+                  {
+                    "kind": "right",
+                    "target": {
+                      "from": "ref",
+                      "source": "body",
+                      "path": [
+                        "right_ref"
+                      ],
+                      "scope": "INSTANCE"
+                    }
+                  }
+                ]
+              },
+              {
+                "op": "set",
+                "path": [
+                  "collected"
+                ],
+                "value": {
+                  "from": "literal",
+                  "value": true
+                }
+              },
+              {
+                "op": "set",
+                "path": [
+                  "aggregate_ref"
+                ],
+                "value": {
+                  "from": "produced_ref",
+                  "slot": "aggregate"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "imports": [],
+  "parameters": [],
+  "exports": [],
+  "bindings": [],
+  "derive": [],
+  "interfaces": {
+    "outputs": [
+      {
+        "name": "aggregate",
+        "type": "exact_ref",
+        "selector": {
+          "from": "state",
+          "path": [
+            "aggregate_ref"
+          ]
+        },
+        "available_when": {
+          "op": "eq",
+          "left": {
+            "from": "state",
+            "path": [
+              "collected"
+            ]
+          },
+          "right": {
+            "from": "literal",
+            "value": true
+          }
+        },
+        "schema": "comm.aggregate",
+        "scope": "INSTANCE"
+      }
+    ],
+    "inputs": [
+      {
+        "action": "gather.collect",
+        "variant": 0,
+        "name": "left_result",
+        "type": "exact_ref",
+        "scope": "INSTANCE",
+        "body_path": [
+          "left_ref"
+        ],
+        "required": true,
+        "action_body": {
+          "fields": {
+            "left_ref": {
+              "type": "exact_ref",
+              "input": "left_result",
+              "scope": "INSTANCE"
+            },
+            "right_ref": {
+              "type": "exact_ref",
+              "input": "right_result",
+              "scope": "INSTANCE"
+            }
+          },
+          "required": [
+            "left_ref",
+            "right_ref"
+          ],
+          "additionalProperties": false
+        }
+      },
+      {
+        "action": "gather.collect",
+        "variant": 0,
+        "name": "right_result",
+        "type": "exact_ref",
+        "scope": "INSTANCE",
+        "body_path": [
+          "right_ref"
+        ],
+        "required": true,
+        "action_body": {
+          "fields": {
+            "left_ref": {
+              "type": "exact_ref",
+              "input": "left_result",
+              "scope": "INSTANCE"
+            },
+            "right_ref": {
+              "type": "exact_ref",
+              "input": "right_result",
+              "scope": "INSTANCE"
+            }
+          },
+          "required": [
+            "left_ref",
+            "right_ref"
+          ],
+          "additionalProperties": false
+        }
+      }
+    ]
+  },
+  "connections": []
+}

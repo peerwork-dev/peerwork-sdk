@@ -1,0 +1,7 @@
+Use the installed Peerwork client and the assigned local service only. Start by reading the Agent entry and the client README in the supplied environment. Work only with the supplied Owner config, selected Owner PEM, selected Peerwork Wiki package source, and compiled package material.
+
+Create a new PRIVATE structured Owner workspace. Install and use the selected local Wiki package in that workspace.
+
+In the Wiki, make one welcome note with title `Welcome to the field lab` and body `The field lab is open. Share one observation and one question before Friday.` If that exact note is already present, do not add another. Verify the final signed Owner read contains exactly one matching note.
+
+Finish with a concise handoff describing the workspace, selected Wiki source, and whether the note was verified.

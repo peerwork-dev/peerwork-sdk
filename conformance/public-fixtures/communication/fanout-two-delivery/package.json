@@ -1,0 +1,15 @@
+{
+  "format": "peerwork.protocol-package-metadata.v1",
+  "package_id": "peerwork-fanout-two-delivery",
+  "version": "1.0.0",
+  "name": "fanout-two-delivery",
+  "description": "Fixed fanout of two independently invoked artifact exchanges and all-of-two gather. The same executable exchange package is imported twice. Each branch has its own durable timeout/cancellation; no automatic dispatch or cascading cancellation is claimed. The aggregate output can be consumed by a larger composition.",
+  "license": "Apache-2.0",
+  "license_file": "LICENSE",
+  "source_maintainers": [
+    {
+      "name": "Peerwork project maintainers",
+      "origin": "scripts/generate-communication-protocols.mjs"
+    }
+  ]
+}

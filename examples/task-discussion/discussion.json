@@ -1,0 +1,147 @@
+{
+  "name": "peerwork.discussion.body-e2ee",
+  "display_version": "2.0.0",
+  "semantics": "peerwork.kernel.v1",
+  "dependencies": [],
+  "initial_state": {},
+  "protocol_roles": [
+    "CONTRIBUTOR"
+  ],
+  "capabilities": [
+    "POST"
+  ],
+  "record_schemas": {
+    "discussion.message": {
+      "type": "object",
+      "fields": {
+        "author": "string",
+        "reply_to": "json"
+      },
+      "required": [
+        "author",
+        "reply_to"
+      ],
+      "max_bytes": 2048
+    }
+  },
+  "actions": [
+    {
+      "id": "discussion.post",
+      "reads": [],
+      "writes": [],
+      "revisionEffects": {
+        "control": false,
+        "contentEntities": []
+      },
+      "variants": [
+        {
+          "when": [
+            {
+              "op": "has_protocol_role",
+              "role": "CONTRIBUTOR"
+            },
+            {
+              "op": "has_capability",
+              "capability": "POST"
+            }
+          ],
+          "effects": [
+            {
+              "op": "append",
+              "schema": "discussion.message",
+              "value": {
+                "from": "object",
+                "fields": {
+                  "author": {
+                    "from": "auth",
+                    "field": "actorId"
+                  },
+                  "reply_to": {
+                    "from": "literal",
+                    "value": null
+                  }
+                }
+              },
+              "relations": []
+            }
+          ]
+        }
+      ],
+      "inputs": {
+        "fields": {},
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "id": "discussion.reply",
+      "reads": [],
+      "writes": [],
+      "revisionEffects": {
+        "control": false,
+        "contentEntities": []
+      },
+      "variants": [
+        {
+          "when": [
+            {
+              "op": "has_protocol_role",
+              "role": "CONTRIBUTOR"
+            },
+            {
+              "op": "has_capability",
+              "capability": "POST"
+            },
+            {
+              "op": "exact_ref",
+              "ref": {
+                "from": "ref",
+                "source": "body",
+                "path": [
+                  "reply_to"
+                ],
+                "scope": "INSTANCE"
+              }
+            }
+          ],
+          "effects": [
+            {
+              "op": "append",
+              "schema": "discussion.message",
+              "value": {
+                "from": "object",
+                "fields": {
+                  "author": {
+                    "from": "auth",
+                    "field": "actorId"
+                  },
+                  "reply_to": {
+                    "from": "ref",
+                    "source": "body",
+                    "path": [
+                      "reply_to"
+                    ],
+                    "scope": "INSTANCE"
+                  }
+                }
+              },
+              "relations": [
+                {
+                  "kind": "reply_to",
+                  "target": {
+                    "from": "ref",
+                    "source": "body",
+                    "path": [
+                      "reply_to"
+                    ],
+                    "scope": "INSTANCE"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,891 @@
+{
+  "fixture": "peerwork.typescript-provenance-wiki-preset.v1",
+  "source_path": "src/workspace-presets.ts",
+  "source_sha256": "cc4f64ac040f5153811d70113bd478ea3e2aa7bbc7e7b089b727a13a86832b6d",
+  "preset_export": "provenanceWikiPreset",
+  "manifest": {
+    "name": "peerwork.wiki.provenance.v1",
+    "display_version": "1",
+    "semantics": "peerwork.kernel.v1",
+    "dependencies": [],
+    "protocol_roles": [
+      "EDITOR"
+    ],
+    "capabilities": [
+      "EDIT",
+      "IMPORT"
+    ],
+    "role_conflicts": [],
+    "historical_role_conflicts": [],
+    "constraints": {},
+    "record_schemas": {
+      "wiki.document.v2": {
+        "type": "object",
+        "fields": {
+          "title": "string",
+          "body": "string",
+          "author": "string",
+          "parent": "json",
+          "source_ref": "source_text",
+          "source_author": "source_text",
+          "source_created_at": "source_timestamp",
+          "source_updated_at": "source_timestamp",
+          "source_revision_at": "source_timestamp",
+          "source_revision_sha256": "source_sha256"
+        },
+        "required": [
+          "title",
+          "body",
+          "author",
+          "parent",
+          "source_ref",
+          "source_author",
+          "source_created_at",
+          "source_updated_at",
+          "source_revision_at",
+          "source_revision_sha256"
+        ],
+        "max_bytes": 16384
+      }
+    },
+    "initial_state": {},
+    "actions": [
+      {
+        "id": "wiki.create",
+        "reads": [],
+        "writes": [],
+        "revisionEffects": {
+          "control": true,
+          "contentEntities": [
+            "document"
+          ]
+        },
+        "variants": [
+          {
+            "when": [
+              {
+                "op": "has_protocol_role",
+                "role": "EDITOR"
+              },
+              {
+                "op": "has_capability",
+                "capability": "EDIT"
+              }
+            ],
+            "effects": [
+              {
+                "op": "append",
+                "schema": "wiki.document.v2",
+                "recordSlot": "revision",
+                "entity": {
+                  "mode": "new",
+                  "slot": "document"
+                },
+                "selectHead": true,
+                "value": {
+                  "from": "object",
+                  "fields": {
+                    "title": {
+                      "from": "body",
+                      "path": [
+                        "title"
+                      ]
+                    },
+                    "body": {
+                      "from": "body",
+                      "path": [
+                        "body"
+                      ]
+                    },
+                    "author": {
+                      "from": "auth",
+                      "field": "actorId"
+                    },
+                    "parent": {
+                      "from": "literal",
+                      "value": null
+                    },
+                    "source_ref": {
+                      "from": "literal",
+                      "value": null
+                    },
+                    "source_author": {
+                      "from": "literal",
+                      "value": null
+                    },
+                    "source_created_at": {
+                      "from": "literal",
+                      "value": null
+                    },
+                    "source_updated_at": {
+                      "from": "literal",
+                      "value": null
+                    },
+                    "source_revision_at": {
+                      "from": "literal",
+                      "value": null
+                    },
+                    "source_revision_sha256": {
+                      "from": "literal",
+                      "value": null
+                    }
+                  }
+                },
+                "relations": []
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "wiki.revise",
+        "reads": [],
+        "writes": [],
+        "revisionEffects": {
+          "control": true,
+          "contentEntities": [
+            "document"
+          ]
+        },
+        "variants": [
+          {
+            "when": [
+              {
+                "op": "has_protocol_role",
+                "role": "EDITOR"
+              },
+              {
+                "op": "has_capability",
+                "capability": "EDIT"
+              },
+              {
+                "op": "exact_ref",
+                "ref": {
+                  "from": "ref",
+                  "source": "body",
+                  "path": [
+                    "parent_ref"
+                  ],
+                  "schema": "wiki.document.v2",
+                  "scope": "INSTANCE"
+                }
+              }
+            ],
+            "effects": [
+              {
+                "op": "append",
+                "schema": "wiki.document.v2",
+                "recordSlot": "revision",
+                "entity": {
+                  "mode": "revise",
+                  "slot": "document",
+                  "parent": {
+                    "from": "ref",
+                    "source": "body",
+                    "path": [
+                      "parent_ref"
+                    ],
+                    "schema": "wiki.document.v2",
+                    "scope": "INSTANCE"
+                  }
+                },
+                "selectHead": true,
+                "value": {
+                  "from": "object",
+                  "fields": {
+                    "title": {
+                      "from": "body",
+                      "path": [
+                        "title"
+                      ]
+                    },
+                    "body": {
+                      "from": "body",
+                      "path": [
+                        "body"
+                      ]
+                    },
+                    "author": {
+                      "from": "auth",
+                      "field": "actorId"
+                    },
+                    "parent": {
+                      "from": "ref",
+                      "source": "body",
+                      "path": [
+                        "parent_ref"
+                      ],
+                      "schema": "wiki.document.v2",
+                      "scope": "INSTANCE"
+                    },
+                    "source_ref": {
+                      "from": "resolved_payload",
+                      "ref": {
+                        "from": "ref",
+                        "source": "body",
+                        "path": [
+                          "parent_ref"
+                        ],
+                        "schema": "wiki.document.v2",
+                        "scope": "INSTANCE"
+                      },
+                      "path": [
+                        "source_ref"
+                      ]
+                    },
+                    "source_author": {
+                      "from": "resolved_payload",
+                      "ref": {
+                        "from": "ref",
+                        "source": "body",
+                        "path": [
+                          "parent_ref"
+                        ],
+                        "schema": "wiki.document.v2",
+                        "scope": "INSTANCE"
+                      },
+                      "path": [
+                        "source_author"
+                      ]
+                    },
+                    "source_created_at": {
+                      "from": "resolved_payload",
+                      "ref": {
+                        "from": "ref",
+                        "source": "body",
+                        "path": [
+                          "parent_ref"
+                        ],
+                        "schema": "wiki.document.v2",
+                        "scope": "INSTANCE"
+                      },
+                      "path": [
+                        "source_created_at"
+                      ]
+                    },
+                    "source_updated_at": {
+                      "from": "resolved_payload",
+                      "ref": {
+                        "from": "ref",
+                        "source": "body",
+                        "path": [
+                          "parent_ref"
+                        ],
+                        "schema": "wiki.document.v2",
+                        "scope": "INSTANCE"
+                      },
+                      "path": [
+                        "source_updated_at"
+                      ]
+                    },
+                    "source_revision_at": {
+                      "from": "literal",
+                      "value": null
+                    },
+                    "source_revision_sha256": {
+                      "from": "literal",
+                      "value": null
+                    }
+                  }
+                },
+                "relations": [
+                  {
+                    "kind": "parent",
+                    "target": {
+                      "from": "ref",
+                      "source": "body",
+                      "path": [
+                        "parent_ref"
+                      ],
+                      "schema": "wiki.document.v2",
+                      "scope": "INSTANCE"
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "wiki.branch",
+        "reads": [],
+        "writes": [],
+        "revisionEffects": {
+          "control": true,
+          "contentEntities": [
+            "document"
+          ]
+        },
+        "variants": [
+          {
+            "when": [
+              {
+                "op": "has_protocol_role",
+                "role": "EDITOR"
+              },
+              {
+                "op": "has_capability",
+                "capability": "EDIT"
+              },
+              {
+                "op": "exact_ref",
+                "ref": {
+                  "from": "ref",
+                  "source": "body",
+                  "path": [
+                    "parent_ref"
+                  ],
+                  "schema": "wiki.document.v2",
+                  "scope": "INSTANCE"
+                }
+              }
+            ],
+            "effects": [
+              {
+                "op": "append",
+                "schema": "wiki.document.v2",
+                "recordSlot": "revision",
+                "entity": {
+                  "mode": "revise",
+                  "slot": "document",
+                  "parent": {
+                    "from": "ref",
+                    "source": "body",
+                    "path": [
+                      "parent_ref"
+                    ],
+                    "schema": "wiki.document.v2",
+                    "scope": "INSTANCE"
+                  }
+                },
+                "selectHead": false,
+                "value": {
+                  "from": "object",
+                  "fields": {
+                    "title": {
+                      "from": "body",
+                      "path": [
+                        "title"
+                      ]
+                    },
+                    "body": {
+                      "from": "body",
+                      "path": [
+                        "body"
+                      ]
+                    },
+                    "author": {
+                      "from": "auth",
+                      "field": "actorId"
+                    },
+                    "parent": {
+                      "from": "ref",
+                      "source": "body",
+                      "path": [
+                        "parent_ref"
+                      ],
+                      "schema": "wiki.document.v2",
+                      "scope": "INSTANCE"
+                    },
+                    "source_ref": {
+                      "from": "resolved_payload",
+                      "ref": {
+                        "from": "ref",
+                        "source": "body",
+                        "path": [
+                          "parent_ref"
+                        ],
+                        "schema": "wiki.document.v2",
+                        "scope": "INSTANCE"
+                      },
+                      "path": [
+                        "source_ref"
+                      ]
+                    },
+                    "source_author": {
+                      "from": "resolved_payload",
+                      "ref": {
+                        "from": "ref",
+                        "source": "body",
+                        "path": [
+                          "parent_ref"
+                        ],
+                        "schema": "wiki.document.v2",
+                        "scope": "INSTANCE"
+                      },
+                      "path": [
+                        "source_author"
+                      ]
+                    },
+                    "source_created_at": {
+                      "from": "resolved_payload",
+                      "ref": {
+                        "from": "ref",
+                        "source": "body",
+                        "path": [
+                          "parent_ref"
+                        ],
+                        "schema": "wiki.document.v2",
+                        "scope": "INSTANCE"
+                      },
+                      "path": [
+                        "source_created_at"
+                      ]
+                    },
+                    "source_updated_at": {
+                      "from": "resolved_payload",
+                      "ref": {
+                        "from": "ref",
+                        "source": "body",
+                        "path": [
+                          "parent_ref"
+                        ],
+                        "schema": "wiki.document.v2",
+                        "scope": "INSTANCE"
+                      },
+                      "path": [
+                        "source_updated_at"
+                      ]
+                    },
+                    "source_revision_at": {
+                      "from": "literal",
+                      "value": null
+                    },
+                    "source_revision_sha256": {
+                      "from": "literal",
+                      "value": null
+                    }
+                  }
+                },
+                "relations": [
+                  {
+                    "kind": "parent",
+                    "target": {
+                      "from": "ref",
+                      "source": "body",
+                      "path": [
+                        "parent_ref"
+                      ],
+                      "schema": "wiki.document.v2",
+                      "scope": "INSTANCE"
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "wiki.import_create",
+        "reads": [],
+        "writes": [],
+        "revisionEffects": {
+          "control": true,
+          "contentEntities": [
+            "document"
+          ]
+        },
+        "variants": [
+          {
+            "when": [
+              {
+                "op": "has_protocol_role",
+                "role": "EDITOR"
+              },
+              {
+                "op": "has_capability",
+                "capability": "IMPORT"
+              }
+            ],
+            "effects": [
+              {
+                "op": "append",
+                "schema": "wiki.document.v2",
+                "recordSlot": "revision",
+                "entity": {
+                  "mode": "new",
+                  "slot": "document"
+                },
+                "selectHead": true,
+                "value": {
+                  "from": "object",
+                  "fields": {
+                    "title": {
+                      "from": "body",
+                      "path": [
+                        "title"
+                      ]
+                    },
+                    "body": {
+                      "from": "body",
+                      "path": [
+                        "body"
+                      ]
+                    },
+                    "author": {
+                      "from": "auth",
+                      "field": "actorId"
+                    },
+                    "parent": {
+                      "from": "literal",
+                      "value": null
+                    },
+                    "source_ref": {
+                      "from": "body",
+                      "path": [
+                        "source_ref"
+                      ]
+                    },
+                    "source_author": {
+                      "from": "body",
+                      "path": [
+                        "source_author"
+                      ]
+                    },
+                    "source_created_at": {
+                      "from": "body",
+                      "path": [
+                        "source_created_at"
+                      ]
+                    },
+                    "source_updated_at": {
+                      "from": "body",
+                      "path": [
+                        "source_updated_at"
+                      ]
+                    },
+                    "source_revision_at": {
+                      "from": "body",
+                      "path": [
+                        "source_revision_at"
+                      ]
+                    },
+                    "source_revision_sha256": {
+                      "from": "body",
+                      "path": [
+                        "source_revision_sha256"
+                      ]
+                    }
+                  }
+                },
+                "relations": []
+              }
+            ]
+          }
+        ],
+        "inputs": {
+          "fields": {
+            "title": {
+              "type": "string",
+              "maxBytes": 8192
+            },
+            "body": {
+              "type": "string",
+              "maxBytes": 8192
+            },
+            "source_ref": {
+              "type": "string",
+              "maxBytes": 2048,
+              "nullable": true
+            },
+            "source_author": {
+              "type": "string",
+              "maxBytes": 1024,
+              "nullable": true
+            },
+            "source_created_at": {
+              "type": "source_timestamp",
+              "nullable": true
+            },
+            "source_updated_at": {
+              "type": "source_timestamp",
+              "nullable": true
+            },
+            "source_revision_at": {
+              "type": "source_timestamp",
+              "nullable": true
+            },
+            "source_revision_sha256": {
+              "type": "source_sha256",
+              "nullable": true
+            }
+          },
+          "required": [
+            "title",
+            "body",
+            "source_ref",
+            "source_author",
+            "source_created_at",
+            "source_updated_at",
+            "source_revision_at",
+            "source_revision_sha256"
+          ],
+          "additionalProperties": false
+        }
+      },
+      {
+        "id": "wiki.import_revision",
+        "reads": [],
+        "writes": [],
+        "revisionEffects": {
+          "control": true,
+          "contentEntities": [
+            "document"
+          ]
+        },
+        "variants": [
+          {
+            "when": [
+              {
+                "op": "has_protocol_role",
+                "role": "EDITOR"
+              },
+              {
+                "op": "has_capability",
+                "capability": "IMPORT"
+              },
+              {
+                "op": "exact_ref",
+                "ref": {
+                  "from": "ref",
+                  "source": "body",
+                  "path": [
+                    "parent_ref"
+                  ],
+                  "schema": "wiki.document.v2",
+                  "scope": "INSTANCE"
+                }
+              }
+            ],
+            "effects": [
+              {
+                "op": "append",
+                "schema": "wiki.document.v2",
+                "recordSlot": "revision",
+                "entity": {
+                  "mode": "revise",
+                  "slot": "document",
+                  "parent": {
+                    "from": "ref",
+                    "source": "body",
+                    "path": [
+                      "parent_ref"
+                    ],
+                    "schema": "wiki.document.v2",
+                    "scope": "INSTANCE"
+                  }
+                },
+                "selectHead": true,
+                "value": {
+                  "from": "object",
+                  "fields": {
+                    "title": {
+                      "from": "body",
+                      "path": [
+                        "title"
+                      ]
+                    },
+                    "body": {
+                      "from": "body",
+                      "path": [
+                        "body"
+                      ]
+                    },
+                    "author": {
+                      "from": "auth",
+                      "field": "actorId"
+                    },
+                    "parent": {
+                      "from": "ref",
+                      "source": "body",
+                      "path": [
+                        "parent_ref"
+                      ],
+                      "schema": "wiki.document.v2",
+                      "scope": "INSTANCE"
+                    },
+                    "source_ref": {
+                      "from": "body",
+                      "path": [
+                        "source_ref"
+                      ]
+                    },
+                    "source_author": {
+                      "from": "body",
+                      "path": [
+                        "source_author"
+                      ]
+                    },
+                    "source_created_at": {
+                      "from": "body",
+                      "path": [
+                        "source_created_at"
+                      ]
+                    },
+                    "source_updated_at": {
+                      "from": "body",
+                      "path": [
+                        "source_updated_at"
+                      ]
+                    },
+                    "source_revision_at": {
+                      "from": "body",
+                      "path": [
+                        "source_revision_at"
+                      ]
+                    },
+                    "source_revision_sha256": {
+                      "from": "body",
+                      "path": [
+                        "source_revision_sha256"
+                      ]
+                    }
+                  }
+                },
+                "relations": [
+                  {
+                    "kind": "parent",
+                    "target": {
+                      "from": "ref",
+                      "source": "body",
+                      "path": [
+                        "parent_ref"
+                      ],
+                      "schema": "wiki.document.v2",
+                      "scope": "INSTANCE"
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "inputs": {
+          "fields": {
+            "title": {
+              "type": "string",
+              "maxBytes": 8192
+            },
+            "body": {
+              "type": "string",
+              "maxBytes": 8192
+            },
+            "parent_ref": {
+              "type": "exact_ref",
+              "schema": "wiki.document.v2",
+              "scope": "INSTANCE"
+            },
+            "source_ref": {
+              "type": "string",
+              "maxBytes": 2048,
+              "nullable": true
+            },
+            "source_author": {
+              "type": "string",
+              "maxBytes": 1024,
+              "nullable": true
+            },
+            "source_created_at": {
+              "type": "source_timestamp",
+              "nullable": true
+            },
+            "source_updated_at": {
+              "type": "source_timestamp",
+              "nullable": true
+            },
+            "source_revision_at": {
+              "type": "source_timestamp",
+              "nullable": true
+            },
+            "source_revision_sha256": {
+              "type": "source_sha256",
+              "nullable": true
+            }
+          },
+          "required": [
+            "title",
+            "body",
+            "parent_ref",
+            "source_ref",
+            "source_author",
+            "source_created_at",
+            "source_updated_at",
+            "source_revision_at",
+            "source_revision_sha256"
+          ],
+          "additionalProperties": false
+        }
+      },
+      {
+        "id": "wiki.select_head",
+        "reads": [],
+        "writes": [],
+        "revisionEffects": {
+          "control": true,
+          "contentEntities": []
+        },
+        "variants": [
+          {
+            "when": [
+              {
+                "op": "has_protocol_role",
+                "role": "EDITOR"
+              },
+              {
+                "op": "has_capability",
+                "capability": "EDIT"
+              },
+              {
+                "op": "exact_ref",
+                "ref": {
+                  "from": "ref",
+                  "source": "body",
+                  "path": [
+                    "expected_head"
+                  ],
+                  "scope": "INSTANCE"
+                }
+              },
+              {
+                "op": "exact_ref",
+                "ref": {
+                  "from": "ref",
+                  "source": "body",
+                  "path": [
+                    "target"
+                  ],
+                  "schema": "wiki.document.v2",
+                  "scope": "INSTANCE"
+                }
+              }
+            ],
+            "effects": [
+              {
+                "op": "select_head",
+                "expected": {
+                  "from": "ref",
+                  "source": "body",
+                  "path": [
+                    "expected_head"
+                  ],
+                  "scope": "INSTANCE"
+                },
+                "target": {
+                  "from": "ref",
+                  "source": "body",
+                  "path": [
+                    "target"
+                  ],
+                  "schema": "wiki.document.v2",
+                  "scope": "INSTANCE"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

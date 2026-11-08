@@ -1,0 +1,10 @@
+{
+  "schema": "peerwork.project-publication-identity.v1",
+  "project": "Peerwork",
+  "workspace_id": "_DUzeGzLjP4ZMxvNq9Nh93oLv4GPi0bGn76xYzb0ZsU",
+  "workspace_url": "https://peerwork.dev/workspaces/_DUzeGzLjP4ZMxvNq9Nh93oLv4GPi0bGn76xYzb0ZsU",
+  "owner_actor_id": "g4h4CplPUi4dCpjT69jLjC9CyG-zkGDpCMj4RSoUcWM",
+  "ed25519_public_key": "xoIfxp8-t6D5Vy1kC-DaT82g5hlFH8H2JmOYNWZYhxM",
+  "public_key_sha256": "7218a3915b5ea02df7a5f127d3cfe369dcf9e2677b91bb455803dce7dd42d056",
+  "published_on": "2026-10-19"
+}

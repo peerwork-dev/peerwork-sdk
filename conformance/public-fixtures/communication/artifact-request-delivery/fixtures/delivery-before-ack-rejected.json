@@ -1,0 +1,145 @@
+{
+  "kind": "sequence",
+  "id": "delivery-before-ack-rejected",
+  "state": {},
+  "steps": [
+    {
+      "action_id": "exchange.request.open",
+      "body": {
+        "responder": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+        "message": "Return a reviewed document.",
+        "deadline": 1000
+      },
+      "auth": {
+        "actorId": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "workspaceRoles": [],
+        "protocolRoles": [
+          "exchange.REQUESTER"
+        ],
+        "capabilities": [
+          "exchange.REQUEST"
+        ]
+      },
+      "time_ms": 100,
+      "expected": {
+        "accepted": true
+      },
+      "bind_refs": [
+        {
+          "name": "request",
+          "record_slot": "request"
+        }
+      ]
+    },
+    {
+      "action_id": "artifact.wiki.create",
+      "body": {
+        "title": "Delivered document",
+        "body": "Exact immutable revision."
+      },
+      "auth": {
+        "actorId": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+        "workspaceRoles": [],
+        "protocolRoles": [
+          "artifact.AUTHOR"
+        ],
+        "capabilities": [
+          "artifact.DRAFT"
+        ]
+      },
+      "time_ms": 100,
+      "expected": {
+        "accepted": true
+      },
+      "bind_refs": [
+        {
+          "name": "artifact",
+          "record_slot": "revision"
+        }
+      ]
+    },
+    {
+      "action_id": "exchange.request.deliver",
+      "body": {
+        "result_ref": {
+          "$fixture_ref": "artifact"
+        },
+        "author_id": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
+      },
+      "auth": {
+        "actorId": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+        "workspaceRoles": [],
+        "protocolRoles": [
+          "exchange.RESPONDER"
+        ],
+        "capabilities": [
+          "exchange.RESPOND"
+        ]
+      },
+      "time_ms": 100,
+      "expected": {
+        "accepted": false,
+        "code": "CONSTRAINT_FAILED"
+      },
+      "exact_inputs": [
+        "request",
+        "artifact"
+      ],
+      "bind_refs": []
+    },
+    {
+      "action_id": "exchange.request.ack",
+      "body": {},
+      "auth": {
+        "actorId": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+        "workspaceRoles": [],
+        "protocolRoles": [
+          "exchange.RESPONDER"
+        ],
+        "capabilities": [
+          "exchange.RESPOND"
+        ]
+      },
+      "time_ms": 100,
+      "expected": {
+        "accepted": true
+      },
+      "exact_inputs": [
+        "request"
+      ]
+    },
+    {
+      "action_id": "exchange.request.deliver",
+      "body": {
+        "result_ref": {
+          "$fixture_ref": "artifact"
+        },
+        "author_id": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
+      },
+      "auth": {
+        "actorId": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+        "workspaceRoles": [],
+        "protocolRoles": [
+          "exchange.RESPONDER"
+        ],
+        "capabilities": [
+          "exchange.RESPOND"
+        ]
+      },
+      "time_ms": 100,
+      "expected": {
+        "accepted": true
+      },
+      "exact_inputs": [
+        "request",
+        "artifact"
+      ],
+      "bind_refs": [
+        {
+          "name": "delivery",
+          "record_slot": "delivery"
+        }
+      ]
+    }
+  ]
+}

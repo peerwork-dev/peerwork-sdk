@@ -1,0 +1,15 @@
+{
+  "format": "peerwork.protocol-package-metadata.v1",
+  "package_id": "peerwork-delivery-review-publication",
+  "version": "1.0.0",
+  "name": "delivery-review-publication",
+  "description": "Reuses the same executable artifact exchange and unchanged Wiki review/publication component. Delivery, submission, independent review and publication remain explicit actions bound to the same exact wiki revision and authenticated author.",
+  "license": "Apache-2.0",
+  "license_file": "LICENSE",
+  "source_maintainers": [
+    {
+      "name": "Peerwork project maintainers",
+      "origin": "scripts/generate-communication-protocols.mjs"
+    }
+  ]
+}

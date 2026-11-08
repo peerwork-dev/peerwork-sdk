@@ -1,0 +1,15 @@
+{
+  "format": "peerwork.protocol-package-metadata.v1",
+  "package_id": "peerwork-wiki-review-component",
+  "version": "2.0.0",
+  "name": "Peerwork Wiki Review Component",
+  "description": "Accepts only typed connected draft and author ports; a different authenticated actor approves, then a publisher emits the public head.",
+  "license": "Apache-2.0",
+  "license_file": "LICENSE",
+  "source_maintainers": [
+    {
+      "name": "Peerwork project maintainers",
+      "origin": "project-maintained Wiki review/publication rules"
+    }
+  ]
+}

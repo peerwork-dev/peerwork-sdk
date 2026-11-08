@@ -1,0 +1,169 @@
+{
+  "kind": "sequence",
+  "id": "publication-before-review-rejected",
+  "state": {},
+  "steps": [
+    {
+      "action_id": "exchange.exchange.request.open",
+      "body": {
+        "responder": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+        "message": "Return a reviewed document.",
+        "deadline": 1000
+      },
+      "auth": {
+        "actorId": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "workspaceRoles": [],
+        "protocolRoles": [
+          "exchange.exchange.REQUESTER"
+        ],
+        "capabilities": [
+          "exchange.exchange.REQUEST"
+        ]
+      },
+      "time_ms": 100,
+      "expected": {
+        "accepted": true
+      },
+      "bind_refs": [
+        {
+          "name": "request",
+          "record_slot": "request"
+        }
+      ]
+    },
+    {
+      "action_id": "exchange.artifact.wiki.create",
+      "body": {
+        "title": "Delivered document",
+        "body": "Exact immutable revision."
+      },
+      "auth": {
+        "actorId": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+        "workspaceRoles": [],
+        "protocolRoles": [
+          "exchange.artifact.AUTHOR"
+        ],
+        "capabilities": [
+          "exchange.artifact.DRAFT"
+        ]
+      },
+      "time_ms": 100,
+      "expected": {
+        "accepted": true
+      },
+      "bind_refs": [
+        {
+          "name": "artifact",
+          "record_slot": "revision"
+        }
+      ]
+    },
+    {
+      "action_id": "exchange.exchange.request.ack",
+      "body": {},
+      "auth": {
+        "actorId": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+        "workspaceRoles": [],
+        "protocolRoles": [
+          "exchange.exchange.RESPONDER"
+        ],
+        "capabilities": [
+          "exchange.exchange.RESPOND"
+        ]
+      },
+      "time_ms": 100,
+      "expected": {
+        "accepted": true
+      },
+      "exact_inputs": [
+        "request"
+      ]
+    },
+    {
+      "action_id": "exchange.exchange.request.deliver",
+      "body": {
+        "result_ref": {
+          "$fixture_ref": "artifact"
+        },
+        "author_id": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
+      },
+      "auth": {
+        "actorId": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+        "workspaceRoles": [],
+        "protocolRoles": [
+          "exchange.exchange.RESPONDER"
+        ],
+        "capabilities": [
+          "exchange.exchange.RESPOND"
+        ]
+      },
+      "time_ms": 100,
+      "expected": {
+        "accepted": true
+      },
+      "exact_inputs": [
+        "request",
+        "artifact"
+      ],
+      "bind_refs": [
+        {
+          "name": "delivery",
+          "record_slot": "delivery"
+        }
+      ]
+    },
+    {
+      "action_id": "review.review.submit",
+      "body": {
+        "draft_ref": {
+          "$fixture_ref": "artifact"
+        },
+        "author_id": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
+      },
+      "auth": {
+        "actorId": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+        "workspaceRoles": [],
+        "protocolRoles": [
+          "review.AUTHOR"
+        ],
+        "capabilities": [
+          "review.SUBMIT"
+        ]
+      },
+      "time_ms": 100,
+      "expected": {
+        "accepted": true
+      },
+      "exact_inputs": [
+        "artifact"
+      ]
+    },
+    {
+      "action_id": "review.wiki.publish",
+      "body": {
+        "draft_ref": {
+          "$fixture_ref": "artifact"
+        }
+      },
+      "auth": {
+        "actorId": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "workspaceRoles": [],
+        "protocolRoles": [
+          "review.PUBLISHER"
+        ],
+        "capabilities": [
+          "review.PUBLISH"
+        ]
+      },
+      "time_ms": 100,
+      "expected": {
+        "accepted": false,
+        "code": "INVALID_PAYLOAD"
+      },
+      "exact_inputs": [
+        "artifact"
+      ],
+      "bind_refs": []
+    }
+  ]
+}

@@ -1,0 +1,825 @@
+{
+  "format": "peerwork.protocol-source.v2",
+  "semantics": "peerwork.kernel.v1",
+  "manifest": {
+    "name": "peerwork.request-delivery.v1",
+    "display_version": "1",
+    "semantics": "peerwork.kernel.v1",
+    "dependencies": [],
+    "protocol_roles": [
+      "REQUESTER",
+      "RESPONDER"
+    ],
+    "capabilities": [
+      "REQUEST",
+      "RESPOND"
+    ],
+    "role_conflicts": [],
+    "historical_role_conflicts": [],
+    "constraints": {},
+    "record_schemas": {
+      "comm.request": {
+        "type": "object",
+        "fields": {
+          "requester": "string",
+          "responder": "string",
+          "message": "string",
+          "deadline": "integer"
+        },
+        "required": [
+          "requester",
+          "responder",
+          "message",
+          "deadline"
+        ],
+        "max_bytes": 16384
+      },
+      "comm.delivery": {
+        "type": "object",
+        "fields": {
+          "request_ref": "json",
+          "result_ref": "json",
+          "author": "string"
+        },
+        "required": [
+          "request_ref",
+          "result_ref",
+          "author"
+        ],
+        "max_bytes": 16384
+      }
+    },
+    "initial_state": {
+      "status": "NEW",
+      "requester": null,
+      "responder": null,
+      "deadline": null,
+      "request_ref": null,
+      "result_ref": null,
+      "delivery_ref": null
+    },
+    "actions": [
+      {
+        "id": "request.open",
+        "reads": [
+          [
+            "status"
+          ]
+        ],
+        "writes": [
+          [
+            "status"
+          ],
+          [
+            "requester"
+          ],
+          [
+            "responder"
+          ],
+          [
+            "deadline"
+          ],
+          [
+            "request_ref"
+          ]
+        ],
+        "revisionEffects": {
+          "control": true,
+          "contentEntities": []
+        },
+        "variants": [
+          {
+            "when": [
+              {
+                "op": "has_protocol_role",
+                "role": "REQUESTER"
+              },
+              {
+                "op": "has_capability",
+                "capability": "REQUEST"
+              },
+              {
+                "op": "eq",
+                "left": {
+                  "from": "state",
+                  "path": [
+                    "status"
+                  ]
+                },
+                "right": {
+                  "from": "literal",
+                  "value": "NEW"
+                }
+              },
+              {
+                "op": "gt",
+                "left": {
+                  "from": "body",
+                  "path": [
+                    "deadline"
+                  ]
+                },
+                "right": {
+                  "from": "time"
+                }
+              },
+              {
+                "op": "not",
+                "rule": {
+                  "op": "eq",
+                  "left": {
+                    "from": "body",
+                    "path": [
+                      "responder"
+                    ]
+                  },
+                  "right": {
+                    "from": "auth",
+                    "field": "actorId"
+                  }
+                }
+              }
+            ],
+            "effects": [
+              {
+                "op": "append",
+                "schema": "comm.request",
+                "recordSlot": "request",
+                "value": {
+                  "from": "object",
+                  "fields": {
+                    "requester": {
+                      "from": "auth",
+                      "field": "actorId"
+                    },
+                    "responder": {
+                      "from": "body",
+                      "path": [
+                        "responder"
+                      ]
+                    },
+                    "message": {
+                      "from": "body",
+                      "path": [
+                        "message"
+                      ]
+                    },
+                    "deadline": {
+                      "from": "body",
+                      "path": [
+                        "deadline"
+                      ]
+                    }
+                  }
+                },
+                "relations": []
+              },
+              {
+                "op": "set",
+                "path": [
+                  "status"
+                ],
+                "value": {
+                  "from": "literal",
+                  "value": "OPEN"
+                }
+              },
+              {
+                "op": "set",
+                "path": [
+                  "requester"
+                ],
+                "value": {
+                  "from": "auth",
+                  "field": "actorId"
+                }
+              },
+              {
+                "op": "set",
+                "path": [
+                  "responder"
+                ],
+                "value": {
+                  "from": "body",
+                  "path": [
+                    "responder"
+                  ]
+                }
+              },
+              {
+                "op": "set",
+                "path": [
+                  "deadline"
+                ],
+                "value": {
+                  "from": "body",
+                  "path": [
+                    "deadline"
+                  ]
+                }
+              },
+              {
+                "op": "set",
+                "path": [
+                  "request_ref"
+                ],
+                "value": {
+                  "from": "produced_ref",
+                  "slot": "request"
+                }
+              }
+            ]
+          }
+        ],
+        "inputs": {
+          "fields": {
+            "responder": {
+              "type": "actor_id"
+            },
+            "message": {
+              "type": "string",
+              "maxBytes": 8192
+            },
+            "deadline": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "responder",
+            "message",
+            "deadline"
+          ],
+          "additionalProperties": false
+        }
+      },
+      {
+        "id": "request.ack",
+        "reads": [
+          [
+            "status"
+          ],
+          [
+            "responder"
+          ],
+          [
+            "deadline"
+          ]
+        ],
+        "writes": [
+          [
+            "status"
+          ]
+        ],
+        "revisionEffects": {
+          "control": true,
+          "contentEntities": []
+        },
+        "variants": [
+          {
+            "when": [
+              {
+                "op": "has_protocol_role",
+                "role": "RESPONDER"
+              },
+              {
+                "op": "has_capability",
+                "capability": "RESPOND"
+              },
+              {
+                "op": "eq",
+                "left": {
+                  "from": "state",
+                  "path": [
+                    "status"
+                  ]
+                },
+                "right": {
+                  "from": "literal",
+                  "value": "OPEN"
+                }
+              },
+              {
+                "op": "eq",
+                "left": {
+                  "from": "auth",
+                  "field": "actorId"
+                },
+                "right": {
+                  "from": "state",
+                  "path": [
+                    "responder"
+                  ]
+                }
+              },
+              {
+                "op": "lt",
+                "left": {
+                  "from": "time"
+                },
+                "right": {
+                  "from": "state",
+                  "path": [
+                    "deadline"
+                  ]
+                }
+              }
+            ],
+            "effects": [
+              {
+                "op": "set",
+                "path": [
+                  "status"
+                ],
+                "value": {
+                  "from": "literal",
+                  "value": "ACKED"
+                }
+              }
+            ]
+          }
+        ],
+        "inputs": {
+          "fields": {},
+          "required": [],
+          "additionalProperties": false
+        }
+      },
+      {
+        "id": "request.deliver",
+        "reads": [
+          [
+            "status"
+          ],
+          [
+            "responder"
+          ],
+          [
+            "deadline"
+          ],
+          [
+            "request_ref"
+          ]
+        ],
+        "writes": [
+          [
+            "status"
+          ],
+          [
+            "result_ref"
+          ],
+          [
+            "delivery_ref"
+          ]
+        ],
+        "revisionEffects": {
+          "control": true,
+          "contentEntities": []
+        },
+        "variants": [
+          {
+            "when": [
+              {
+                "op": "has_protocol_role",
+                "role": "RESPONDER"
+              },
+              {
+                "op": "has_capability",
+                "capability": "RESPOND"
+              },
+              {
+                "op": "eq",
+                "left": {
+                  "from": "state",
+                  "path": [
+                    "status"
+                  ]
+                },
+                "right": {
+                  "from": "literal",
+                  "value": "ACKED"
+                }
+              },
+              {
+                "op": "eq",
+                "left": {
+                  "from": "auth",
+                  "field": "actorId"
+                },
+                "right": {
+                  "from": "state",
+                  "path": [
+                    "responder"
+                  ]
+                }
+              },
+              {
+                "op": "lt",
+                "left": {
+                  "from": "time"
+                },
+                "right": {
+                  "from": "state",
+                  "path": [
+                    "deadline"
+                  ]
+                }
+              }
+            ],
+            "effects": [
+              {
+                "op": "append",
+                "schema": "comm.delivery",
+                "recordSlot": "delivery",
+                "value": {
+                  "from": "object",
+                  "fields": {
+                    "request_ref": {
+                      "from": "ref",
+                      "source": "state",
+                      "path": [
+                        "request_ref"
+                      ],
+                      "scope": "INSTANCE",
+                      "schema": "comm.request"
+                    },
+                    "result_ref": {
+                      "from": "ref",
+                      "source": "body",
+                      "path": [
+                        "result_ref"
+                      ],
+                      "scope": "INSTANCE"
+                    },
+                    "author": {
+                      "from": "auth",
+                      "field": "actorId"
+                    }
+                  }
+                },
+                "relations": [
+                  {
+                    "kind": "request",
+                    "target": {
+                      "from": "ref",
+                      "source": "state",
+                      "path": [
+                        "request_ref"
+                      ],
+                      "scope": "INSTANCE",
+                      "schema": "comm.request"
+                    }
+                  },
+                  {
+                    "kind": "result",
+                    "target": {
+                      "from": "ref",
+                      "source": "body",
+                      "path": [
+                        "result_ref"
+                      ],
+                      "scope": "INSTANCE"
+                    }
+                  }
+                ]
+              },
+              {
+                "op": "set",
+                "path": [
+                  "status"
+                ],
+                "value": {
+                  "from": "literal",
+                  "value": "DELIVERED"
+                }
+              },
+              {
+                "op": "set",
+                "path": [
+                  "result_ref"
+                ],
+                "value": {
+                  "from": "ref",
+                  "source": "body",
+                  "path": [
+                    "result_ref"
+                  ],
+                  "scope": "INSTANCE"
+                }
+              },
+              {
+                "op": "set",
+                "path": [
+                  "delivery_ref"
+                ],
+                "value": {
+                  "from": "produced_ref",
+                  "slot": "delivery"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "request.cancel",
+        "reads": [
+          [
+            "status"
+          ],
+          [
+            "requester"
+          ]
+        ],
+        "writes": [
+          [
+            "status"
+          ]
+        ],
+        "revisionEffects": {
+          "control": true,
+          "contentEntities": []
+        },
+        "variants": [
+          {
+            "when": [
+              {
+                "op": "has_protocol_role",
+                "role": "REQUESTER"
+              },
+              {
+                "op": "has_capability",
+                "capability": "REQUEST"
+              },
+              {
+                "op": "in",
+                "value": {
+                  "from": "state",
+                  "path": [
+                    "status"
+                  ]
+                },
+                "set": [
+                  {
+                    "from": "literal",
+                    "value": "OPEN"
+                  },
+                  {
+                    "from": "literal",
+                    "value": "ACKED"
+                  }
+                ]
+              },
+              {
+                "op": "eq",
+                "left": {
+                  "from": "auth",
+                  "field": "actorId"
+                },
+                "right": {
+                  "from": "state",
+                  "path": [
+                    "requester"
+                  ]
+                }
+              }
+            ],
+            "effects": [
+              {
+                "op": "set",
+                "path": [
+                  "status"
+                ],
+                "value": {
+                  "from": "literal",
+                  "value": "CANCELLED"
+                }
+              }
+            ]
+          }
+        ],
+        "inputs": {
+          "fields": {},
+          "required": [],
+          "additionalProperties": false
+        }
+      },
+      {
+        "id": "request.timeout",
+        "reads": [
+          [
+            "status"
+          ],
+          [
+            "requester"
+          ],
+          [
+            "deadline"
+          ]
+        ],
+        "writes": [
+          [
+            "status"
+          ]
+        ],
+        "revisionEffects": {
+          "control": true,
+          "contentEntities": []
+        },
+        "variants": [
+          {
+            "when": [
+              {
+                "op": "has_protocol_role",
+                "role": "REQUESTER"
+              },
+              {
+                "op": "has_capability",
+                "capability": "REQUEST"
+              },
+              {
+                "op": "in",
+                "value": {
+                  "from": "state",
+                  "path": [
+                    "status"
+                  ]
+                },
+                "set": [
+                  {
+                    "from": "literal",
+                    "value": "OPEN"
+                  },
+                  {
+                    "from": "literal",
+                    "value": "ACKED"
+                  }
+                ]
+              },
+              {
+                "op": "eq",
+                "left": {
+                  "from": "auth",
+                  "field": "actorId"
+                },
+                "right": {
+                  "from": "state",
+                  "path": [
+                    "requester"
+                  ]
+                }
+              },
+              {
+                "op": "gte",
+                "left": {
+                  "from": "time"
+                },
+                "right": {
+                  "from": "state",
+                  "path": [
+                    "deadline"
+                  ]
+                }
+              }
+            ],
+            "effects": [
+              {
+                "op": "set",
+                "path": [
+                  "status"
+                ],
+                "value": {
+                  "from": "literal",
+                  "value": "TIMED_OUT"
+                }
+              }
+            ]
+          }
+        ],
+        "inputs": {
+          "fields": {},
+          "required": [],
+          "additionalProperties": false
+        }
+      }
+    ]
+  },
+  "imports": [],
+  "parameters": [],
+  "exports": [],
+  "bindings": [],
+  "derive": [],
+  "interfaces": {
+    "outputs": [
+      {
+        "name": "delivery_receipt",
+        "type": "exact_ref",
+        "selector": {
+          "from": "state",
+          "path": [
+            "delivery_ref"
+          ]
+        },
+        "available_when": {
+          "op": "eq",
+          "left": {
+            "from": "state",
+            "path": [
+              "status"
+            ]
+          },
+          "right": {
+            "from": "literal",
+            "value": "DELIVERED"
+          }
+        },
+        "schema": "comm.delivery",
+        "scope": "INSTANCE"
+      },
+      {
+        "name": "result_author",
+        "type": "actor_id",
+        "selector": {
+          "from": "state",
+          "path": [
+            "responder"
+          ]
+        },
+        "available_when": {
+          "op": "eq",
+          "left": {
+            "from": "state",
+            "path": [
+              "status"
+            ]
+          },
+          "right": {
+            "from": "literal",
+            "value": "DELIVERED"
+          }
+        }
+      }
+    ],
+    "inputs": [
+      {
+        "action": "request.deliver",
+        "variant": 0,
+        "name": "delivered_result",
+        "type": "exact_ref",
+        "scope": "INSTANCE",
+        "body_path": [
+          "result_ref"
+        ],
+        "required": true,
+        "action_body": {
+          "fields": {
+            "result_ref": {
+              "type": "exact_ref",
+              "input": "delivered_result",
+              "scope": "INSTANCE"
+            },
+            "author_id": {
+              "type": "actor_id",
+              "input": "result_author"
+            }
+          },
+          "required": [
+            "result_ref",
+            "author_id"
+          ],
+          "additionalProperties": false
+        }
+      },
+      {
+        "action": "request.deliver",
+        "variant": 0,
+        "name": "result_author",
+        "type": "actor_id",
+        "relation": "same_actor",
+        "body_path": [
+          "author_id"
+        ],
+        "required": true,
+        "action_body": {
+          "fields": {
+            "result_ref": {
+              "type": "exact_ref",
+              "input": "delivered_result",
+              "scope": "INSTANCE"
+            },
+            "author_id": {
+              "type": "actor_id",
+              "input": "result_author"
+            }
+          },
+          "required": [
+            "result_ref",
+            "author_id"
+          ],
+          "additionalProperties": false
+        }
+      }
+    ]
+  },
+  "connections": []
+}

@@ -1,0 +1,13 @@
+{
+  "name": "@peerwork/agent-tools",
+  "version": "0.1.0",
+  "description": "Fixed Peerwork tools for protocol participation, messages and original-operation recovery.",
+  "license": "Apache-2.0",
+  "repository": "https://github.com/peerwork-dev/peerwork-sdk",
+  "type": "commonjs",
+  "main": "tools.cjs",
+  "bin": {"peerwork-agent": "cli.cjs"},
+  "files": ["cli.cjs", "tools.cjs", "store.cjs", "README.md", "LICENSE"],
+  "engines": {"node": ">=24"},
+  "dependencies": {"@peerwork/agent-sdk": "0.2.16"}
+}

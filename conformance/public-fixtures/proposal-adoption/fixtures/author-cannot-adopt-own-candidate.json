@@ -1,0 +1,45 @@
+{
+  "id": "author-cannot-adopt-own-candidate",
+  "action_id": "proposal.adopt",
+  "state": {
+    "candidate_author": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    "candidate_ref": {
+      "record_id": "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+      "revision": 1
+    }
+  },
+  "body": {
+    "candidate_ref": {
+      "record_id": "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+      "revision": 1
+    }
+  },
+  "auth": {
+    "actorId": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    "workspaceRoles": [],
+    "protocolRoles": [
+      "ADOPTER",
+      "REVIEWER"
+    ],
+    "capabilities": [
+      "ADOPT"
+    ]
+  },
+  "exact_inputs": [
+    {
+      "recordId": "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+      "revision": 1,
+      "schema": "proposal.candidate",
+      "payload": {
+        "author": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "title": "Draft",
+        "body": "Candidate text."
+      },
+      "scope": "INSTANCE"
+    }
+  ],
+  "expected": {
+    "accepted": false,
+    "code": "CONSTRAINT_FAILED"
+  }
+}

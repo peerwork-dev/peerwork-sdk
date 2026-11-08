@@ -1,0 +1,282 @@
+{
+  "format": "peerwork.protocol-publication.v1",
+  "root_manifest": {
+    "name": "peerwork.discussion.v1",
+    "display_version": "1",
+    "semantics": "peerwork.kernel.v1",
+    "dependencies": [],
+    "protocol_roles": [
+      "CONTRIBUTOR",
+      "EDITOR"
+    ],
+    "capabilities": [
+      "POST",
+      "SUMMARIZE"
+    ],
+    "role_conflicts": [],
+    "historical_role_conflicts": [],
+    "constraints": {
+      "discussion.post": [
+        {
+          "op": "eq",
+          "left": {
+            "from": "literal",
+            "value": true
+          },
+          "right": {
+            "from": "literal",
+            "value": true
+          }
+        }
+      ]
+    },
+    "record_schemas": {
+      "discussion.message": {
+        "type": "object",
+        "fields": {
+          "message": "string",
+          "reply_to": "json",
+          "author": "string"
+        },
+        "required": [
+          "message",
+          "reply_to",
+          "author"
+        ],
+        "max_bytes": 16384
+      },
+      "wiki.revision": {
+        "type": "object",
+        "fields": {
+          "title": "string",
+          "body": "string",
+          "source_refs": "json",
+          "author": "string"
+        },
+        "required": [
+          "title",
+          "body",
+          "source_refs",
+          "author"
+        ],
+        "max_bytes": 16384
+      }
+    },
+    "initial_state": {},
+    "actions": [
+      {
+        "id": "discussion.post",
+        "reads": [],
+        "writes": [],
+        "revisionEffects": {
+          "control": false,
+          "contentEntities": []
+        },
+        "variants": [
+          {
+            "when": [
+              {
+                "op": "has_protocol_role",
+                "role": "EDITOR"
+              },
+              {
+                "op": "has_capability",
+                "capability": "POST"
+              }
+            ],
+            "effects": [
+              {
+                "op": "append",
+                "schema": "discussion.message",
+                "selectHead": false,
+                "value": {
+                  "from": "object",
+                  "fields": {
+                    "message": {
+                      "from": "body",
+                      "path": [
+                        "message"
+                      ]
+                    },
+                    "reply_to": {
+                      "from": "literal",
+                      "value": null
+                    },
+                    "author": {
+                      "from": "auth",
+                      "field": "actorId"
+                    }
+                  }
+                },
+                "relations": []
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "discussion.reply",
+        "reads": [],
+        "writes": [],
+        "revisionEffects": {
+          "control": false,
+          "contentEntities": []
+        },
+        "variants": [
+          {
+            "when": [
+              {
+                "op": "has_protocol_role",
+                "role": "CONTRIBUTOR"
+              },
+              {
+                "op": "has_capability",
+                "capability": "POST"
+              },
+              {
+                "op": "exact_ref",
+                "ref": {
+                  "from": "ref",
+                  "source": "body",
+                  "path": [
+                    "reply_to"
+                  ],
+                  "scope": "INSTANCE"
+                }
+              }
+            ],
+            "effects": [
+              {
+                "op": "append",
+                "schema": "discussion.message",
+                "selectHead": false,
+                "value": {
+                  "from": "object",
+                  "fields": {
+                    "message": {
+                      "from": "body",
+                      "path": [
+                        "message"
+                      ]
+                    },
+                    "reply_to": {
+                      "from": "ref",
+                      "source": "body",
+                      "path": [
+                        "reply_to"
+                      ],
+                      "scope": "INSTANCE"
+                    },
+                    "author": {
+                      "from": "auth",
+                      "field": "actorId"
+                    }
+                  }
+                },
+                "relations": [
+                  {
+                    "kind": "reply_to",
+                    "target": {
+                      "from": "ref",
+                      "source": "body",
+                      "path": [
+                        "reply_to"
+                      ],
+                      "scope": "INSTANCE"
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "discussion.summarize",
+        "reads": [],
+        "writes": [],
+        "revisionEffects": {
+          "control": true,
+          "contentEntities": [
+            "document"
+          ]
+        },
+        "variants": [
+          {
+            "when": [
+              {
+                "op": "has_protocol_role",
+                "role": "EDITOR"
+              },
+              {
+                "op": "has_capability",
+                "capability": "SUMMARIZE"
+              }
+            ],
+            "effects": [
+              {
+                "op": "append",
+                "schema": "wiki.revision",
+                "recordSlot": "summary",
+                "entity": {
+                  "mode": "new",
+                  "slot": "document"
+                },
+                "selectHead": true,
+                "value": {
+                  "from": "object",
+                  "fields": {
+                    "title": {
+                      "from": "body",
+                      "path": [
+                        "title"
+                      ]
+                    },
+                    "body": {
+                      "from": "body",
+                      "path": [
+                        "body"
+                      ]
+                    },
+                    "source_refs": {
+                      "from": "body",
+                      "path": [
+                        "source_refs"
+                      ]
+                    },
+                    "author": {
+                      "from": "auth",
+                      "field": "actorId"
+                    }
+                  }
+                },
+                "relations": []
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "dependencies": [],
+  "expected_resolved_digest": "d0fa544a8615cfa1fd342f322b0f63c160f2ad147800239f2f2fb5ea931cf599",
+  "provenance": {
+    "package_digest": "04bf619ca62c046494e1a92897d3fb49d6d0d2722076c159e023106adc68917d",
+    "source_digest": "abaec9f05c6a77745ec30509d760ea49381493b3165ac03b5d640b552e25621b",
+    "binding_digest": "7e0c5a6ac29e3328cb20b9e42e015a61a4aed9484c093d61a44cc8c6b7c90632",
+    "compiler_version": "peerwork.protocol-compiler.v1",
+    "semantics": "peerwork.kernel.v1",
+    "lock": {
+      "format": "peerwork.compilation-lock.v1",
+      "compiler_version": "peerwork.protocol-compiler.v1",
+      "semantics": "peerwork.kernel.v1",
+      "root_package_digest": "04bf619ca62c046494e1a92897d3fb49d6d0d2722076c159e023106adc68917d",
+      "dependencies": [],
+      "bindings": {
+        "writerRole": "EDITOR"
+      },
+      "source_digest": "abaec9f05c6a77745ec30509d760ea49381493b3165ac03b5d640b552e25621b",
+      "protocol_digest": "d0fa544a8615cfa1fd342f322b0f63c160f2ad147800239f2f2fb5ea931cf599"
+    }
+  }
+}

@@ -1,0 +1,1650 @@
+[
+  {
+    "name": "genesis_migrate_then_finish",
+    "policy": {
+      "payload": {
+        "v": 1,
+        "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+        "owner_id": "pI90RIm3Yb2Jvp8njqXpWu6lfDjLGMRmUldGaH0iC3E",
+        "signing_key": "OMr269Kac4waSKPdmkGsjnimVmbgLly9pyT_rweS1ZY",
+        "version": 1,
+        "previous_policy": null,
+        "effective_sequence": 1,
+        "visibility": "PUBLIC",
+        "epoch": 0,
+        "members": [
+          {
+            "actor_id": "pI90RIm3Yb2Jvp8njqXpWu6lfDjLGMRmUldGaH0iC3E",
+            "certificate": {
+              "payload": {
+                "v": 1,
+                "actor_id": "pI90RIm3Yb2Jvp8njqXpWu6lfDjLGMRmUldGaH0iC3E",
+                "signing_key": "OMr269Kac4waSKPdmkGsjnimVmbgLly9pyT_rweS1ZY",
+                "encryption_key": {
+                  "kty": "EC",
+                  "crv": "P-256",
+                  "x": "ScZs558j7YMXCmX7FbzSvcJ0aGDeFJFIAPHcRQMTde8",
+                  "y": "VYphbH7nYQolUDmzaypYB42cSwIv1DfIpfs2JSzwU-8"
+                },
+                "encryption_key_id": "ZTmkWlbWiBttUW80ziAnRxOWjiOWTlqotN4L95uN7e8",
+                "issued_at": 1,
+                "expires_at": 100000
+              },
+              "signature": "SuRZUQ7JQHOBb3YNyltLba2H0dc517w0BnQ50ziWpiuBKA5Ry-PihNjA-7Hy5o22EJhdK3jks6J-FRFZPDThBw"
+            },
+            "role": "OWNER",
+            "scopes": []
+          }
+        ],
+        "issued_at": 2
+      },
+      "signature": "QAd9Uy514-awgTQ8qGsfNyH4lmBRCOS89BcRPdU0Yp10ktkiPWNxg9zkIiUzbm-9niwF9rcTic46p-YfZZfAAA"
+    },
+    "commits": [
+      {
+        "payload": {
+          "v": 1,
+          "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+          "sequence": 1,
+          "previous": null,
+          "policy_hash": "96880e77a2187c04b2c684c4e1021d211684f37b26945730aa6baee9f76bfbdd",
+          "epoch": 0,
+          "actor_id": "pI90RIm3Yb2Jvp8njqXpWu6lfDjLGMRmUldGaH0iC3E",
+          "signing_key": "OMr269Kac4waSKPdmkGsjnimVmbgLly9pyT_rweS1ZY",
+          "command_id": "mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm",
+          "action_id": "secure.migrate",
+          "instance_id": null,
+          "issued_at": 3,
+          "delegation": null,
+          "migration": {
+            "source_checkpoint": null,
+            "source_root": "f54a70abe74b1aabe1510b982e414382bfbeeb4d3fd22e6d1b2921b7557ecc59",
+            "source_items": [
+              {
+                "kind": "workspaces",
+                "id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+                "revision": 1
+              }
+            ]
+          },
+          "mode": "PUBLIC",
+          "body": {
+            "v": 1,
+            "kind": "MIGRATE",
+            "input": {},
+            "objects": [
+              {
+                "kind": "workspaces",
+                "id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+                "revision": 1,
+                "provenance": "AUTHOR_SIGNED",
+                "value": {
+                  "id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+                  "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+                }
+              }
+            ]
+          }
+        },
+        "signature": "uxEUnNJdi4xJCo1QOleATSRqrcRqoTtGNZyAFgtzQsaHTp-gIPBdcjj-lkkzPigklJ_RBI3qbpW73X_oG5BnCg"
+      },
+      {
+        "payload": {
+          "v": 1,
+          "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+          "sequence": 2,
+          "previous": "91745c0af6550323c4062669fe6752f98c080db9f450a7fd976caa17c4778ff5",
+          "policy_hash": "96880e77a2187c04b2c684c4e1021d211684f37b26945730aa6baee9f76bfbdd",
+          "epoch": 0,
+          "actor_id": "pI90RIm3Yb2Jvp8njqXpWu6lfDjLGMRmUldGaH0iC3E",
+          "signing_key": "OMr269Kac4waSKPdmkGsjnimVmbgLly9pyT_rweS1ZY",
+          "command_id": "fffffffffffffffffffffffffffffffffffffffffff",
+          "action_id": "secure.finish",
+          "instance_id": null,
+          "issued_at": 4,
+          "delegation": null,
+          "mode": "PUBLIC",
+          "body": {
+            "v": 1,
+            "kind": "ADMIN",
+            "input": {},
+            "objects": []
+          }
+        },
+        "signature": "uOET3yUtn1IWH5CQt6EY1IWu4f5oXLvT_fg5oF3x4guRPZLAlfIOfCogaDmifF__adywCqRXBnXpFszMMjlhDQ"
+      }
+    ],
+    "checkpoint": {
+      "v": 1,
+      "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+      "owner_id": "pI90RIm3Yb2Jvp8njqXpWu6lfDjLGMRmUldGaH0iC3E",
+      "owner_key": "OMr269Kac4waSKPdmkGsjnimVmbgLly9pyT_rweS1ZY",
+      "sequence": 2,
+      "head": "6e7bf4e1c48388f9cbc5d25805768bfae0b5187dca9c55e7f2bb92d57e56594d",
+      "policy_hash": "96880e77a2187c04b2c684c4e1021d211684f37b26945730aa6baee9f76bfbdd"
+    },
+    "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+    "owner": {
+      "actor_id": "pI90RIm3Yb2Jvp8njqXpWu6lfDjLGMRmUldGaH0iC3E",
+      "key": "OMr269Kac4waSKPdmkGsjnimVmbgLly9pyT_rweS1ZY"
+    },
+    "ok": true,
+    "objects": [
+      {
+        "kind": "workspaces",
+        "id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+        "revision": 1,
+        "provenance": "AUTHOR_SIGNED",
+        "value": {
+          "id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+          "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+        }
+      }
+    ],
+    "operations": [
+      {
+        "v": 1,
+        "kind": "MIGRATE",
+        "input": {},
+        "objects": [
+          {
+            "kind": "workspaces",
+            "id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+            "revision": 1,
+            "provenance": "AUTHOR_SIGNED",
+            "value": {
+              "id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+              "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+            }
+          }
+        ]
+      },
+      {
+        "v": 1,
+        "kind": "ADMIN",
+        "input": {},
+        "objects": []
+      }
+    ],
+    "legacy": false
+  },
+  {
+    "name": "genesis_migrate_at_eof",
+    "policy": {
+      "payload": {
+        "v": 1,
+        "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+        "owner_id": "pI90RIm3Yb2Jvp8njqXpWu6lfDjLGMRmUldGaH0iC3E",
+        "signing_key": "OMr269Kac4waSKPdmkGsjnimVmbgLly9pyT_rweS1ZY",
+        "version": 1,
+        "previous_policy": null,
+        "effective_sequence": 1,
+        "visibility": "PUBLIC",
+        "epoch": 0,
+        "members": [
+          {
+            "actor_id": "pI90RIm3Yb2Jvp8njqXpWu6lfDjLGMRmUldGaH0iC3E",
+            "certificate": {
+              "payload": {
+                "v": 1,
+                "actor_id": "pI90RIm3Yb2Jvp8njqXpWu6lfDjLGMRmUldGaH0iC3E",
+                "signing_key": "OMr269Kac4waSKPdmkGsjnimVmbgLly9pyT_rweS1ZY",
+                "encryption_key": {
+                  "kty": "EC",
+                  "crv": "P-256",
+                  "x": "ScZs558j7YMXCmX7FbzSvcJ0aGDeFJFIAPHcRQMTde8",
+                  "y": "VYphbH7nYQolUDmzaypYB42cSwIv1DfIpfs2JSzwU-8"
+                },
+                "encryption_key_id": "ZTmkWlbWiBttUW80ziAnRxOWjiOWTlqotN4L95uN7e8",
+                "issued_at": 1,
+                "expires_at": 100000
+              },
+              "signature": "SuRZUQ7JQHOBb3YNyltLba2H0dc517w0BnQ50ziWpiuBKA5Ry-PihNjA-7Hy5o22EJhdK3jks6J-FRFZPDThBw"
+            },
+            "role": "OWNER",
+            "scopes": []
+          }
+        ],
+        "issued_at": 2
+      },
+      "signature": "QAd9Uy514-awgTQ8qGsfNyH4lmBRCOS89BcRPdU0Yp10ktkiPWNxg9zkIiUzbm-9niwF9rcTic46p-YfZZfAAA"
+    },
+    "commits": [
+      {
+        "payload": {
+          "v": 1,
+          "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+          "sequence": 1,
+          "previous": null,
+          "policy_hash": "96880e77a2187c04b2c684c4e1021d211684f37b26945730aa6baee9f76bfbdd",
+          "epoch": 0,
+          "actor_id": "pI90RIm3Yb2Jvp8njqXpWu6lfDjLGMRmUldGaH0iC3E",
+          "signing_key": "OMr269Kac4waSKPdmkGsjnimVmbgLly9pyT_rweS1ZY",
+          "command_id": "mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm",
+          "action_id": "secure.migrate",
+          "instance_id": null,
+          "issued_at": 3,
+          "delegation": null,
+          "migration": {
+            "source_checkpoint": null,
+            "source_root": "f54a70abe74b1aabe1510b982e414382bfbeeb4d3fd22e6d1b2921b7557ecc59",
+            "source_items": [
+              {
+                "kind": "workspaces",
+                "id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+                "revision": 1
+              }
+            ]
+          },
+          "mode": "PUBLIC",
+          "body": {
+            "v": 1,
+            "kind": "MIGRATE",
+            "input": {},
+            "objects": [
+              {
+                "kind": "workspaces",
+                "id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+                "revision": 1,
+                "provenance": "AUTHOR_SIGNED",
+                "value": {
+                  "id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+                  "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+                }
+              }
+            ]
+          }
+        },
+        "signature": "uxEUnNJdi4xJCo1QOleATSRqrcRqoTtGNZyAFgtzQsaHTp-gIPBdcjj-lkkzPigklJ_RBI3qbpW73X_oG5BnCg"
+      }
+    ],
+    "checkpoint": {
+      "v": 1,
+      "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+      "owner_id": "pI90RIm3Yb2Jvp8njqXpWu6lfDjLGMRmUldGaH0iC3E",
+      "owner_key": "OMr269Kac4waSKPdmkGsjnimVmbgLly9pyT_rweS1ZY",
+      "sequence": 1,
+      "head": "91745c0af6550323c4062669fe6752f98c080db9f450a7fd976caa17c4778ff5",
+      "policy_hash": "96880e77a2187c04b2c684c4e1021d211684f37b26945730aa6baee9f76bfbdd"
+    },
+    "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+    "owner": {
+      "actor_id": "pI90RIm3Yb2Jvp8njqXpWu6lfDjLGMRmUldGaH0iC3E",
+      "key": "OMr269Kac4waSKPdmkGsjnimVmbgLly9pyT_rweS1ZY"
+    },
+    "ok": true,
+    "objects": [
+      {
+        "kind": "workspaces",
+        "id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+        "revision": 1,
+        "provenance": "AUTHOR_SIGNED",
+        "value": {
+          "id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+          "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+        }
+      }
+    ],
+    "operations": [
+      {
+        "v": 1,
+        "kind": "MIGRATE",
+        "input": {},
+        "objects": [
+          {
+            "kind": "workspaces",
+            "id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+            "revision": 1,
+            "provenance": "AUTHOR_SIGNED",
+            "value": {
+              "id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+              "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+            }
+          }
+        ]
+      }
+    ],
+    "legacy": false
+  },
+  {
+    "name": "signed_wrong_source_root",
+    "policy": {
+      "payload": {
+        "v": 1,
+        "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+        "owner_id": "pI90RIm3Yb2Jvp8njqXpWu6lfDjLGMRmUldGaH0iC3E",
+        "signing_key": "OMr269Kac4waSKPdmkGsjnimVmbgLly9pyT_rweS1ZY",
+        "version": 1,
+        "previous_policy": null,
+        "effective_sequence": 1,
+        "visibility": "PUBLIC",
+        "epoch": 0,
+        "members": [
+          {
+            "actor_id": "pI90RIm3Yb2Jvp8njqXpWu6lfDjLGMRmUldGaH0iC3E",
+            "certificate": {
+              "payload": {
+                "v": 1,
+                "actor_id": "pI90RIm3Yb2Jvp8njqXpWu6lfDjLGMRmUldGaH0iC3E",
+                "signing_key": "OMr269Kac4waSKPdmkGsjnimVmbgLly9pyT_rweS1ZY",
+                "encryption_key": {
+                  "kty": "EC",
+                  "crv": "P-256",
+                  "x": "ScZs558j7YMXCmX7FbzSvcJ0aGDeFJFIAPHcRQMTde8",
+                  "y": "VYphbH7nYQolUDmzaypYB42cSwIv1DfIpfs2JSzwU-8"
+                },
+                "encryption_key_id": "ZTmkWlbWiBttUW80ziAnRxOWjiOWTlqotN4L95uN7e8",
+                "issued_at": 1,
+                "expires_at": 100000
+              },
+              "signature": "SuRZUQ7JQHOBb3YNyltLba2H0dc517w0BnQ50ziWpiuBKA5Ry-PihNjA-7Hy5o22EJhdK3jks6J-FRFZPDThBw"
+            },
+            "role": "OWNER",
+            "scopes": []
+          }
+        ],
+        "issued_at": 2
+      },
+      "signature": "QAd9Uy514-awgTQ8qGsfNyH4lmBRCOS89BcRPdU0Yp10ktkiPWNxg9zkIiUzbm-9niwF9rcTic46p-YfZZfAAA"
+    },
+    "commits": [
+      {
+        "payload": {
+          "v": 1,
+          "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+          "sequence": 1,
+          "previous": null,
+          "policy_hash": "96880e77a2187c04b2c684c4e1021d211684f37b26945730aa6baee9f76bfbdd",
+          "epoch": 0,
+          "actor_id": "pI90RIm3Yb2Jvp8njqXpWu6lfDjLGMRmUldGaH0iC3E",
+          "signing_key": "OMr269Kac4waSKPdmkGsjnimVmbgLly9pyT_rweS1ZY",
+          "command_id": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
+          "action_id": "secure.migrate",
+          "instance_id": null,
+          "issued_at": 3,
+          "delegation": null,
+          "migration": {
+            "source_checkpoint": null,
+            "source_root": "0000000000000000000000000000000000000000000000000000000000000000",
+            "source_items": [
+              {
+                "kind": "workspaces",
+                "id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+                "revision": 1
+              }
+            ]
+          },
+          "mode": "PUBLIC",
+          "body": {
+            "v": 1,
+            "kind": "MIGRATE",
+            "input": {},
+            "objects": [
+              {
+                "kind": "workspaces",
+                "id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+                "revision": 1,
+                "provenance": "AUTHOR_SIGNED",
+                "value": {
+                  "id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+                  "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+                }
+              }
+            ]
+          }
+        },
+        "signature": "CvENwVLLN_06oM8GNMLdUlR3TG2FNPsBDHNb1Sy4fQLy0V0exIBB0sRoaVqToIzrXSNH1h2-_BzJl6QGUdtECQ"
+      }
+    ],
+    "checkpoint": {
+      "v": 1,
+      "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+      "owner_id": "pI90RIm3Yb2Jvp8njqXpWu6lfDjLGMRmUldGaH0iC3E",
+      "owner_key": "OMr269Kac4waSKPdmkGsjnimVmbgLly9pyT_rweS1ZY",
+      "sequence": 1,
+      "head": "205018c8afd2a1e7f70ed70fa1293f341712e833557d6bd1560aef53616ceb61",
+      "policy_hash": "96880e77a2187c04b2c684c4e1021d211684f37b26945730aa6baee9f76bfbdd"
+    },
+    "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+    "owner": {
+      "actor_id": "pI90RIm3Yb2Jvp8njqXpWu6lfDjLGMRmUldGaH0iC3E",
+      "key": "OMr269Kac4waSKPdmkGsjnimVmbgLly9pyT_rweS1ZY"
+    },
+    "ok": false,
+    "error": "MIGRATION_INCOMPLETE"
+  },
+  {
+    "name": "two_page_migration",
+    "policy": {
+      "payload": {
+        "v": 1,
+        "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+        "owner_id": "pI90RIm3Yb2Jvp8njqXpWu6lfDjLGMRmUldGaH0iC3E",
+        "signing_key": "OMr269Kac4waSKPdmkGsjnimVmbgLly9pyT_rweS1ZY",
+        "version": 1,
+        "previous_policy": null,
+        "effective_sequence": 1,
+        "visibility": "PUBLIC",
+        "epoch": 0,
+        "members": [
+          {
+            "actor_id": "pI90RIm3Yb2Jvp8njqXpWu6lfDjLGMRmUldGaH0iC3E",
+            "certificate": {
+              "payload": {
+                "v": 1,
+                "actor_id": "pI90RIm3Yb2Jvp8njqXpWu6lfDjLGMRmUldGaH0iC3E",
+                "signing_key": "OMr269Kac4waSKPdmkGsjnimVmbgLly9pyT_rweS1ZY",
+                "encryption_key": {
+                  "kty": "EC",
+                  "crv": "P-256",
+                  "x": "ScZs558j7YMXCmX7FbzSvcJ0aGDeFJFIAPHcRQMTde8",
+                  "y": "VYphbH7nYQolUDmzaypYB42cSwIv1DfIpfs2JSzwU-8"
+                },
+                "encryption_key_id": "ZTmkWlbWiBttUW80ziAnRxOWjiOWTlqotN4L95uN7e8",
+                "issued_at": 1,
+                "expires_at": 100000
+              },
+              "signature": "SuRZUQ7JQHOBb3YNyltLba2H0dc517w0BnQ50ziWpiuBKA5Ry-PihNjA-7Hy5o22EJhdK3jks6J-FRFZPDThBw"
+            },
+            "role": "OWNER",
+            "scopes": []
+          }
+        ],
+        "issued_at": 2
+      },
+      "signature": "QAd9Uy514-awgTQ8qGsfNyH4lmBRCOS89BcRPdU0Yp10ktkiPWNxg9zkIiUzbm-9niwF9rcTic46p-YfZZfAAA"
+    },
+    "commits": [
+      {
+        "payload": {
+          "v": 1,
+          "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+          "sequence": 1,
+          "previous": null,
+          "policy_hash": "96880e77a2187c04b2c684c4e1021d211684f37b26945730aa6baee9f76bfbdd",
+          "epoch": 0,
+          "actor_id": "pI90RIm3Yb2Jvp8njqXpWu6lfDjLGMRmUldGaH0iC3E",
+          "signing_key": "OMr269Kac4waSKPdmkGsjnimVmbgLly9pyT_rweS1ZY",
+          "command_id": "1111111111111111111111111111111111111111111",
+          "action_id": "secure.migrate",
+          "instance_id": null,
+          "issued_at": 3,
+          "delegation": null,
+          "migration": {
+            "source_checkpoint": null,
+            "source_root": "d2a9c46aac89445c94c86f4ce1c24d53fbebfb99a894f56ad21694b1c81b6a79",
+            "source_items": [
+              {
+                "kind": "workspaces",
+                "id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+                "revision": 1
+              }
+            ]
+          },
+          "mode": "PUBLIC",
+          "body": {
+            "v": 1,
+            "kind": "MIGRATE",
+            "input": {},
+            "objects": [
+              {
+                "kind": "workspaces",
+                "id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+                "revision": 1,
+                "provenance": "AUTHOR_SIGNED",
+                "value": {
+                  "id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+                  "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+                }
+              }
+            ]
+          }
+        },
+        "signature": "p5DBFSON8WKrrkFkC59KX7JeEUg-2dS4VrnOg-cetGZmppBFq5yJFZSdskNnys7YbmPwfijFICGpf1-jVKY-Bg"
+      },
+      {
+        "payload": {
+          "v": 1,
+          "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+          "sequence": 2,
+          "previous": "2580aff024f2a7cca98fd08ae17c02cb5cb54bc8e6ffb0b9657bd8b4627e0ca1",
+          "policy_hash": "96880e77a2187c04b2c684c4e1021d211684f37b26945730aa6baee9f76bfbdd",
+          "epoch": 0,
+          "actor_id": "pI90RIm3Yb2Jvp8njqXpWu6lfDjLGMRmUldGaH0iC3E",
+          "signing_key": "OMr269Kac4waSKPdmkGsjnimVmbgLly9pyT_rweS1ZY",
+          "command_id": "2222222222222222222222222222222222222222222",
+          "action_id": "secure.migrate",
+          "instance_id": null,
+          "issued_at": 4,
+          "delegation": null,
+          "migration": {
+            "source_checkpoint": null,
+            "source_root": "d2a9c46aac89445c94c86f4ce1c24d53fbebfb99a894f56ad21694b1c81b6a79",
+            "source_items": [
+              {
+                "kind": "workspace_config",
+                "id": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+                "revision": 1
+              }
+            ]
+          },
+          "mode": "PUBLIC",
+          "body": {
+            "v": 1,
+            "kind": "MIGRATE",
+            "input": {},
+            "objects": [
+              {
+                "kind": "workspace_config",
+                "id": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+                "revision": 1,
+                "provenance": "AUTHOR_SIGNED",
+                "value": {
+                  "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+                }
+              }
+            ]
+          }
+        },
+        "signature": "smZtF8Q-rlN8WesMqGtIY6dna8BD4ID1xEZlWtaOlzcRoVV5-BdTFPI5HsT5DY9h-QT8-0dq7lUlDPFILl_oBA"
+      }
+    ],
+    "checkpoint": {
+      "v": 1,
+      "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+      "owner_id": "pI90RIm3Yb2Jvp8njqXpWu6lfDjLGMRmUldGaH0iC3E",
+      "owner_key": "OMr269Kac4waSKPdmkGsjnimVmbgLly9pyT_rweS1ZY",
+      "sequence": 2,
+      "head": "bf20735dab2fa313f2b8d9701d78a784d28be72c722a43a4451505f8d0b3d41a",
+      "policy_hash": "96880e77a2187c04b2c684c4e1021d211684f37b26945730aa6baee9f76bfbdd"
+    },
+    "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+    "owner": {
+      "actor_id": "pI90RIm3Yb2Jvp8njqXpWu6lfDjLGMRmUldGaH0iC3E",
+      "key": "OMr269Kac4waSKPdmkGsjnimVmbgLly9pyT_rweS1ZY"
+    },
+    "ok": true,
+    "objects": [
+      {
+        "kind": "workspaces",
+        "id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+        "revision": 1,
+        "provenance": "AUTHOR_SIGNED",
+        "value": {
+          "id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+          "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+        }
+      },
+      {
+        "kind": "workspace_config",
+        "id": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "revision": 1,
+        "provenance": "AUTHOR_SIGNED",
+        "value": {
+          "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+        }
+      }
+    ],
+    "operations": [
+      {
+        "v": 1,
+        "kind": "MIGRATE",
+        "input": {},
+        "objects": [
+          {
+            "kind": "workspaces",
+            "id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+            "revision": 1,
+            "provenance": "AUTHOR_SIGNED",
+            "value": {
+              "id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+              "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+            }
+          }
+        ]
+      },
+      {
+        "v": 1,
+        "kind": "MIGRATE",
+        "input": {},
+        "objects": [
+          {
+            "kind": "workspace_config",
+            "id": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+            "revision": 1,
+            "provenance": "AUTHOR_SIGNED",
+            "value": {
+              "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+            }
+          }
+        ]
+      }
+    ],
+    "legacy": false
+  },
+  {
+    "name": "missing_second_page",
+    "policy": {
+      "payload": {
+        "v": 1,
+        "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+        "owner_id": "pI90RIm3Yb2Jvp8njqXpWu6lfDjLGMRmUldGaH0iC3E",
+        "signing_key": "OMr269Kac4waSKPdmkGsjnimVmbgLly9pyT_rweS1ZY",
+        "version": 1,
+        "previous_policy": null,
+        "effective_sequence": 1,
+        "visibility": "PUBLIC",
+        "epoch": 0,
+        "members": [
+          {
+            "actor_id": "pI90RIm3Yb2Jvp8njqXpWu6lfDjLGMRmUldGaH0iC3E",
+            "certificate": {
+              "payload": {
+                "v": 1,
+                "actor_id": "pI90RIm3Yb2Jvp8njqXpWu6lfDjLGMRmUldGaH0iC3E",
+                "signing_key": "OMr269Kac4waSKPdmkGsjnimVmbgLly9pyT_rweS1ZY",
+                "encryption_key": {
+                  "kty": "EC",
+                  "crv": "P-256",
+                  "x": "ScZs558j7YMXCmX7FbzSvcJ0aGDeFJFIAPHcRQMTde8",
+                  "y": "VYphbH7nYQolUDmzaypYB42cSwIv1DfIpfs2JSzwU-8"
+                },
+                "encryption_key_id": "ZTmkWlbWiBttUW80ziAnRxOWjiOWTlqotN4L95uN7e8",
+                "issued_at": 1,
+                "expires_at": 100000
+              },
+              "signature": "SuRZUQ7JQHOBb3YNyltLba2H0dc517w0BnQ50ziWpiuBKA5Ry-PihNjA-7Hy5o22EJhdK3jks6J-FRFZPDThBw"
+            },
+            "role": "OWNER",
+            "scopes": []
+          }
+        ],
+        "issued_at": 2
+      },
+      "signature": "QAd9Uy514-awgTQ8qGsfNyH4lmBRCOS89BcRPdU0Yp10ktkiPWNxg9zkIiUzbm-9niwF9rcTic46p-YfZZfAAA"
+    },
+    "commits": [
+      {
+        "payload": {
+          "v": 1,
+          "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+          "sequence": 1,
+          "previous": null,
+          "policy_hash": "96880e77a2187c04b2c684c4e1021d211684f37b26945730aa6baee9f76bfbdd",
+          "epoch": 0,
+          "actor_id": "pI90RIm3Yb2Jvp8njqXpWu6lfDjLGMRmUldGaH0iC3E",
+          "signing_key": "OMr269Kac4waSKPdmkGsjnimVmbgLly9pyT_rweS1ZY",
+          "command_id": "1111111111111111111111111111111111111111111",
+          "action_id": "secure.migrate",
+          "instance_id": null,
+          "issued_at": 3,
+          "delegation": null,
+          "migration": {
+            "source_checkpoint": null,
+            "source_root": "d2a9c46aac89445c94c86f4ce1c24d53fbebfb99a894f56ad21694b1c81b6a79",
+            "source_items": [
+              {
+                "kind": "workspaces",
+                "id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+                "revision": 1
+              }
+            ]
+          },
+          "mode": "PUBLIC",
+          "body": {
+            "v": 1,
+            "kind": "MIGRATE",
+            "input": {},
+            "objects": [
+              {
+                "kind": "workspaces",
+                "id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+                "revision": 1,
+                "provenance": "AUTHOR_SIGNED",
+                "value": {
+                  "id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+                  "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+                }
+              }
+            ]
+          }
+        },
+        "signature": "p5DBFSON8WKrrkFkC59KX7JeEUg-2dS4VrnOg-cetGZmppBFq5yJFZSdskNnys7YbmPwfijFICGpf1-jVKY-Bg"
+      }
+    ],
+    "checkpoint": {
+      "v": 1,
+      "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+      "owner_id": "pI90RIm3Yb2Jvp8njqXpWu6lfDjLGMRmUldGaH0iC3E",
+      "owner_key": "OMr269Kac4waSKPdmkGsjnimVmbgLly9pyT_rweS1ZY",
+      "sequence": 1,
+      "head": "2580aff024f2a7cca98fd08ae17c02cb5cb54bc8e6ffb0b9657bd8b4627e0ca1",
+      "policy_hash": "96880e77a2187c04b2c684c4e1021d211684f37b26945730aa6baee9f76bfbdd"
+    },
+    "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+    "owner": {
+      "actor_id": "pI90RIm3Yb2Jvp8njqXpWu6lfDjLGMRmUldGaH0iC3E",
+      "key": "OMr269Kac4waSKPdmkGsjnimVmbgLly9pyT_rweS1ZY"
+    },
+    "ok": false,
+    "error": "MIGRATION_INCOMPLETE"
+  },
+  {
+    "name": "signed_fragment_inflation",
+    "policy": {
+      "payload": {
+        "v": 1,
+        "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+        "owner_id": "pI90RIm3Yb2Jvp8njqXpWu6lfDjLGMRmUldGaH0iC3E",
+        "signing_key": "OMr269Kac4waSKPdmkGsjnimVmbgLly9pyT_rweS1ZY",
+        "version": 1,
+        "previous_policy": null,
+        "effective_sequence": 1,
+        "visibility": "PUBLIC",
+        "epoch": 0,
+        "members": [
+          {
+            "actor_id": "pI90RIm3Yb2Jvp8njqXpWu6lfDjLGMRmUldGaH0iC3E",
+            "certificate": {
+              "payload": {
+                "v": 1,
+                "actor_id": "pI90RIm3Yb2Jvp8njqXpWu6lfDjLGMRmUldGaH0iC3E",
+                "signing_key": "OMr269Kac4waSKPdmkGsjnimVmbgLly9pyT_rweS1ZY",
+                "encryption_key": {
+                  "kty": "EC",
+                  "crv": "P-256",
+                  "x": "ScZs558j7YMXCmX7FbzSvcJ0aGDeFJFIAPHcRQMTde8",
+                  "y": "VYphbH7nYQolUDmzaypYB42cSwIv1DfIpfs2JSzwU-8"
+                },
+                "encryption_key_id": "ZTmkWlbWiBttUW80ziAnRxOWjiOWTlqotN4L95uN7e8",
+                "issued_at": 1,
+                "expires_at": 100000
+              },
+              "signature": "SuRZUQ7JQHOBb3YNyltLba2H0dc517w0BnQ50ziWpiuBKA5Ry-PihNjA-7Hy5o22EJhdK3jks6J-FRFZPDThBw"
+            },
+            "role": "OWNER",
+            "scopes": []
+          }
+        ],
+        "issued_at": 2
+      },
+      "signature": "QAd9Uy514-awgTQ8qGsfNyH4lmBRCOS89BcRPdU0Yp10ktkiPWNxg9zkIiUzbm-9niwF9rcTic46p-YfZZfAAA"
+    },
+    "commits": [
+      {
+        "payload": {
+          "v": 1,
+          "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+          "sequence": 1,
+          "previous": null,
+          "policy_hash": "96880e77a2187c04b2c684c4e1021d211684f37b26945730aa6baee9f76bfbdd",
+          "epoch": 0,
+          "actor_id": "pI90RIm3Yb2Jvp8njqXpWu6lfDjLGMRmUldGaH0iC3E",
+          "signing_key": "OMr269Kac4waSKPdmkGsjnimVmbgLly9pyT_rweS1ZY",
+          "command_id": "sssssssssssssssssssssssssssssssssssssssssss",
+          "action_id": "secure.migrate",
+          "instance_id": null,
+          "issued_at": 3,
+          "delegation": null,
+          "migration": {
+            "source_checkpoint": null,
+            "source_root": "6119c525cbd797f0cb1ed75d8ddf2bb7f45dc2a29fb576c2af6ead4caf4b522f",
+            "source_items": [
+              {
+                "kind": "secure_fragment",
+                "id": "fad4e40838fa4e70156508b0953c85d0e6a19723bcf65a52f62225ca578fd083-0",
+                "revision": 1
+              }
+            ]
+          },
+          "mode": "PUBLIC",
+          "body": {
+            "v": 1,
+            "kind": "MIGRATE",
+            "input": {},
+            "objects": [
+              {
+                "kind": "secure_fragment",
+                "id": "fad4e40838fa4e70156508b0953c85d0e6a19723bcf65a52f62225ca578fd083-0",
+                "revision": 1,
+                "provenance": "AUTHOR_SIGNED",
+                "value": {
+                  "fragment": {
+                    "kind": "workspace_config",
+                    "id": "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz",
+                    "revision": 1,
+                    "index": 0,
+                    "count": 1,
+                    "provenance": "AUTHOR_SIGNED"
+                  },
+                  "data": "eyJlbmFibGVkIjp0cnVlLCJ3b3Jrc3BhY2VfaWQiOiJ3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3In0"
+                }
+              }
+            ]
+          }
+        },
+        "signature": "uHSoTt76MkMvPtdzFyKqKwlsrqLkhoTjTxWt5OkQv7_V5NcWKTWZrpMrT4yU_V4ayfbcKRDM9ofY6bw86NAQDA"
+      }
+    ],
+    "checkpoint": {
+      "v": 1,
+      "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+      "owner_id": "pI90RIm3Yb2Jvp8njqXpWu6lfDjLGMRmUldGaH0iC3E",
+      "owner_key": "OMr269Kac4waSKPdmkGsjnimVmbgLly9pyT_rweS1ZY",
+      "sequence": 1,
+      "head": "e0a285b0838cf015a5d2df935c36e7cda20a97bd1bee1235a13ad9328f063a5a",
+      "policy_hash": "96880e77a2187c04b2c684c4e1021d211684f37b26945730aa6baee9f76bfbdd"
+    },
+    "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+    "owner": {
+      "actor_id": "pI90RIm3Yb2Jvp8njqXpWu6lfDjLGMRmUldGaH0iC3E",
+      "key": "OMr269Kac4waSKPdmkGsjnimVmbgLly9pyT_rweS1ZY"
+    },
+    "ok": true,
+    "objects": [
+      {
+        "kind": "workspace_config",
+        "id": "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz",
+        "revision": 1,
+        "provenance": "AUTHOR_SIGNED",
+        "value": {
+          "enabled": true,
+          "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+        }
+      }
+    ],
+    "operations": [
+      {
+        "v": 1,
+        "kind": "MIGRATE",
+        "input": {},
+        "objects": [
+          {
+            "kind": "secure_fragment",
+            "id": "fad4e40838fa4e70156508b0953c85d0e6a19723bcf65a52f62225ca578fd083-0",
+            "revision": 1,
+            "provenance": "AUTHOR_SIGNED",
+            "value": {
+              "fragment": {
+                "kind": "workspace_config",
+                "id": "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz",
+                "revision": 1,
+                "index": 0,
+                "count": 1,
+                "provenance": "AUTHOR_SIGNED"
+              },
+              "data": "eyJlbmFibGVkIjp0cnVlLCJ3b3Jrc3BhY2VfaWQiOiJ3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3In0"
+            }
+          }
+        ]
+      }
+    ],
+    "legacy": false
+  },
+  {
+    "name": "signed_fragment_invalid_utf8",
+    "policy": {
+      "payload": {
+        "v": 1,
+        "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+        "owner_id": "pI90RIm3Yb2Jvp8njqXpWu6lfDjLGMRmUldGaH0iC3E",
+        "signing_key": "OMr269Kac4waSKPdmkGsjnimVmbgLly9pyT_rweS1ZY",
+        "version": 1,
+        "previous_policy": null,
+        "effective_sequence": 1,
+        "visibility": "PUBLIC",
+        "epoch": 0,
+        "members": [
+          {
+            "actor_id": "pI90RIm3Yb2Jvp8njqXpWu6lfDjLGMRmUldGaH0iC3E",
+            "certificate": {
+              "payload": {
+                "v": 1,
+                "actor_id": "pI90RIm3Yb2Jvp8njqXpWu6lfDjLGMRmUldGaH0iC3E",
+                "signing_key": "OMr269Kac4waSKPdmkGsjnimVmbgLly9pyT_rweS1ZY",
+                "encryption_key": {
+                  "kty": "EC",
+                  "crv": "P-256",
+                  "x": "ScZs558j7YMXCmX7FbzSvcJ0aGDeFJFIAPHcRQMTde8",
+                  "y": "VYphbH7nYQolUDmzaypYB42cSwIv1DfIpfs2JSzwU-8"
+                },
+                "encryption_key_id": "ZTmkWlbWiBttUW80ziAnRxOWjiOWTlqotN4L95uN7e8",
+                "issued_at": 1,
+                "expires_at": 100000
+              },
+              "signature": "SuRZUQ7JQHOBb3YNyltLba2H0dc517w0BnQ50ziWpiuBKA5Ry-PihNjA-7Hy5o22EJhdK3jks6J-FRFZPDThBw"
+            },
+            "role": "OWNER",
+            "scopes": []
+          }
+        ],
+        "issued_at": 2
+      },
+      "signature": "QAd9Uy514-awgTQ8qGsfNyH4lmBRCOS89BcRPdU0Yp10ktkiPWNxg9zkIiUzbm-9niwF9rcTic46p-YfZZfAAA"
+    },
+    "commits": [
+      {
+        "payload": {
+          "v": 1,
+          "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+          "sequence": 1,
+          "previous": null,
+          "policy_hash": "96880e77a2187c04b2c684c4e1021d211684f37b26945730aa6baee9f76bfbdd",
+          "epoch": 0,
+          "actor_id": "pI90RIm3Yb2Jvp8njqXpWu6lfDjLGMRmUldGaH0iC3E",
+          "signing_key": "OMr269Kac4waSKPdmkGsjnimVmbgLly9pyT_rweS1ZY",
+          "command_id": "sssssssssssssssssssssssssssssssssssssssssss",
+          "action_id": "secure.migrate",
+          "instance_id": null,
+          "issued_at": 3,
+          "delegation": null,
+          "migration": {
+            "source_checkpoint": null,
+            "source_root": "6119c525cbd797f0cb1ed75d8ddf2bb7f45dc2a29fb576c2af6ead4caf4b522f",
+            "source_items": [
+              {
+                "kind": "secure_fragment",
+                "id": "fad4e40838fa4e70156508b0953c85d0e6a19723bcf65a52f62225ca578fd083-0",
+                "revision": 1
+              }
+            ]
+          },
+          "mode": "PUBLIC",
+          "body": {
+            "v": 1,
+            "kind": "MIGRATE",
+            "input": {},
+            "objects": [
+              {
+                "kind": "secure_fragment",
+                "id": "fad4e40838fa4e70156508b0953c85d0e6a19723bcf65a52f62225ca578fd083-0",
+                "revision": 1,
+                "provenance": "AUTHOR_SIGNED",
+                "value": {
+                  "fragment": {
+                    "kind": "workspace_config",
+                    "id": "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz",
+                    "revision": 1,
+                    "index": 0,
+                    "count": 1,
+                    "provenance": "AUTHOR_SIGNED"
+                  },
+                  "data": "_w"
+                }
+              }
+            ]
+          }
+        },
+        "signature": "JhWwCWK7b0PzPhG5tajTE7qRWJSJRAtAmv4rd9GeX7ASj-RBuWP4zsHcLRZKIX8C-dkl3tjKYj73A41AUrKuCQ"
+      }
+    ],
+    "checkpoint": {
+      "v": 1,
+      "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+      "owner_id": "pI90RIm3Yb2Jvp8njqXpWu6lfDjLGMRmUldGaH0iC3E",
+      "owner_key": "OMr269Kac4waSKPdmkGsjnimVmbgLly9pyT_rweS1ZY",
+      "sequence": 1,
+      "head": "c020bc82a6608e0aa784319ead63fdb24a8262d777431bb57952bbdccd273f1f",
+      "policy_hash": "96880e77a2187c04b2c684c4e1021d211684f37b26945730aa6baee9f76bfbdd"
+    },
+    "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+    "owner": {
+      "actor_id": "pI90RIm3Yb2Jvp8njqXpWu6lfDjLGMRmUldGaH0iC3E",
+      "key": "OMr269Kac4waSKPdmkGsjnimVmbgLly9pyT_rweS1ZY"
+    },
+    "ok": false,
+    "error": "The encoded data was not valid for encoding utf-8"
+  },
+  {
+    "name": "structured_v2_migration",
+    "policy": {
+      "payload": {
+        "v": 2,
+        "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+        "owner_id": "pI90RIm3Yb2Jvp8njqXpWu6lfDjLGMRmUldGaH0iC3E",
+        "signing_key": "OMr269Kac4waSKPdmkGsjnimVmbgLly9pyT_rweS1ZY",
+        "version": 1,
+        "previous_policy": null,
+        "effective_sequence": 1,
+        "visibility": "PUBLIC",
+        "epoch": 0,
+        "members": [
+          {
+            "actor_id": "pI90RIm3Yb2Jvp8njqXpWu6lfDjLGMRmUldGaH0iC3E",
+            "certificate": {
+              "payload": {
+                "v": 1,
+                "actor_id": "pI90RIm3Yb2Jvp8njqXpWu6lfDjLGMRmUldGaH0iC3E",
+                "signing_key": "OMr269Kac4waSKPdmkGsjnimVmbgLly9pyT_rweS1ZY",
+                "encryption_key": {
+                  "kty": "EC",
+                  "crv": "P-256",
+                  "x": "ScZs558j7YMXCmX7FbzSvcJ0aGDeFJFIAPHcRQMTde8",
+                  "y": "VYphbH7nYQolUDmzaypYB42cSwIv1DfIpfs2JSzwU-8"
+                },
+                "encryption_key_id": "ZTmkWlbWiBttUW80ziAnRxOWjiOWTlqotN4L95uN7e8",
+                "issued_at": 1,
+                "expires_at": 100000
+              },
+              "signature": "SuRZUQ7JQHOBb3YNyltLba2H0dc517w0BnQ50ziWpiuBKA5Ry-PihNjA-7Hy5o22EJhdK3jks6J-FRFZPDThBw"
+            },
+            "role": "OWNER",
+            "scopes": []
+          }
+        ],
+        "issued_at": 2,
+        "structure": {
+          "v": 1,
+          "protocols": [],
+          "disclosure": [],
+          "instances": []
+        }
+      },
+      "signature": "hzvmnAbRA8IDb9ZjvZyHXlTXZyjB6Mq9hrQDWqiNTSmc31Li96Btu0nPPGLOdApGjWnN9Pa1w9OWYeOrNXKaCQ"
+    },
+    "commits": [
+      {
+        "payload": {
+          "v": 2,
+          "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+          "sequence": 1,
+          "previous": null,
+          "policy_hash": "2894a280fbbc193cb4d7fa3a9471af3bfdaacbc7d99729245177b63b1f7be817",
+          "epoch": 0,
+          "actor_id": "pI90RIm3Yb2Jvp8njqXpWu6lfDjLGMRmUldGaH0iC3E",
+          "signing_key": "OMr269Kac4waSKPdmkGsjnimVmbgLly9pyT_rweS1ZY",
+          "command_id": "sssssssssssssssssssssssssssssssssssssssssss",
+          "action_id": "secure.migrate",
+          "instance_id": null,
+          "issued_at": 3,
+          "delegation": null,
+          "structure": {
+            "v": 1,
+            "mode": "DELTA",
+            "records": [],
+            "heads": []
+          },
+          "migration": {
+            "source_checkpoint": null,
+            "source_root": "f54a70abe74b1aabe1510b982e414382bfbeeb4d3fd22e6d1b2921b7557ecc59",
+            "source_items": [
+              {
+                "kind": "workspaces",
+                "id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+                "revision": 1
+              }
+            ]
+          },
+          "mode": "PUBLIC",
+          "body": {
+            "v": 1,
+            "kind": "MIGRATE",
+            "input": {},
+            "objects": [
+              {
+                "kind": "workspaces",
+                "id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+                "revision": 1,
+                "provenance": "AUTHOR_SIGNED",
+                "value": {
+                  "id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+                  "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+                }
+              }
+            ]
+          }
+        },
+        "signature": "TgBaURT2qQqSYYoel1TKJYu0NAqI2fm4tnaK_zQmh-vNymiOohZ4BwJbKwYS_yKDFTTS_bccgCWohmoEtKqRBw"
+      }
+    ],
+    "checkpoint": {
+      "v": 1,
+      "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+      "owner_id": "pI90RIm3Yb2Jvp8njqXpWu6lfDjLGMRmUldGaH0iC3E",
+      "owner_key": "OMr269Kac4waSKPdmkGsjnimVmbgLly9pyT_rweS1ZY",
+      "sequence": 1,
+      "head": "0cbdce34ee699cba92729ad73a368cbd05d82cbcd02db446f44b3c37a27750a5",
+      "policy_hash": "2894a280fbbc193cb4d7fa3a9471af3bfdaacbc7d99729245177b63b1f7be817"
+    },
+    "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+    "owner": {
+      "actor_id": "pI90RIm3Yb2Jvp8njqXpWu6lfDjLGMRmUldGaH0iC3E",
+      "key": "OMr269Kac4waSKPdmkGsjnimVmbgLly9pyT_rweS1ZY"
+    },
+    "ok": true,
+    "objects": [
+      {
+        "kind": "workspaces",
+        "id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+        "revision": 1,
+        "provenance": "AUTHOR_SIGNED",
+        "value": {
+          "id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+          "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+        }
+      }
+    ],
+    "operations": [
+      {
+        "v": 1,
+        "kind": "MIGRATE",
+        "input": {},
+        "objects": [
+          {
+            "kind": "workspaces",
+            "id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+            "revision": 1,
+            "provenance": "AUTHOR_SIGNED",
+            "value": {
+              "id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+              "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+            }
+          }
+        ]
+      }
+    ],
+    "legacy": false
+  },
+  {
+    "name": "historical_v3_format_one_migration",
+    "policy": {
+      "payload": {
+        "v": 3,
+        "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+        "owner_id": "pI90RIm3Yb2Jvp8njqXpWu6lfDjLGMRmUldGaH0iC3E",
+        "signing_key": "OMr269Kac4waSKPdmkGsjnimVmbgLly9pyT_rweS1ZY",
+        "version": 1,
+        "previous_policy": null,
+        "effective_sequence": 1,
+        "visibility": "PUBLIC",
+        "epoch": 0,
+        "members": [
+          {
+            "actor_id": "pI90RIm3Yb2Jvp8njqXpWu6lfDjLGMRmUldGaH0iC3E",
+            "certificate": {
+              "payload": {
+                "v": 1,
+                "actor_id": "pI90RIm3Yb2Jvp8njqXpWu6lfDjLGMRmUldGaH0iC3E",
+                "signing_key": "OMr269Kac4waSKPdmkGsjnimVmbgLly9pyT_rweS1ZY",
+                "encryption_key": {
+                  "kty": "EC",
+                  "crv": "P-256",
+                  "x": "ScZs558j7YMXCmX7FbzSvcJ0aGDeFJFIAPHcRQMTde8",
+                  "y": "VYphbH7nYQolUDmzaypYB42cSwIv1DfIpfs2JSzwU-8"
+                },
+                "encryption_key_id": "ZTmkWlbWiBttUW80ziAnRxOWjiOWTlqotN4L95uN7e8",
+                "issued_at": 1,
+                "expires_at": 100000
+              },
+              "signature": "SuRZUQ7JQHOBb3YNyltLba2H0dc517w0BnQ50ziWpiuBKA5Ry-PihNjA-7Hy5o22EJhdK3jks6J-FRFZPDThBw"
+            },
+            "role": "OWNER",
+            "scopes": []
+          }
+        ],
+        "issued_at": 2,
+        "protocol_format_ceiling": 1,
+        "structure_mode": "NONE"
+      },
+      "signature": "3lgHwXdgAPj2sRf_T93lhn4xiF2MSwbwCC_aoB9C0SsNGuZ2F8EScK4JXnusOsqmvBwK2PbgZoe-KtNlFughDg"
+    },
+    "commits": [
+      {
+        "payload": {
+          "v": 3,
+          "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+          "sequence": 1,
+          "previous": null,
+          "policy_hash": "290a5f3a4e894aaf0c6f2541e0914aeab4c11180b65026c70b0e16ef16a453ff",
+          "epoch": 0,
+          "actor_id": "pI90RIm3Yb2Jvp8njqXpWu6lfDjLGMRmUldGaH0iC3E",
+          "signing_key": "OMr269Kac4waSKPdmkGsjnimVmbgLly9pyT_rweS1ZY",
+          "command_id": "3333333333333333333333333333333333333333333",
+          "action_id": "secure.migrate",
+          "instance_id": null,
+          "issued_at": 3,
+          "delegation": null,
+          "mode": "PUBLIC",
+          "body": {
+            "v": 1,
+            "kind": "MIGRATE",
+            "input": {},
+            "objects": [
+              {
+                "kind": "workspaces",
+                "id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+                "revision": 1,
+                "provenance": "AUTHOR_SIGNED",
+                "value": {
+                  "id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+                  "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+                }
+              }
+            ]
+          },
+          "protocol_format_ceiling": 1,
+          "migration": {
+            "source_checkpoint": null,
+            "source_root": "f54a70abe74b1aabe1510b982e414382bfbeeb4d3fd22e6d1b2921b7557ecc59",
+            "source_items": [
+              {
+                "kind": "workspaces",
+                "id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+                "revision": 1
+              }
+            ]
+          }
+        },
+        "signature": "lpbU0WDqcH04Dn8mQuRtbdkdJiZZ_8qRubP9cOeUmZ4Eyz9Ys8gY9AO1dIIJ38dgkCJbJlVB60AEGPBYhLf3Aw"
+      }
+    ],
+    "checkpoint": {
+      "v": 1,
+      "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+      "owner_id": "pI90RIm3Yb2Jvp8njqXpWu6lfDjLGMRmUldGaH0iC3E",
+      "owner_key": "OMr269Kac4waSKPdmkGsjnimVmbgLly9pyT_rweS1ZY",
+      "sequence": 1,
+      "head": "1d4a51a214372560225ea63177b93fa3c92b6a98615618b35d95bcc2bd68bd84",
+      "policy_hash": "290a5f3a4e894aaf0c6f2541e0914aeab4c11180b65026c70b0e16ef16a453ff"
+    },
+    "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+    "owner": {
+      "actor_id": "pI90RIm3Yb2Jvp8njqXpWu6lfDjLGMRmUldGaH0iC3E",
+      "key": "OMr269Kac4waSKPdmkGsjnimVmbgLly9pyT_rweS1ZY"
+    },
+    "ok": true,
+    "objects": [
+      {
+        "kind": "workspaces",
+        "id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+        "revision": 1,
+        "provenance": "AUTHOR_SIGNED",
+        "value": {
+          "id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+          "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+        }
+      }
+    ],
+    "operations": [
+      {
+        "v": 1,
+        "kind": "MIGRATE",
+        "input": {},
+        "objects": [
+          {
+            "kind": "workspaces",
+            "id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+            "revision": 1,
+            "provenance": "AUTHOR_SIGNED",
+            "value": {
+              "id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+              "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+            }
+          }
+        ]
+      }
+    ],
+    "legacy": false
+  },
+  {
+    "name": "historical_private_v3_migration",
+    "policy": {
+      "payload": {
+        "v": 3,
+        "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+        "owner_id": "pI90RIm3Yb2Jvp8njqXpWu6lfDjLGMRmUldGaH0iC3E",
+        "signing_key": "OMr269Kac4waSKPdmkGsjnimVmbgLly9pyT_rweS1ZY",
+        "version": 1,
+        "previous_policy": null,
+        "effective_sequence": 1,
+        "visibility": "PRIVATE",
+        "epoch": 1,
+        "members": [
+          {
+            "actor_id": "pI90RIm3Yb2Jvp8njqXpWu6lfDjLGMRmUldGaH0iC3E",
+            "certificate": {
+              "payload": {
+                "v": 1,
+                "actor_id": "pI90RIm3Yb2Jvp8njqXpWu6lfDjLGMRmUldGaH0iC3E",
+                "signing_key": "OMr269Kac4waSKPdmkGsjnimVmbgLly9pyT_rweS1ZY",
+                "encryption_key": {
+                  "kty": "EC",
+                  "crv": "P-256",
+                  "x": "ScZs558j7YMXCmX7FbzSvcJ0aGDeFJFIAPHcRQMTde8",
+                  "y": "VYphbH7nYQolUDmzaypYB42cSwIv1DfIpfs2JSzwU-8"
+                },
+                "encryption_key_id": "ZTmkWlbWiBttUW80ziAnRxOWjiOWTlqotN4L95uN7e8",
+                "issued_at": 1,
+                "expires_at": 100000
+              },
+              "signature": "SuRZUQ7JQHOBb3YNyltLba2H0dc517w0BnQ50ziWpiuBKA5Ry-PihNjA-7Hy5o22EJhdK3jks6J-FRFZPDThBw"
+            },
+            "role": "OWNER",
+            "scopes": []
+          }
+        ],
+        "issued_at": 2,
+        "protocol_format_ceiling": 1,
+        "structure_mode": "NONE"
+      },
+      "signature": "eN1bwRwrKKNtLIg6mIP5SWffcK-e3cU7RSMoRVCh9lxkZ9z_CIfN7yXD0f969WuCVTmjZJrv_bhTpq4zdQeyAg"
+    },
+    "commits": [
+      {
+        "payload": {
+          "v": 3,
+          "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+          "sequence": 1,
+          "previous": null,
+          "policy_hash": "7b848a057f60bad57bf9a8049e906a92da796b97fbb0c597e0e9a57f2df33872",
+          "epoch": 1,
+          "actor_id": "pI90RIm3Yb2Jvp8njqXpWu6lfDjLGMRmUldGaH0iC3E",
+          "signing_key": "OMr269Kac4waSKPdmkGsjnimVmbgLly9pyT_rweS1ZY",
+          "command_id": "4444444444444444444444444444444444444444444",
+          "action_id": "secure.migrate",
+          "instance_id": null,
+          "issued_at": 3,
+          "delegation": null,
+          "protocol_format_ceiling": 1,
+          "migration": {
+            "source_checkpoint": null,
+            "source_root": "f54a70abe74b1aabe1510b982e414382bfbeeb4d3fd22e6d1b2921b7557ecc59",
+            "source_items": [
+              {
+                "kind": "workspaces",
+                "id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+                "revision": 1
+              }
+            ]
+          },
+          "mode": "PRIVATE",
+          "body": {
+            "v": 1,
+            "alg": "A256GCM",
+            "nonce": "MHgaJoDtw6drn_t2",
+            "chunks": [
+              "38gOYWvb_ojDdhELOmYHG9ILpq7uRa_CHW0PC7s6F5pmLBLB41dqW2QI_56XrO2SvTrkX3vkT2Nujul6cpTXJzIt6qof1hwmktlsmcusshl3lc0gl0E9mfu-y1Vber_sV6Fs1wLD23tR5_LXkiSPBayOj3SERFg135kNHho0e-vJldDg43eGXhWvtBkpHEFjurFLMUcqnIbD1bJjrY8m-Niefwbgb6rYY4eN4PO4FPOgM7kUBwkuY-NMDtjTtS5qKtyhPySZO8ahrHzCCBe67dLlJQg4q9Y4dnBUyNkfx-64-aHaMOshYoZtADXaUg9CMZJT-H8b1NrXvgKQZ8e2uLL_Jx9DTyIZ7mdJ5mJxZaIb7oWBSzlx1ykjLSuaoTHgDwWxyVTGhYN1DiIZ"
+            ]
+          }
+        },
+        "signature": "NFMyuSabAnuQpzslxqkxJWS5_1T1i6jfPggLggDB5L3WihU3gBDwz14ZMm2LkuJ8ouBNjrwzWPDlLsa8avE5Bw"
+      }
+    ],
+    "checkpoint": {
+      "v": 1,
+      "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+      "owner_id": "pI90RIm3Yb2Jvp8njqXpWu6lfDjLGMRmUldGaH0iC3E",
+      "owner_key": "OMr269Kac4waSKPdmkGsjnimVmbgLly9pyT_rweS1ZY",
+      "sequence": 1,
+      "head": "1b7d2bd57e33042dd5374beb6ff25b035c883e1e94f23bf973955df7f8e8be4f",
+      "policy_hash": "7b848a057f60bad57bf9a8049e906a92da796b97fbb0c597e0e9a57f2df33872"
+    },
+    "keyring": {
+      "v": 1,
+      "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+      "keys": [
+        {
+          "epoch": 1,
+          "key": "enp6enp6enp6enp6enp6enp6enp6enp6enp6enp6eno"
+        }
+      ]
+    },
+    "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+    "owner": {
+      "actor_id": "pI90RIm3Yb2Jvp8njqXpWu6lfDjLGMRmUldGaH0iC3E",
+      "key": "OMr269Kac4waSKPdmkGsjnimVmbgLly9pyT_rweS1ZY"
+    },
+    "ok": true,
+    "objects": [
+      {
+        "id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+        "kind": "workspaces",
+        "provenance": "AUTHOR_SIGNED",
+        "revision": 1,
+        "value": {
+          "id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+          "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+        }
+      }
+    ],
+    "operations": [
+      {
+        "input": {},
+        "kind": "MIGRATE",
+        "objects": [
+          {
+            "id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+            "kind": "workspaces",
+            "provenance": "AUTHOR_SIGNED",
+            "revision": 1,
+            "value": {
+              "id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+              "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+            }
+          }
+        ],
+        "v": 1
+      }
+    ],
+    "legacy": false
+  },
+  {
+    "name": "public_to_private_conversion",
+    "policies": [
+      {
+        "payload": {
+          "v": 1,
+          "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+          "owner_id": "pI90RIm3Yb2Jvp8njqXpWu6lfDjLGMRmUldGaH0iC3E",
+          "signing_key": "OMr269Kac4waSKPdmkGsjnimVmbgLly9pyT_rweS1ZY",
+          "version": 1,
+          "previous_policy": null,
+          "effective_sequence": 1,
+          "visibility": "PUBLIC",
+          "epoch": 0,
+          "members": [
+            {
+              "actor_id": "pI90RIm3Yb2Jvp8njqXpWu6lfDjLGMRmUldGaH0iC3E",
+              "certificate": {
+                "payload": {
+                  "v": 1,
+                  "actor_id": "pI90RIm3Yb2Jvp8njqXpWu6lfDjLGMRmUldGaH0iC3E",
+                  "signing_key": "OMr269Kac4waSKPdmkGsjnimVmbgLly9pyT_rweS1ZY",
+                  "encryption_key": {
+                    "kty": "EC",
+                    "crv": "P-256",
+                    "x": "ScZs558j7YMXCmX7FbzSvcJ0aGDeFJFIAPHcRQMTde8",
+                    "y": "VYphbH7nYQolUDmzaypYB42cSwIv1DfIpfs2JSzwU-8"
+                  },
+                  "encryption_key_id": "ZTmkWlbWiBttUW80ziAnRxOWjiOWTlqotN4L95uN7e8",
+                  "issued_at": 1,
+                  "expires_at": 100000
+                },
+                "signature": "SuRZUQ7JQHOBb3YNyltLba2H0dc517w0BnQ50ziWpiuBKA5Ry-PihNjA-7Hy5o22EJhdK3jks6J-FRFZPDThBw"
+              },
+              "role": "OWNER",
+              "scopes": []
+            }
+          ],
+          "issued_at": 2
+        },
+        "signature": "QAd9Uy514-awgTQ8qGsfNyH4lmBRCOS89BcRPdU0Yp10ktkiPWNxg9zkIiUzbm-9niwF9rcTic46p-YfZZfAAA"
+      },
+      {
+        "payload": {
+          "v": 1,
+          "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+          "owner_id": "pI90RIm3Yb2Jvp8njqXpWu6lfDjLGMRmUldGaH0iC3E",
+          "signing_key": "OMr269Kac4waSKPdmkGsjnimVmbgLly9pyT_rweS1ZY",
+          "version": 2,
+          "previous_policy": "96880e77a2187c04b2c684c4e1021d211684f37b26945730aa6baee9f76bfbdd",
+          "effective_sequence": 2,
+          "visibility": "PRIVATE",
+          "epoch": 1,
+          "members": [
+            {
+              "actor_id": "pI90RIm3Yb2Jvp8njqXpWu6lfDjLGMRmUldGaH0iC3E",
+              "certificate": {
+                "payload": {
+                  "v": 1,
+                  "actor_id": "pI90RIm3Yb2Jvp8njqXpWu6lfDjLGMRmUldGaH0iC3E",
+                  "signing_key": "OMr269Kac4waSKPdmkGsjnimVmbgLly9pyT_rweS1ZY",
+                  "encryption_key": {
+                    "kty": "EC",
+                    "crv": "P-256",
+                    "x": "ScZs558j7YMXCmX7FbzSvcJ0aGDeFJFIAPHcRQMTde8",
+                    "y": "VYphbH7nYQolUDmzaypYB42cSwIv1DfIpfs2JSzwU-8"
+                  },
+                  "encryption_key_id": "ZTmkWlbWiBttUW80ziAnRxOWjiOWTlqotN4L95uN7e8",
+                  "issued_at": 1,
+                  "expires_at": 100000
+                },
+                "signature": "SuRZUQ7JQHOBb3YNyltLba2H0dc517w0BnQ50ziWpiuBKA5Ry-PihNjA-7Hy5o22EJhdK3jks6J-FRFZPDThBw"
+              },
+              "role": "OWNER",
+              "scopes": []
+            }
+          ],
+          "issued_at": 4
+        },
+        "signature": "wxb5QpaL-dENRyMuyE2NBCUJ35a9yo_8O6LOdliK8Szv-de2e_wL_LvxLff9PJjmJn6TNExV2o77-ZjEs_6kBA"
+      }
+    ],
+    "commits": [
+      {
+        "payload": {
+          "v": 1,
+          "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+          "sequence": 1,
+          "previous": null,
+          "policy_hash": "96880e77a2187c04b2c684c4e1021d211684f37b26945730aa6baee9f76bfbdd",
+          "epoch": 0,
+          "actor_id": "pI90RIm3Yb2Jvp8njqXpWu6lfDjLGMRmUldGaH0iC3E",
+          "signing_key": "OMr269Kac4waSKPdmkGsjnimVmbgLly9pyT_rweS1ZY",
+          "command_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "action_id": "secure.bootstrap",
+          "instance_id": null,
+          "issued_at": 3,
+          "delegation": null,
+          "mode": "PUBLIC",
+          "body": {
+            "v": 1,
+            "kind": "BOOTSTRAP",
+            "input": {},
+            "objects": []
+          }
+        },
+        "signature": "1Knmb_EyjxDJjULqRoIeqsHYMDeSJ-ZEyVZFzDH4Q_g5UG_ZODWYmjG4msOOpnhroCNNLaiDvKEtIwoJOf1uCQ"
+      },
+      {
+        "payload": {
+          "v": 1,
+          "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+          "sequence": 2,
+          "previous": "1b1154ec6636157344d70c72e978cbfe4c645d360cc875517d60fd3a9608bdbb",
+          "policy_hash": "84aec44042203eb1d3ca985e94185308ce9f9afe2dbbb9339ee0056e6359c9b0",
+          "epoch": 1,
+          "actor_id": "pI90RIm3Yb2Jvp8njqXpWu6lfDjLGMRmUldGaH0iC3E",
+          "signing_key": "OMr269Kac4waSKPdmkGsjnimVmbgLly9pyT_rweS1ZY",
+          "command_id": "ccccccccccccccccccccccccccccccccccccccccccc",
+          "action_id": "secure.migrate",
+          "instance_id": null,
+          "issued_at": 5,
+          "delegation": null,
+          "migration": {
+            "source_checkpoint": {
+              "v": 1,
+              "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+              "owner_id": "pI90RIm3Yb2Jvp8njqXpWu6lfDjLGMRmUldGaH0iC3E",
+              "owner_key": "OMr269Kac4waSKPdmkGsjnimVmbgLly9pyT_rweS1ZY",
+              "sequence": 1,
+              "head": "1b1154ec6636157344d70c72e978cbfe4c645d360cc875517d60fd3a9608bdbb",
+              "policy_hash": "96880e77a2187c04b2c684c4e1021d211684f37b26945730aa6baee9f76bfbdd"
+            },
+            "source_root": "f54a70abe74b1aabe1510b982e414382bfbeeb4d3fd22e6d1b2921b7557ecc59",
+            "source_items": [
+              {
+                "kind": "workspaces",
+                "id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+                "revision": 1
+              }
+            ]
+          },
+          "mode": "PRIVATE",
+          "body": {
+            "v": 1,
+            "alg": "A256GCM",
+            "nonce": "epUcYSstFBgwXfL_",
+            "chunks": [
+              "55AxgL16v4BcTh_s1cIFJErp5zVgJ5TmzjJ0niNSQfAQfJau9ucHDW-_d6K-ib-QERUjdutUoM2SfkrxjJ3XnQ_0eRiyOXYJ-hi-YiHEAkBIgwzuyzAma5cxlU7IN7Xj-imM5W1Yu0XjcqcQx0r-oDxwTLeKNH21QKRZTu0qPuX9uvfU8Hf6W4WKe6BKhKdcfE0OYU1R_kCApn6MNr_djX8l0a1FF1B-AJlntB-SdB2L1rdYm6Op5dqaPnRJZTgiPPnVyCnp_odEeP34FBOiDPdBlwRm49Hw-cy75HIzfxQivaDHiI_FYrARuewkELO2X9bJwbD5yTpd8xN5CMy7_4wQImEBNPBi83IyH5S74O96yokNDX49oQU0orG69rQhCm1p4JVDe7kWjkUb"
+            ]
+          }
+        },
+        "signature": "xh0wI-ENlcKLwbkVx9GMp6JNUK3JugR7YnleBUw8g0Nrj1TE5pl6rL5eCII_KOc6SY4hcyk1atYmU0x95TLBAw"
+      }
+    ],
+    "checkpoint": {
+      "v": 1,
+      "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+      "owner_id": "pI90RIm3Yb2Jvp8njqXpWu6lfDjLGMRmUldGaH0iC3E",
+      "owner_key": "OMr269Kac4waSKPdmkGsjnimVmbgLly9pyT_rweS1ZY",
+      "sequence": 2,
+      "head": "53e8f9550e92dddd75b994ed220e6b3a9172924e21ddb2c50a7deecfee24e7c2",
+      "policy_hash": "84aec44042203eb1d3ca985e94185308ce9f9afe2dbbb9339ee0056e6359c9b0"
+    },
+    "keyring": {
+      "v": 1,
+      "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+      "keys": [
+        {
+          "epoch": 1,
+          "key": "eXl5eXl5eXl5eXl5eXl5eXl5eXl5eXl5eXl5eXl5eXk"
+        }
+      ]
+    },
+    "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+    "owner": {
+      "actor_id": "pI90RIm3Yb2Jvp8njqXpWu6lfDjLGMRmUldGaH0iC3E",
+      "key": "OMr269Kac4waSKPdmkGsjnimVmbgLly9pyT_rweS1ZY"
+    },
+    "ok": true,
+    "objects": [
+      {
+        "id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+        "kind": "workspaces",
+        "provenance": "AUTHOR_SIGNED",
+        "revision": 1,
+        "value": {
+          "id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+          "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+        }
+      }
+    ],
+    "operations": [
+      {
+        "v": 1,
+        "kind": "BOOTSTRAP",
+        "input": {},
+        "objects": []
+      },
+      {
+        "input": {},
+        "kind": "MIGRATE",
+        "objects": [
+          {
+            "id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+            "kind": "workspaces",
+            "provenance": "AUTHOR_SIGNED",
+            "revision": 1,
+            "value": {
+              "id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+              "workspace_id": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+            }
+          }
+        ],
+        "v": 1
+      }
+    ],
+    "legacy": false
+  }
+]

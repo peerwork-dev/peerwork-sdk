@@ -1,0 +1,93 @@
+{
+  "format": "peerwork.protocol-source.v2",
+  "semantics": "peerwork.kernel.v1",
+  "manifest": {
+    "name": "peerwork.request-delivery-shell.v1",
+    "display_version": "1",
+    "semantics": "peerwork.kernel.v1",
+    "dependencies": [],
+    "protocol_roles": [],
+    "capabilities": [],
+    "role_conflicts": [],
+    "historical_role_conflicts": [],
+    "constraints": {},
+    "record_schemas": {},
+    "initial_state": {},
+    "actions": []
+  },
+  "imports": [
+    {
+      "alias": "request",
+      "package_digest": "419a6aa1d08316af6c1674a713812e42b408c088f8667f28a69c34f627d5f43d",
+      "namespace": "request"
+    }
+  ],
+  "parameters": [],
+  "exports": [],
+  "bindings": [],
+  "derive": [],
+  "interfaces": {
+    "outputs": [
+      {
+        "name": "delivery_receipt",
+        "type": "exact_ref",
+        "selector": {
+          "from": "import",
+          "alias": "request",
+          "output": "delivery_receipt"
+        },
+        "available_when": {
+          "op": "eq",
+          "left": {
+            "from": "literal",
+            "value": true
+          },
+          "right": {
+            "from": "literal",
+            "value": true
+          }
+        },
+        "schema": "request.comm.delivery",
+        "scope": "INSTANCE"
+      },
+      {
+        "name": "result_author",
+        "type": "actor_id",
+        "selector": {
+          "from": "import",
+          "alias": "request",
+          "output": "result_author"
+        },
+        "available_when": {
+          "op": "eq",
+          "left": {
+            "from": "literal",
+            "value": true
+          },
+          "right": {
+            "from": "literal",
+            "value": true
+          }
+        }
+      }
+    ],
+    "inputs": [],
+    "input_exports": [
+      {
+        "name": "delivered_result",
+        "from": {
+          "import": "request",
+          "input": "delivered_result"
+        }
+      },
+      {
+        "name": "result_author",
+        "from": {
+          "import": "request",
+          "input": "result_author"
+        }
+      }
+    ]
+  },
+  "connections": []
+}

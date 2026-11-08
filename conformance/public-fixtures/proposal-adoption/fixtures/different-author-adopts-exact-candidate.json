@@ -1,0 +1,44 @@
+{
+  "id": "different-author-adopts-exact-candidate",
+  "action_id": "proposal.adopt",
+  "state": {
+    "candidate_author": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+    "candidate_ref": {
+      "record_id": "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+      "revision": 1
+    }
+  },
+  "body": {
+    "candidate_ref": {
+      "record_id": "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+      "revision": 1
+    }
+  },
+  "auth": {
+    "actorId": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    "workspaceRoles": [],
+    "protocolRoles": [
+      "ADOPTER",
+      "REVIEWER"
+    ],
+    "capabilities": [
+      "ADOPT"
+    ]
+  },
+  "exact_inputs": [
+    {
+      "recordId": "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+      "revision": 1,
+      "schema": "proposal.candidate",
+      "payload": {
+        "author": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+        "title": "Draft",
+        "body": "Candidate text."
+      },
+      "scope": "INSTANCE"
+    }
+  ],
+  "expected": {
+    "accepted": true
+  }
+}

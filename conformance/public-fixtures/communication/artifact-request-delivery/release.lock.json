@@ -1,0 +1,19 @@
+{
+  "format": "peerwork.protocol-lock.v1",
+  "compiler_version": "peerwork.protocol-compiler.v3",
+  "semantics": "peerwork.kernel.v1",
+  "dependencies": [
+    {
+      "alias": "artifact",
+      "package_digest": "02c157d6a037ed7fcc3f7c693b3749fdf76d30f01593cc456c800385ea02d29b",
+      "namespace": "artifact"
+    },
+    {
+      "alias": "exchange",
+      "package_digest": "419a6aa1d08316af6c1674a713812e42b408c088f8667f28a69c34f627d5f43d",
+      "namespace": "exchange"
+    }
+  ],
+  "baseline_bindings": {},
+  "output_protocol_digest": "c2f4fc44a8f87692f84fa2540282a67c60d3452b47d4e393ba877246569f759c"
+}

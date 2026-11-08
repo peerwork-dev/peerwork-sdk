@@ -1,0 +1,445 @@
+{
+  "format": "peerwork.protocol-source.v2",
+  "semantics": "peerwork.kernel.v1",
+  "manifest": {
+    "name": "peerwork.wiki-review.v2",
+    "display_version": "1",
+    "semantics": "peerwork.kernel.v1",
+    "dependencies": [],
+    "protocol_roles": [
+      "AUTHOR"
+    ],
+    "capabilities": [
+      "DRAFT"
+    ],
+    "role_conflicts": [],
+    "historical_role_conflicts": [],
+    "constraints": {},
+    "record_schemas": {
+      "wiki.revision": {
+        "type": "object",
+        "fields": {
+          "title": "string",
+          "body": "string",
+          "author": "string",
+          "parent": "json"
+        },
+        "required": [
+          "title",
+          "body",
+          "author",
+          "parent"
+        ],
+        "max_bytes": 16384
+      }
+    },
+    "initial_state": {
+      "draft_ref": null,
+      "draft_author": null
+    },
+    "actions": [
+      {
+        "id": "wiki.create",
+        "reads": [],
+        "writes": [
+          [
+            "draft_ref"
+          ],
+          [
+            "draft_author"
+          ],
+          [
+            "submitted_ref"
+          ],
+          [
+            "approved_ref"
+          ]
+        ],
+        "revisionEffects": {
+          "control": true,
+          "contentEntities": [
+            "document"
+          ]
+        },
+        "variants": [
+          {
+            "when": [
+              {
+                "op": "has_protocol_role",
+                "role": "AUTHOR"
+              },
+              {
+                "op": "has_capability",
+                "capability": "DRAFT"
+              }
+            ],
+            "effects": [
+              {
+                "op": "append",
+                "schema": "wiki.revision",
+                "recordSlot": "revision",
+                "entity": {
+                  "mode": "new",
+                  "slot": "document"
+                },
+                "selectHead": false,
+                "value": {
+                  "from": "object",
+                  "fields": {
+                    "title": {
+                      "from": "body",
+                      "path": [
+                        "title"
+                      ]
+                    },
+                    "body": {
+                      "from": "body",
+                      "path": [
+                        "body"
+                      ]
+                    },
+                    "author": {
+                      "from": "auth",
+                      "field": "actorId"
+                    },
+                    "parent": {
+                      "from": "literal",
+                      "value": null
+                    }
+                  }
+                },
+                "relations": []
+              },
+              {
+                "op": "set",
+                "path": [
+                  "draft_ref"
+                ],
+                "value": {
+                  "from": "produced_ref",
+                  "slot": "revision"
+                }
+              },
+              {
+                "op": "set",
+                "path": [
+                  "draft_author"
+                ],
+                "value": {
+                  "from": "auth",
+                  "field": "actorId"
+                }
+              },
+              {
+                "op": "set",
+                "path": [
+                  "submitted_ref"
+                ],
+                "value": {
+                  "from": "literal",
+                  "value": null
+                }
+              },
+              {
+                "op": "set",
+                "path": [
+                  "approved_ref"
+                ],
+                "value": {
+                  "from": "literal",
+                  "value": null
+                }
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "wiki.revise",
+        "reads": [
+          [
+            "draft_ref"
+          ]
+        ],
+        "writes": [
+          [
+            "draft_ref"
+          ],
+          [
+            "draft_author"
+          ],
+          [
+            "submitted_ref"
+          ],
+          [
+            "approved_ref"
+          ]
+        ],
+        "revisionEffects": {
+          "control": true,
+          "contentEntities": [
+            "document"
+          ]
+        },
+        "variants": [
+          {
+            "when": [
+              {
+                "op": "has_protocol_role",
+                "role": "AUTHOR"
+              },
+              {
+                "op": "has_capability",
+                "capability": "DRAFT"
+              },
+              {
+                "op": "exact_ref",
+                "ref": {
+                  "from": "ref",
+                  "source": "body",
+                  "path": [
+                    "parent_ref"
+                  ],
+                  "scope": "INSTANCE",
+                  "schema": "wiki.revision"
+                }
+              },
+              {
+                "op": "eq",
+                "left": {
+                  "from": "ref",
+                  "source": "body",
+                  "path": [
+                    "parent_ref"
+                  ],
+                  "scope": "INSTANCE",
+                  "schema": "wiki.revision"
+                },
+                "right": {
+                  "from": "ref",
+                  "source": "state",
+                  "path": [
+                    "draft_ref"
+                  ],
+                  "scope": "INSTANCE",
+                  "schema": "wiki.revision"
+                }
+              }
+            ],
+            "effects": [
+              {
+                "op": "append",
+                "schema": "wiki.revision",
+                "recordSlot": "revision",
+                "entity": {
+                  "mode": "revise",
+                  "slot": "document",
+                  "parent": {
+                    "from": "ref",
+                    "source": "body",
+                    "path": [
+                      "parent_ref"
+                    ],
+                    "scope": "INSTANCE"
+                  }
+                },
+                "selectHead": false,
+                "value": {
+                  "from": "object",
+                  "fields": {
+                    "title": {
+                      "from": "body",
+                      "path": [
+                        "title"
+                      ]
+                    },
+                    "body": {
+                      "from": "body",
+                      "path": [
+                        "body"
+                      ]
+                    },
+                    "author": {
+                      "from": "auth",
+                      "field": "actorId"
+                    },
+                    "parent": {
+                      "from": "ref",
+                      "source": "body",
+                      "path": [
+                        "parent_ref"
+                      ],
+                      "scope": "INSTANCE"
+                    }
+                  }
+                },
+                "relations": [
+                  {
+                    "kind": "parent",
+                    "target": {
+                      "from": "ref",
+                      "source": "body",
+                      "path": [
+                        "parent_ref"
+                      ],
+                      "scope": "INSTANCE"
+                    }
+                  }
+                ]
+              },
+              {
+                "op": "set",
+                "path": [
+                  "draft_ref"
+                ],
+                "value": {
+                  "from": "produced_ref",
+                  "slot": "revision"
+                }
+              },
+              {
+                "op": "set",
+                "path": [
+                  "draft_author"
+                ],
+                "value": {
+                  "from": "auth",
+                  "field": "actorId"
+                }
+              },
+              {
+                "op": "set",
+                "path": [
+                  "submitted_ref"
+                ],
+                "value": {
+                  "from": "literal",
+                  "value": null
+                }
+              },
+              {
+                "op": "set",
+                "path": [
+                  "approved_ref"
+                ],
+                "value": {
+                  "from": "literal",
+                  "value": null
+                }
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "imports": [],
+  "parameters": [],
+  "exports": [],
+  "bindings": [],
+  "derive": [],
+  "interfaces": {
+    "outputs": [
+      {
+        "name": "current_draft",
+        "type": "exact_ref",
+        "schema": "wiki.revision",
+        "scope": "INSTANCE",
+        "selector": {
+          "from": "state",
+          "path": [
+            "draft_ref"
+          ]
+        },
+        "available_when": {
+          "op": "not",
+          "rule": {
+            "op": "eq",
+            "left": {
+              "from": "state",
+              "path": [
+                "draft_ref"
+              ]
+            },
+            "right": {
+              "from": "literal",
+              "value": null
+            }
+          }
+        }
+      },
+      {
+        "name": "draft_author",
+        "type": "actor_id",
+        "selector": {
+          "from": "state",
+          "path": [
+            "draft_author"
+          ]
+        },
+        "available_when": {
+          "op": "not",
+          "rule": {
+            "op": "eq",
+            "left": {
+              "from": "state",
+              "path": [
+                "draft_ref"
+              ]
+            },
+            "right": {
+              "from": "literal",
+              "value": null
+            }
+          }
+        }
+      }
+    ],
+    "inputs": [],
+    "action_bodies": [
+      {
+        "action": "wiki.create",
+        "body": {
+          "fields": {
+            "title": {
+              "type": "string"
+            },
+            "body": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "title",
+            "body"
+          ],
+          "additionalProperties": false
+        }
+      },
+      {
+        "action": "wiki.revise",
+        "body": {
+          "fields": {
+            "title": {
+              "type": "string"
+            },
+            "body": {
+              "type": "string"
+            },
+            "parent_ref": {
+              "type": "exact_ref",
+              "schema": "wiki.revision",
+              "scope": "INSTANCE"
+            }
+          },
+          "required": [
+            "title",
+            "body",
+            "parent_ref"
+          ],
+          "additionalProperties": false
+        }
+      }
+    ]
+  },
+  "connections": []
+}

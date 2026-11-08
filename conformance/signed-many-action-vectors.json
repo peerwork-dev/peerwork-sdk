@@ -1,0 +1,2120 @@
+{
+  "workspace_id": "mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm",
+  "owner": {
+    "actor_id": "OnDJKGhj931gFmPPTA7n24O34hyuSp1epwxeANaFfPI",
+    "key": "lNMgBRLRQk3DlS4zCwRmTpwoLGZh9Qg8hEdti2yc40I"
+  },
+  "policies": [
+    {
+      "payload": {
+        "v": 1,
+        "workspace_id": "mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm",
+        "owner_id": "OnDJKGhj931gFmPPTA7n24O34hyuSp1epwxeANaFfPI",
+        "signing_key": "lNMgBRLRQk3DlS4zCwRmTpwoLGZh9Qg8hEdti2yc40I",
+        "version": 1,
+        "previous_policy": null,
+        "effective_sequence": 1,
+        "visibility": "PRIVATE",
+        "epoch": 1,
+        "issued_at": 2,
+        "members": [
+          {
+            "actor_id": "OnDJKGhj931gFmPPTA7n24O34hyuSp1epwxeANaFfPI",
+            "certificate": {
+              "payload": {
+                "v": 1,
+                "actor_id": "OnDJKGhj931gFmPPTA7n24O34hyuSp1epwxeANaFfPI",
+                "signing_key": "lNMgBRLRQk3DlS4zCwRmTpwoLGZh9Qg8hEdti2yc40I",
+                "encryption_key": {
+                  "kty": "EC",
+                  "crv": "P-256",
+                  "x": "q-XvQ_lTt9A1FcTTBYR7qBoCqef8GqZXfvmsGrNIgJg",
+                  "y": "nqQJxAVfQyNjSN32y6CSsdE1hNGgSDKH2yrh_Qg5evw"
+                },
+                "encryption_key_id": "lbrpeGsefMlVP2_u1zr-6UDNt5GFbT67CQbkS4TKGIM",
+                "issued_at": 1,
+                "expires_at": 100000
+              },
+              "signature": "zFwABq0J0M_hAOICf9eb7qt2WYE02ko7rxAQern73HJ3bCPgIBE3EyW1BxyQcqQ48QG7SdwUgKApYubfSImaDQ"
+            },
+            "role": "OWNER",
+            "scopes": [
+              {
+                "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+                "actions": [
+                  "wiki.create"
+                ],
+                "protocol_roles": [
+                  "EDITOR"
+                ],
+                "capabilities": [
+                  "EDIT"
+                ],
+                "expires_at": null
+              }
+            ]
+          }
+        ]
+      },
+      "signature": "tDqBJOW3_aCq4LofHwwzZx1DiOIioBvegLWTZsZ6OFR_7eBKpBPflGApcHOnEfn3eSsSbQoEYqQ9KaWHGJfCCw"
+    }
+  ],
+  "commits": [
+    {
+      "payload": {
+        "v": 1,
+        "workspace_id": "mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm",
+        "sequence": 1,
+        "previous": null,
+        "policy_hash": "b77e2a0c776c05353fabaff3222edcdff341c52e95e7b8712231a5cfd3af9520",
+        "epoch": 1,
+        "actor_id": "OnDJKGhj931gFmPPTA7n24O34hyuSp1epwxeANaFfPI",
+        "signing_key": "lNMgBRLRQk3DlS4zCwRmTpwoLGZh9Qg8hEdti2yc40I",
+        "command_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "action_id": "secure.bootstrap",
+        "instance_id": null,
+        "issued_at": 3,
+        "delegation": null,
+        "mode": "PRIVATE",
+        "body": {
+          "v": 1,
+          "alg": "A256GCM",
+          "nonce": "PsfrsUr9TpBmGl08",
+          "chunks": [
+            "Vt90QgU-fmEhMZvZav4QHmGkquQqe-5xaOn3DILXsYoJxp4BFS4tmnY69YV8Ro1XRP3O1AW5rSwvPm5iXu37qLjdkVnPOPHmwQ6Q13jkIo-bXMWF8C36i13tIOqV0Atys77KOaacUx44VEbZFFXJfBl0p2vf4FkSj4nBnakY90Oz01s7fG1GytbrPm_e_35yLpSAnLuLW2xXOje1YmUBVFE4HyROYuqVdxREees_GgyuFExIzejm_NLXAxzD1wAFOdoIfXQfCnPf7bOwJSs_NH387-O5uXkjhLk23yOKFx661r9C18C65LeofGYEnJNJU0Npnab15waVQpUUpRgQQopUemB6qk8NgsJUdbn4FT2n7p0B2SwJX63SwSeZ6KDWKmQmwtqEzJPy6qYnUpxYKjGT3rwijbrW6t2O9LeP0DwShkKDyjNNMpI60frmtYDWz3LWdKYT62pbNYb90mCrKh77PnEI1bw2-yPXWjNC57LTCMroO9OIstOxqu4Elj7zUHfGLVjGiik1ZPmP5txCxP2WR-BPmiTEp9vohUB4YPPwJIlZAxS7OaOl1Hwx_5rgx99vUwmFfEAeGmSkg6oy9LgUdEf_wzOLlEX6Welkn7IWaD9atRQdisZF6UE9Xwc7v0ytsU_ouiapWL9yFGwYK1MGqekDUFHMfYb3yywv8s0VPXSREjCsv37gt2YvP4QA4IYqdl1yaCdP7jaXj8XB6i2sI9D2CrMY8yVlOOnHE_U6zgupmAV17SCQ3naxSIYO7qvZglhUpJVFg7YMJVVb8VQ3-YNcJbGYcpo1uGvLEWZ0XhWdQldpC4ihJzc-HtTKfRkY3FqDu3IsrzVDY1CVdw84XTaK1K9f117ZxwcO6Q5tB9eaDivp864syP34PaQkRwVqeNnrbXSQsuZcD4MASUKLmExOITRroqJqZvSz_nhwdlrvq9--7guwyP1MO9UIOgLtQuHBKhoM-hV7cZvDOnpsuq6WOXS06fFbE7oxvNVwbFdxl_zDQ0BVzoQBTVQ4IR7oMennt-7400TlslaCupKL5lLZDf4A5nKD0XvLA1epYy9pDYd1P3IJApbzhX9hTjhBNKssnke-UkrEcNJYFUriEChJhQYNELh_CHK8owAUuOVCUJQanMa_pR2ySFIdt_mFLy_jOebIlbXtjp4o-0LF__7xo2eCL8_i14kzNhmunOT-o1Iucy_50Jj5eO01TKfTVnIgwda0CWPMcUW-HjAy9tyNuh8ffxG-XQmzM5KpRq-dGlaKA8fznZFoDidxMb3sz8Ey_X1lHWALgck1Ky4zdAxNUb9oPJPskH5KBkErr1U96Yq8QNL25XdoZrGn3Sba16DUWDtkAnUhdi7V1_txt-l1s8jNsMI1mmIPxJCJdK-c72HFyUQ_ScyriHXUTtalkOYWC56r_sNPQo-D4XT9823uqwHc07l3AlkPf9R_qrOxp28vBMt7QSnUkavAiNkOhAluEUVObie2i2NF7wpnHMVcVY7Mh-PFdCpZicIQPrpkyyxPhu8iQH46eKZh2o2FyNtETxMs5M7dhfGHN8VRpIFbdw_ZWnYcqEl1grS78BKm0gEmxDofLTrf5vB2RCKecuFv0ZC9E7XH9w7ccQQaGoNF5DMc9PzSpbH1rfajndx9ncGYUZRm7CEYVlPpzTPyDQJNk7n0Gbf_y-dxuzOnsN-2i4nV_9q3IAoAZ3Nn09LsK-mGZH8vgSxN7OKAeOf6LiArhHJ2z37nnD3FfytAHkfU--9aCWwmOcFdxFwT110wNOHfAA_o38t3jZKUYD9HeCUQMEiTtfLcaDv7ZushH3Sy3ywRmIGqoroU97IlxaVZkKXWmfLGkE2sr8oIIjzp6CIfai8VJE6tYHm2cbJGIv9b4dD-yb_qvCr5VRHcyrYKPKaaeJ0OADc88olmIPQ0SyfQX9-bpSZmr29VDKadkttzmjOoHEE30fik-pfPBuP1Bn66GFibM_T7eMr8bmEWrPLL3EP_q5m_Ft_70xUzyvDAQZXjSxeggTfr5cnLrgirjAw08wC1ujT8dkIdrtl86CkdY2Woe8Ys_wx7skP4ZQoVYGCxJCxbxHrJlbA_5OlSPuAIwcnS4by34U2wup7hq9-H2W2ODpqKlNoEB7TgxTycekr0-ASJkOFMZo8DdVfmlQGR8cARCxNTYG3X5RiEBAH80yibMzwKKIzxuILGfwCAgHG8hywFXMkD7RWa5WZEYBZsHRZ1zskf2cuSu0PONXAgasMogtijk3X3rBFap7M0Z67uQfihWa_2zNgjWYqsccULmLc3VX70vOJ7boi85vx6XUOM3oFolYtdlOI39Me9Mi0g3S6IyygbJ1ODZ7taMvTOjnt8N-IS8aYYkCENEauyRC21-yzpd7y3eQ_0PwFznfs_3z6TK0mq-5XJgQjO83zaEOgYJqcdhWwSRlux7z1OlHuxeScQ3v28GkgEs8BYOUdjTDHdPvzvQfgrL0tTUXwJ2pjIeMG0J9kpZMrjFrcDwr8eA3oVq0wbGbYqWTZ2sSxm4Yi4BbENLjKzA9yJUfe1-_DaxhpZr-Aa-lewsykTGpM9ypb6gzYX6FdXvC1h-GK07K9OVnMzPiTWI45CUjzOKghX-vrnmq1HdJ5ALN4Ne_odK4bO-5gkHTxiEHtVWOtbEe2PMMVQbM70jlVuAbLz79p9Q1b0vDY-qxWhY9FYw-05FuzA5D3R9n3N16e1RiYadkSLNXXijenOhMPeM7lvpio1A4uNXiKjtqOkJak9MGOcxI7NXtdGZCGsTF099PIXV9RS3Tz1mgPr2zk3w3Sm3DPNU7Q_e7WJNDc6XZtt_kf1kaQ0k46ZnIlYZnxpcGwgcUFwTwfoG6Cr8SZeZDYh1q4wQMsqMeHoYdAhsUs20r5eI8a3PczKb8AciYvUjc90fEcHen2wdIjwiy3Oekdrgh1Lh-FfPsEaNMBNM97FnQtom1HaVedJSfoYdZiBTymxm95EYmG4jrV43Ch_O-7NAQFy5QqXq8QHSXuVDzTGxdkMdeSVChOa-QimPb2XCLbJPPDLf4CMDYjUX1g_z15Yzqfzlctbnxj00ZGLokNpcB9t-mpBob-iVjRiUBWQhxR2o358JfofS4YwhzyExEMYBK3mtIrq2U4cu4oM43ORNaOHJyVHkb3Mn5XBCghGi0vYRpzr0QJbOQxbE1fclW9KMT-JFStx9NKeoNWW9dVwU1ICVNSdPR_AeeP4ywckXrqeSyyIWiVugpfoGC8qpP1hWAm3WmwpHjOcpasEHqh72k6JVBUUxRuqnNxE64etp9kFgrBq2vudLz6qln1462ZAEl-CJOrW6-sVLIlrs7ngqSvSVtrlrkzHS9LKtyEzZvtjVHdtW4CLKj7-IdIi_ouSGiPldli1fDUB7PmdnAXHxJbRO5OP9GWtkWM7-Y7OQmUMGWVir6kdChQar8b1c9jQXJ8LT2uEEMwhhES9Im-9M7rCRGjhiBTbVpzvZyzGjtWlAbl-Zx9eXukTbFowckMx05Qk-sV11IrTPoh8iRWnDp_KZROBScn9s9L-I4lD3bnMuNFQoYGq25mGsRzWxoDkHmmLEzsU5pwc2AU1umbgToF3m-aqKCshCiCnyZYax7shK3RKVodIX1c6p_tkuIt8YIRUjF_Ih95Dw6Jvn6bG_ZxlNBycUvNnAAymlYq65AhZWgc5PdOIApW7uv1NMw5aOv3peI9te4y279dSMjNse4B8MhPNCWhcaXwQunNWh3RetI31-3APtrLKTZkwJ2OOm5euGKPkt8zZE1Uhuoot2RHaj6sxbrJlJi6Q1Krmvm96iKva7WXy7N0rrwroZKkBOFVsZ6PNGgi5PFxgkftD4k5l9KkieHlu7a4bQSL-xiJ4Xs-O7SSzw7QkVEhnK7t3N7PpmGmSA5n-ZJd1QoSBxI3GAYHvWQ3wdcoICKKsmX4eUw175-grIpFZgvyB4iKLtNiP9l-RCvWNtAnl6xjaJSY-g4kC4Jf6StShzd3U5liPN0vRIBbqVX8kicUvf5US91GjNzM6NY5I7Fl6spBg7TkS0lDSszmgsJ3VXAkIUGCLRkJ6Ss3cx_sNp5RyZET6PqhahuZk7DaWnsTGuT2f8REQs49LZmj1OC7LgTs9eExES1siYwhyTHFCXOe7jy4EWF5VjBMxWxVMqi-4EH9pyNXoqW05TwKb1MufJbFWrekxWNsIEbxXiq571arto2Kk6pdLnTpbE2EOy32vVV34lN7FGfUZ_YmGFDVHz2TVLpy_40g_jRh7cJNOBmfHs_BOgjue0yeJtJkbqEUot8uREqYt8ZZD2UHspzfwolyhTH0_15OJgdytqz8gWz0rmQJRlacl6ye6Isdyyti8xlaknJAtAHNAnugwAe3bjdRv-tjgsEq0YenNIHSwvJKPsGskMgqO6AiLIysR7g4JB2QSdhRQypQl4FFD47QBSj2tJt0ApZjMim70cBMxuCumb8eMwKX1vWF8xW3MdKMhrporUWkXHkjDFuzcxGvcuI45HQZog-qI1J2YGakD_KTVLY8kIqBTS9vP3cZfaBHWMtZLg5Xj5fWCWniD56mlwUnWhYPcm6RRfhlPgLbgdx_rc33Q-LErJlJmqDZWZBZb1-8KUYkHpPjG8AdQFa4Jc_KNevta2hpuVdeOSkDlX0ZipfWcCQyr2EB8r9VKUtIYJMOCEzah0KTkzxI6jqaonwEi24vx3mB-_r21UiovDAUAo0cgsUAkhwRDGxyVNuX67OfRervWYU3TXKVdGpWgwldZzYXvBO6MqxtVDu2JNWo4nnrV6pFJLXtfBnkKPf61Kl2Hw9uK2xTn7TIMuqv9rIIR50Om-11Ca6kKtYTkn95d157nZu9V_XeMAz6q6bDVwfhLwmOJgWT9YNBsI8gLeqv3yHjOYVvw1dVPWAlLImPHbqWnDiU6M5-kQWIL_ziMji8G23XinaO9VTalWvkJeX9DWfW60-CH7sEQhefCKIa-rtAHZUsWpaKjubaQqzFcsJsd2AFxAK3SsmmmJmFpCGymWokgZMM7NmuTFnW-RboKTc5qETD7lGkeFUQFxXrvEepAzq-Sddd_m0XW9VkECveuRsTvxqTYHe2e_4XKrXeBHpdSaVLIpQt9SQ8sokBFWLiDQV5S_fWy1XfiIht2wmrG8x-r_LzNjva-l69qyFHoxpmB35LFCsycWn1rJUCb_k4QdzfETcI2hAb6LTSoCTxJ4OFqnp1nahdYwmDcoN9lJN4irplQYMkXRQUQG-5QFzz-_yhc2uayEKbMqf6uklT3U_hfBzF2TFEL-wXgKbqjlOu-bogbqN_d-DrsCX3bntNjgtVL931Ykr3xBMvfnCn_zYZ79fRjwgJgL2baIowXNfYT_0A06f_zdARNnduA4XndVa6BqVe5MEydFHFbgkqWyTtaV6lit5-bX3CXfzYCxk1AbIEbrQW_7-BDqvD07uAzowkCDrzMyKHJ0K7-pJN2HkCj2-SV0cbPutlZ5MTs0CeHXkLU8ochp3J-6wD3MG6tY6NnnnntPw_JHrgi3c7dnQ64voSj7bUAkRyFHG8xcR8FkNYhgmxrAXBC9xkG7JiUDd3AnQ_OP0b5BWOH7wj6rP9S4jFvsNhfYFYw2zBrtCIHGQDuh4P3DmWJvwuj1Pw3FxtUgXJIGJ7sDukUjtfj2l_XmhKM1AlrnZddPJQtmVs4f1UnTrEcTtKW4Do9knzLr_FSsFSEVs0t1_4oUoHsjhN82Y8u0jdVq_MghT1MCVe6mjSX2k-r6KvxktHJ6Y6HI_JplG7rwrP-s2QTdgoJef1cIjT779cZeL60N3fhKjOdph77tlExXqL7t8LOgAmADpAbDYyQcchZ3ndR2fXqvIxo6x6Fe6JQPJZrEzCzHTGIb1dBYRhJVmFd-QeQBxw1Nd6Cg_HUhAMK5OGVXJOomYminsod3Ah4rzlgBsNCbC58E7MvRkVtSpymkLv3_JNJJhNkxiSpB4dCJfTXAOFNY4qB5z0iaW1oBA3wEYNn01QWtkrcPt-CLaYZ8bPfE3T5e4dj1Il_Z2gM1WG9bmsbTXjYgM5IALNBZuhIGMi4D8oSWsc1UUJSjChgnIJ2oS3kx5_JfoTdapOiD20X49IiSYoASXrv4yp4StY41TWSJqxmfdmhmSfEJP2Vtjt6LBnOMmjlReupeOAjXWYVuPX8bGgmvjtq3NbZkkdceS5hpLPiEFRZafodJP8NYIITlIz90951YmyTFd5UC866j9UF-T3mFw6jlw9NrsEFaIJGxNRl7v58xRRyWDj7ww-vb0IMvFfiC1Ffcw-Hhkq-DlDjNrhhOeK9Nurl006uiiZGZGE09jLPQi5nKqnln-j8KfTUwd2Uqza0glPI6-ZQuFoTsjKyx8zxLXd0I1Wz08B8g-UPYBRsR5BVuWjQXAV7C_D3e2HISxiJAUudeqOZin5lxLuLvpbq5ZvkSWE0N6uflv8y9Ib7-z4v_dy01AfDpFl34fsc29mNuZSPO7Wr93Tf5EZ2U_IxAlitlFC0V76fHmaD1RthrBN-qoLmbsfmZ3xFW_XHiyOQloc-qHCdieb7tP_xF2fI-Y9ocVLFnNY2Hkex6ndnFdZfKXUYLcvbo3Q7Igm39pxM2rFHNhiSx6csVbGRw0L1H9XUoKdPHYX83-PxQDBklkavIqyqsKMiMnxfmuJJrixcKrA4LWUsbyYb9w5F9VYcsTLHFciTZTWN_nkc5yD9l6E14rtGhPq9cL_ObSESlNzFz8tzrwnjTDTVennGnsnZk9dtUjNT0toUg2yjUQyG1yBumez22qRxsLuz4GwpGuQeDBNwRLeSwKNjpMeJtD9XCQAIjVxFa5UFFFpm8VCv1r3le_7Vo9a69ufTqjayy8Rwpmi4QOOcI-ag4LduiBhGn75UYz7fn1NWDvFZPxiKlmBpSFWOFIQhmn-r0xXUw5JZ4g2VKY8LPmBitTDqy7oAF847iOBHAkUU3oQEr5hi-PWg1naaxuggSsXDlYkdz0G9qfuOxyREOWAuns4ZsJcUv6IF-64yTVg4DOboQ2hyowuZdsdx0BvXEIu2lHy--Lis8H3Rpan_VtbLTMDzoBX5V11cpyzy1DzXmfuNLKtHASHdsVWAdTrcXzvddIwQvHbuldKsguL9bYZWg1TxNVbY144iwU0k2wX5TeOo6Sa-AEYLn9A1qWvUCd1gx_vxYcy0TABvEvv__GEOaDhgYBjTU7jqzu1ga40y63wFOuhGPZfsAaFM9iIB1Ov7tD-meNP1y9GUOq7k1ANkaYNFpQMKxxAV901e7q_2ouFo47eBLGYaEh0HFzk5OSsmcRLs7xGwecyRKRGiYXfX7J5G4Yo13MwQHF7dVfm8NuN6VahRHdH9y670jFDtMovHKgHstHhoy7rblOKYHO0rvFBn3gN2G8WoeL_HWH64zkbsL2Fm0f9F6RqAs6bhvZyYsK6-5OFkyiteSooEPC03dRKmutGvkO6FqTu3I6D408NQaoKy2qjj52z9YRFCB2Lzw8E2_nLCcuYu9Nc3rUg1cU1hpDzm0gwlL5tQ-sxXFqxZ8UUxwfr-S6ymCXR94onU-0pxibxyMOSKhCdSZomCClfCU1Yrw2cB6vXO-kok6C3NsS__7pZCebgb1tK67eLXHFyMV9ufaiQIDnUoFWGRRw-5mDfpAHAa2_tRRZR46zy9e2YahTCtiQsZ42EWVTURd22RnTvgWnJryv3wcpUaJaXswz2cCgzKcSNbq-O3WQlVmq5_c4vi3QGIrMbzrjQ8rRq5b3zKyYFemZCZVtj7xRNadXdwt2AZs3rmOdZnWvs9MNhprdT8h3AnVaau6byZyJyQBQiDR5hgxJXDvHUKLe_CC01tADtkECHuJr-n7dJfSVND1MDVPaQSqCm-WeSpHC8T5tyPF7It_I4VgK1oJ4PimcMhOi3Q3ElUCMlkRt98B43jsIfHK0i7gLeqkfo5GkvIkHMfeXK7bIgD58SJYem1isCwTFhTEI0gbyksvn1gduhZ6idIOy4wEYbMYELL_EPXZNRXEPjYlaI9VMACg4odIq4cU7DjCRERHYWlm1Htxx7Uis8s9UORypKsoTp-hr_ao-ZCOgmmCc0hetZb9-jaI76nROAa1lFNDWtilNRwpXUnJOOHw45tchfrgViKVNCl0gg4fZtxIrK9zGh9vTRPpa7pkqleQwYCUmctaLdCeOnWaceS-RNn",
+            "cncx6lfFq_vWsQU7_sgiYsFfSpLF-0hMIpiWa3P9-P03gAm5kB_BKJfVA5Pwl7HEfQHkS2sMM1EuS0kgwzGPtz7mvf_gh6C4bb7sRm-tUk6Udym_JAukNqTRD0OB2RoO78V9PuYjyEujIaayqUOqSMFHygwRLd9fpP2QLXl080x8WiibmtCc7tgB1vvJCShIfYgAfUL3fFPyhZvRwk5EK7US0go0EV2utgqRShzOgFvF_cRdCxsCNS7NQ1LwdmFyuxnYu6sG8WRHYhv_fddBLWIZwoNUG7owJ-ciBG1NgPipb6GYfzVMvM1Zn_xjPnho83WaGcVdPJfmg-YLdKqGhCNZYassMOzQoKTcXjqZjPng8L8S_9EtvZRHNBh2pg9AXJSqBVeFxmyAQx8Og23U7NLJhvlZt4ltGy5qNeegrjx1Id4IplPtGPoquMgHaw-43vRNGt9rVUFUWTIsR4NmPdvIXQZTv06V-_b2T-M3ef6Od8l9-TL8aLkNTCIe-HTaaYLTVsEsjBCAZ4I_QSPUyC3B1N6_8qhlD_tPLog8Zs5Is4rU3Z3Mrot4d4Wy7iJdjuNlsi5WbV7PnGJ8umnlMQZfQlJgzjXememZWSjtbl3hV7tA9FIQ-sDJMlw6t5IRH_ulnF92BsfqwAfpVxQitQwm-DRpS7l11YhUPE6HQn9PWUEfVeQNALN4BE8ieCinXv7R9ck83hUZ6DNvl_3UZfFaZ5UI0Z4dILXc-DtWraGP5Xp27Ok5wRRpgpuCTWqUAQqVvThEH-B3bPOfhILS7F5kpamJNO0uOcPgASJGMLc-30TV9K9sYLDVQx9-xRnc-xvioanAej2UnerNuVWeO8VSg97NvM7P85saLRtNGlqSWS-4mZTWltL8NBNUGsB06SBtA7D7IEeUPK06dXPZKjU4Y3idOdZ5TzJpl-iIxplA1aeZYA8dyeItg9atwxZScOmz5VrhML9p5nMQkf8shJfynpLNc3Z23OVMZeSn5HoTueJYxtvLKveJRGCG2y5JRZ6pGQMhqzWeAOe8uZF9DJT6V05d2uBy0yggt21JRN1vPDC8dTJKC0ABgktl4NmwztikC1QA8AR0kAwoGEKb8tMe1B-twHJiefqL12R0fb-oEPL1H7DNi9vwK0MYSk-T9j4IFcFzqBeRP41ckDFnFMMyQucxcawbqx7rETDGHIEm-ndPfZrKV2eECA0n_GCvVSN49to98NdmqDYdgkn78x4W9fsa3dInlyQGlXh48gjAxxOU0Z0_AZa0YJPN_nXHTc824-SrpsfgxmsLpjTfK2BZYbJLqr8lhrOvFMFNDFMvE-3tTQsZ4Aulsngm0eUa31YW8o8bI72WBB6hk5GGA6k9p5DN6f3sijtKj-xklfugWFZLP7IQ-TfEwymZa0L4_hpDQpjbEZzwzvse8OZ0Mx5Bc52kWsWtQikXwOdEOiIzAbowmKHRlzX_MtVe7MyzLVbldxg-XXN6zxtLvjCIslRF8JoS9X9tCDpJgPvdSjPT_AAv-jiQEMRYElH0kwxk665uTbvpM1JOlSFMTlx--AQsnxIaToID0cNV8IHIdbUG3O6rI9A8UrQbPTAMzNxMaPikVM3HR_wSlur4bfT4ip_-A41t31l7abJRW6EzomO_8TxapoYjdb2j8qCCtP_JiSkVagD1B9tltDWRZANBQyHoS0MzJl2w5jt3dfF5WnBDcclJogOHiWvbBYjkFjcjCYEcrgWnVTzD_424-NU0QbiDOr1tIDm5tfd8KLz2_UCQ-nNfIY_aH77-MK1o09U53vODmpIfXqU1jv4maUnBQ6m6akBFRjgnk2dQYAOiD78YHxfiZ0qGWWH_c-WbS-AzFiQj1blW9LbIgQAqvutdIoxAtODqaQZPydIyRx0Zdk5XL2EcBgOVQI-ClChFeTpXL_ZMI_vZbARR72CCtzYK5xf1IDD761Wxh5fxxkpxozF9MYd-jA_JMKfAnFfGY-24a619bqRxNhuJrzlEv7jumZw4_47klOQ6MZ7s8Ca17lsH20njd57JQXJi5jmS2Gg8GgzzMOdxINIcx52xvkl4L_dZO1I-u8P7JlcIikdFfYAzRBn1dPmLh5aZzT9iGOg9DNnkvxkLKUGjG3TwhotjnjfiYSCwCUdtNz8Lbcd1EE3KvQhnNeryK8ISgmUaU83W44F-ki8t1UmiShNjc1MveGxeif-LytG7JqurPDpYwVWqHX-mktCNMcxVUmsPq00AC4iR1KZ11Ud_P6v8dkE0WmXRQowCOyJv89qZFZA8Nveh97CqvRcZ3nMJq57LR80VktQnEQDDPEBDro_MJr1yN-kYevodk-dSLoPb0veYQJ-swHHH1BKhXu1SZ5fLHumnhrgu3T4PuIg8b2L5vbaLbKOXjxhB9lr0Y0SxRImXlLb5OLoeLN2VzpiPGd75o8U7Q7e65ShvfbZern8Ctr5cgS-oEfwW9fMucBA_-Y4xvX_R7xlycwIRRDcDgy09dlXsnMOT6CRCnKwOf-vSVUu1ha-hmeIsyEh2ti3b1mbrFW1zgzvnSK1j_bn-8io_iPPGE2PWB21JZguhE-aQFWiI8urJ7T5B4C3B4v9uMNBWmZBUACObMohxhffyEeoVLymjt9XdbtR_ks-C3tuxru0cylmsuKA11IRn0a-UYXHtRW0KvZRBf3-nIm8OB-2AdJwfJbmkYR9jlm-ETqXIcP65sTSCKH_YXLyqLJxglv_-OTeg9kuVXxTxH1AKzQ1dOS2wAnKZ0qIQKnTfBMHqOgLzYlopmZRiROzqNS48s2xkrQVjFwRX1Mbk0r0B8nn39iOf-Wl0vkKDtAVCtlTfDSyoJj1G6pDyTZVHpShWN6N6j9kVVIof5cc6-WHi7BfT-SBKoXyg_uDynGGQq5UnEpO0AD9CFFD9Q29sMreSW0uLWmWbT2swIdjdMAY-SBW3POStv7sjFIBL4NxlxfpJ4vOXq0knL6V_JcZ7LuKPkAymLofjszjCy03siV-EjGfm_l3cEW5NdaP5Ra-jb-jpVGn-u9JTBfNRFF2ufS4B71koUQ5IUWFNo0av-LF233yU7nSXoz90bic9qs5YhUU7y0M6AzcUKY8isgjSHSNuwGKfcMmhgHw-i79TzOPCvRhSVYz2UrJYVrjVvenb1DqHpkuyo2Fqw3KK9A4kYm1OoUTpmiLIZ2C4twqrpZQKAW1qaEr07C0KIMSRa_bp_-wrPlGJ5fxIqfztXX_i7xBdTsHvL6-IRQXrRmf3RTEL9SjMUYU4YX9VVUA3pD64dTeSWUxcSkmUZu4_XFTeksnXH8lDsB-p9g"
+          ]
+        }
+      },
+      "signature": "ENx_QmqBknS4REIHZPyN81_tDa4lAbMeJixRy_hA-3i9Q1oAA5NTSzPtnah6kkfGNq9PoPqtQ89H_Cd5pn_-DQ"
+    },
+    {
+      "payload": {
+        "v": 1,
+        "workspace_id": "mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm",
+        "sequence": 2,
+        "previous": "4c784b94fc85c5bc0fa5520e5e2bb8d70214124fe9dbe25e514f8550d41313e5",
+        "policy_hash": "b77e2a0c776c05353fabaff3222edcdff341c52e95e7b8712231a5cfd3af9520",
+        "epoch": 1,
+        "actor_id": "OnDJKGhj931gFmPPTA7n24O34hyuSp1epwxeANaFfPI",
+        "signing_key": "lNMgBRLRQk3DlS4zCwRmTpwoLGZh9Qg8hEdti2yc40I",
+        "command_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "action_id": "wiki.create",
+        "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+        "issued_at": 4,
+        "delegation": null,
+        "mode": "PRIVATE",
+        "body": {
+          "v": 1,
+          "alg": "A256GCM",
+          "nonce": "52bo9K9NcllzIEdm",
+          "chunks": [
+            "oJqZwU2UFRnXS4-FQs2g5zcwBaFVn6-0uRp4vOExl4YJc4qvLlhQ5bVq7w6fMxGOHUha7g8bVg1gTDoYYeH6lJKbBukY5xRRcbsMgJO3z7ivuFq24d7CkmbHWsbfLMJgwOe_UlG7DaPwNEGkJb0Pi53Px4DnjbRxtSgjRQ8GJdAGMFwv2HYki1MsyfiiYkTK29738E_4NZ2oQ8_ZxzkkDgaxd8H6fbmu_YL2IJb8lNcmPd0Dj2pXfoVGyqvVxE6o09jaZkg12FjYUPKVEFxXs3dyZQ5T5ljKJ1xv5ZupFFc-Ml2_rGM43SuCsAY0tuKJ54Th5K6gB1aX34Sd7mJ_13IJ6LFDF3h_yLOeJWMqZaL1idyEqhpNFAFKf-9RWIdNr3ymko4euElXmzM7Q1dMCwVOh5UsqUa6UhpIkCIVbr_GZ73l3EFhsw3bFKC36XPwWbJGKghoBZbhvJ9mlPZ5c6kt5xwIAwR1jk_Igp6aobbVa3REnLtoeKQPfDZS8eOxpgds8Ah9cpcWob246D9Y6fe2b_caPN_4qLrx-mvtHdUyNrBg9_To709MitHZI3ggUUPiWQOTQCI_3y-ILfop1LFNM_pNLooW9cSvkLOdKkiUUSDRYiSpI_fCJ1Al4wLgpuqEhBHAdkBG1OUh4qxRGPNHIvStiva5dcP2orNrPWBMtJYCPZo43pJ_5UVOBTnV44mknMN1QeyI90if3c3X-_nEpXVf8tqE5XA4ANux_GtgNEiZCFAfQqpeXzaQtqxkFlbn0LNkWBe2sCq6eg23JF44Lm-vp0joa-Sn1hhtnKAZI4gOc6epBxqtMWSQ9qIe1h7IuYABL0O60bMCZJPjVU-IlQFsYGxqf_Tu05w_jwbQQsCPFojqPjTnJ65USJpPefYS5BpuPU8Wq8nBA64uN_nohfbKQHc4b951gE4EjP5PyFfrRgwvyuGAN-WdBrg8WT8z1gHrpbJvog-MLWba2hq986KMkcOA3oDiJWXLVQ3ghP4oqlOaes7nxRiauuyCW6M_FviGBZsvx51nJziJna2561pdVDkgXXAkwoJee3aYE0K6XCm0J7O7YTxlpeZ5UkkOUGVbPTOGiIh2ObWrETUGiRvXEbkmgo4x1GJl27CByeJWYGqXoWPisUiAov5AU7RB6PIBBEuj6kFsX4N4JKgrD2S8ESbc7iCTecyUVRCwGX2IbcJzVBbWpefp4zguuWqauShQio69O72veAcpc6_ieSKxKMaE2aNkDvUIxRMc3bXsxJ8YBxRTDJH9NUVIErI31CtvRjF-LgAsdTQ02KdhjiGly1hXejqf5o_6waBsOLLfWKp-g1Y1iJy2kAWImDoWSIZgHD8IWlZB_xbq37jWNpzqIRjRWwv9g8ad6wd2nGgcLO9QSvcSxMaGBUoa_mMOyj3e9dqKy1EobCusmmlFGRPHMyV5NnYCOC6d-0rqJv8sIR0KHi_rXo-lXI6wRdwvmCZZXb3M0H1R1EmPDh8s7U5fCRiHGelaLAYoNR44rQbYkNE2Rc6SANiCuN16Q4eCuthfCrCMLQ5R651mPBu0kWyYoTmDpy0dpzg7VsMzgrr4U3dH-YqdV_luKlCal4IW5YmaqW_QqimmRU_79ALGoothG3WTDIN7wsq0gA-AjXR4V-x0kC5lx4XDm9JJWcsy-lG9OLUCPAYeN3X_sN4ATEpW6Gvfw78P2VeTU4_9Fx7R1Uiw1sYXt1T-W7vkCUdn0zGT0rnHYCO7ut9UA3lBoHMcJ1zsNLkgM-ao7lOSkl8WdFQZP_uC_Sy2FAzD24ZJ1bCArH7celEWjYwsyBjHFd3wn7lDttTpwpp1_5gzqr9wYLoHdbqBk9A46WkTyJxuOxIg-9w3WMpg91oe2YYkBoNUl-9Ic9hbLiReGOZKFWA0Bas_ZGrfkmShqYQm42AYsasK1u0TbPFdadeD8dpHI7c1M6qgmwt2bsAOCp4JNl39F76AW_UpyATybhZskVN4Paoon1uqh4_N-n3xx3tQYw0ZEPuXEYEX9xly6L4bDr1ro-GdVleR9fMNFUXYpbLnTTElOwzav2lhSqQe-0WxmJxp3ZOCqx9y5nlVHhFcQBn45R7oZK-ivgN68HIxvwwjR2amM_yo2HbO7XD0duLx77-XMW5mRxQjbVnNMqc_cYdXHyl6vvoiJn-9z6O_1dpBRgEuMeB4LwAsLmCyGLCJTncj8qNetpcKpHsVJAb-mRWSudueh7RJTABmQatDOeo4DWpLgvds4HsYRYoPlBor1neeO85OKrie_cekJQyqcfeNTGGrEPA5oYleHGXVFnmKQcd-YGpfdUJU8-omOJouFqE74brj2BO62oDlcdCgM4x3RSfarZSrjOwXrx7FOP-7uI_nPtDOBUra1D5Z71tBVNNsi0RJQMlCWvTABA2F6K14MH-4WLkVyoXDFWEVBq9M3soSIwPr74A11yvXdqqZNc0ddj4wQ1byVUA90lyMe3bk2nzWK9myAuFjz3qHzCFhaf8rAIpQaBj22h2KRbwlkAon_ASO3buLYDmiS05WpGkHALFtpXNPVcRK5gK3s9FnhSQXo0vBGtXfsha-NXn_A4s1-cLYlh9T2-QkFW7blb4UlqazI2QDgOdi6Vy6pZhf6G1fhYXhpKL_5ecwsJjApa6n5RhqFNXG97lMkyH1GaVKZNR-9xD1mRLv_Mi8c2BZzZDpG8YEo_5bQ157RPP8AYFh8ym0t3bvRtbMuChGEdeh3pQfdG32uQrk5yvNrVqBXXyO1nWnvOxQcSqvJwHIAsK8Xt42NppPHgmugNjN16o61XQv5d8ZsXpPobPPtVYyr2UFnMgki7lG_TMrTkKlTA7LKK7knZRNOrrX_gi6U4VDUts-NI0Qy_2h2-agfih29qWQRFsnsINGkhMgQjN3crsw67As7RaKh4b30jZo2XGv-uJU5QjdEYuKbqajt-8UWxq3up8irAfXQZpkwpdhvtZO0O2-proq_PseJhjp5FD4E3_mrnYnZpsnyKTztWQwjKidKp1RVIYXVFCpk7HB2CBXsUzub6X-Ws1qLP1HdDku1TQ6FKvTmz_FmbKyEXRJYNaDPEQ14nLDYL7NvD_ZVZtxHotK-H0DuyMFTbJBUsfAnkeMIJIaeudtVyYLqhnGrcDzgQnnWCp6U9pxuVZGQhHmZz8sLyiRyrkM0PtloANvX7CCr8B7K1Xdh4gCX85JgcU3j6rXix1yY5UVOe2tdqvQxT8722yRzFe3RVsUzuVQ7BOcKJRWzqhIM4CTIimQ8bgBqqdMQFLHkfy85M-CEK3a6v6p7PrkqDlrhwk2MM5yjzaLXgCTqkcnoSKGfGABp7dSkkn_xNbJcQyghh2S463PX7BzLsk6hNGSidcZRYbTrqTy5QzMpMdSH6wwxlUbEk_7xSiihXBrLzq3Tc-pQHq-ouXKwcR-RKWpVBtOd0T4MGB0C0soM7wJBt05ractmu8HcJGp7atMQPskCTgWnXHaUkmTNe7dOeRTdITg2GKFs-HtcobSoBm1sON3r1h7FJF6sHVSOtfjwK03sbZWGhxYj_VL-jjsMXhngxhWHVaxNw5xK2HA8DhFLklZeWFDM2G_oXzKKqWy9SkIMZTbWsawLRqO_NptpRl1ICre516Rg3a5QKYBx_hmmvW-syTlw6HSVYGtIZHqv3oqvaOmeN7-ruF1mAe70PZrx1mUrxCTLcjFE4JYTMSUBGTBkdca0S1Wz4LfOm5-wQ_3aRUYoMA4T--JTd5nOE0-H4fKP7M-67gTTC-HS1RLByJTg2PGeoQ5zjyak_1HegGRW6guwj_ebAsiOaHoTBFORixYQU9HERxba0M7E0-EwbMpnNg8eOfIPYsqVWbF4Qely2wKi1oonnFkCGyyKyBgmQKNfXGYYDcs_ImL-I_6houK4ib8z8QjTL-2gsQPRJvGg5hHn1WzRnPPNvzdyH-Op4Hiq1lzAY7UzvhIIitE1Dds4HAU7y96avzch-CvbETaLboaKh3hklAZFN9ipWWm6H_ZBIyB6e4KjEzQCGLNBeWC8oTSMes1svGPuzjEw6-9jzQ_Gsn_KLur7k_tqH98vpAh04tbnO95gl5BbeoLNoJbCwUcx8slJZ8XR_HAsalQ2jumCo0"
+          ]
+        }
+      },
+      "signature": "eHcBAbRHMEz6_Dovy76tVJDGWbQrzBJURmI8AIV1vj4JmrEt3TabxnqR7ZJDnMLFsK4tVlRihkFYGEvmEfaQAA"
+    }
+  ],
+  "checkpoint": {
+    "v": 1,
+    "workspace_id": "mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm",
+    "owner_id": "OnDJKGhj931gFmPPTA7n24O34hyuSp1epwxeANaFfPI",
+    "owner_key": "lNMgBRLRQk3DlS4zCwRmTpwoLGZh9Qg8hEdti2yc40I",
+    "sequence": 2,
+    "head": "602adf32ea921e0607c48a12a31cf848628f9cf1acc16ad7603da61a78de570b",
+    "policy_hash": "b77e2a0c776c05353fabaff3222edcdff341c52e95e7b8712231a5cfd3af9520"
+  },
+  "keyring": {
+    "v": 1,
+    "workspace_id": "mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm",
+    "keys": [
+      {
+        "epoch": 1,
+        "key": "Y2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2M"
+      }
+    ]
+  },
+  "objects": [
+    {
+      "id": "mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm",
+      "kind": "workspaces",
+      "provenance": "AUTHOR_SIGNED",
+      "revision": 1,
+      "value": {
+        "created": 3,
+        "id": "mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm",
+        "name": "Signed many effects",
+        "owner": "OnDJKGhj931gFmPPTA7n24O34hyuSp1epwxeANaFfPI",
+        "visibility": "PRIVATE"
+      }
+    },
+    {
+      "id": "dc3fc8957be612488242c5de89b3bc502f5d4dad2fde8b3c7dcae92430a9dda0",
+      "kind": "protocols",
+      "provenance": "AUTHOR_SIGNED",
+      "revision": 1,
+      "value": {
+        "digest": "dc3fc8957be612488242c5de89b3bc502f5d4dad2fde8b3c7dcae92430a9dda0",
+        "manifest": {
+          "actions": [
+            {
+              "id": "wiki.create",
+              "reads": [],
+              "revisionEffects": {
+                "contentEntities": [
+                  "document",
+                  "second"
+                ],
+                "control": true
+              },
+              "variants": [
+                {
+                  "effects": [
+                    {
+                      "entity": {
+                        "mode": "new",
+                        "slot": "document"
+                      },
+                      "op": "append",
+                      "recordSlot": "revision",
+                      "relations": [],
+                      "schema": "wiki.revision",
+                      "selectHead": true,
+                      "value": {
+                        "fields": {
+                          "author": {
+                            "field": "actorId",
+                            "from": "auth"
+                          },
+                          "body": {
+                            "from": "body",
+                            "path": [
+                              "body"
+                            ]
+                          },
+                          "parent": {
+                            "from": "literal",
+                            "value": null
+                          },
+                          "title": {
+                            "from": "body",
+                            "path": [
+                              "title"
+                            ]
+                          }
+                        },
+                        "from": "object"
+                      }
+                    },
+                    {
+                      "entity": {
+                        "mode": "new",
+                        "slot": "second"
+                      },
+                      "op": "append",
+                      "recordSlot": "second",
+                      "relations": [],
+                      "schema": "wiki.revision",
+                      "selectHead": true,
+                      "value": {
+                        "fields": {
+                          "author": {
+                            "field": "actorId",
+                            "from": "auth"
+                          },
+                          "body": {
+                            "from": "body",
+                            "path": [
+                              "body"
+                            ]
+                          },
+                          "parent": {
+                            "from": "literal",
+                            "value": null
+                          },
+                          "title": {
+                            "from": "body",
+                            "path": [
+                              "title"
+                            ]
+                          }
+                        },
+                        "from": "object"
+                      }
+                    }
+                  ],
+                  "when": [
+                    {
+                      "op": "has_protocol_role",
+                      "role": "EDITOR"
+                    },
+                    {
+                      "capability": "EDIT",
+                      "op": "has_capability"
+                    }
+                  ]
+                }
+              ],
+              "writes": []
+            },
+            {
+              "id": "wiki.revise",
+              "reads": [],
+              "revisionEffects": {
+                "contentEntities": [
+                  "document"
+                ],
+                "control": true
+              },
+              "variants": [
+                {
+                  "effects": [
+                    {
+                      "entity": {
+                        "mode": "revise",
+                        "parent": {
+                          "from": "ref",
+                          "path": [
+                            "parent_ref"
+                          ],
+                          "scope": "INSTANCE",
+                          "source": "body"
+                        },
+                        "slot": "document"
+                      },
+                      "op": "append",
+                      "recordSlot": "revision",
+                      "relations": [
+                        {
+                          "kind": "parent",
+                          "target": {
+                            "from": "ref",
+                            "path": [
+                              "parent_ref"
+                            ],
+                            "scope": "INSTANCE",
+                            "source": "body"
+                          }
+                        }
+                      ],
+                      "schema": "wiki.revision",
+                      "selectHead": true,
+                      "value": {
+                        "fields": {
+                          "author": {
+                            "field": "actorId",
+                            "from": "auth"
+                          },
+                          "body": {
+                            "from": "body",
+                            "path": [
+                              "body"
+                            ]
+                          },
+                          "parent": {
+                            "from": "ref",
+                            "path": [
+                              "parent_ref"
+                            ],
+                            "scope": "INSTANCE",
+                            "source": "body"
+                          },
+                          "title": {
+                            "from": "body",
+                            "path": [
+                              "title"
+                            ]
+                          }
+                        },
+                        "from": "object"
+                      }
+                    }
+                  ],
+                  "when": [
+                    {
+                      "op": "has_protocol_role",
+                      "role": "EDITOR"
+                    },
+                    {
+                      "capability": "EDIT",
+                      "op": "has_capability"
+                    },
+                    {
+                      "op": "exact_ref",
+                      "ref": {
+                        "from": "ref",
+                        "path": [
+                          "parent_ref"
+                        ],
+                        "scope": "INSTANCE",
+                        "source": "body"
+                      }
+                    }
+                  ]
+                }
+              ],
+              "writes": []
+            },
+            {
+              "id": "wiki.branch",
+              "reads": [],
+              "revisionEffects": {
+                "contentEntities": [
+                  "document"
+                ],
+                "control": true
+              },
+              "variants": [
+                {
+                  "effects": [
+                    {
+                      "entity": {
+                        "mode": "revise",
+                        "parent": {
+                          "from": "ref",
+                          "path": [
+                            "parent_ref"
+                          ],
+                          "scope": "INSTANCE",
+                          "source": "body"
+                        },
+                        "slot": "document"
+                      },
+                      "op": "append",
+                      "recordSlot": "revision",
+                      "relations": [
+                        {
+                          "kind": "parent",
+                          "target": {
+                            "from": "ref",
+                            "path": [
+                              "parent_ref"
+                            ],
+                            "scope": "INSTANCE",
+                            "source": "body"
+                          }
+                        }
+                      ],
+                      "schema": "wiki.revision",
+                      "selectHead": false,
+                      "value": {
+                        "fields": {
+                          "author": {
+                            "field": "actorId",
+                            "from": "auth"
+                          },
+                          "body": {
+                            "from": "body",
+                            "path": [
+                              "body"
+                            ]
+                          },
+                          "parent": {
+                            "from": "ref",
+                            "path": [
+                              "parent_ref"
+                            ],
+                            "scope": "INSTANCE",
+                            "source": "body"
+                          },
+                          "title": {
+                            "from": "body",
+                            "path": [
+                              "title"
+                            ]
+                          }
+                        },
+                        "from": "object"
+                      }
+                    }
+                  ],
+                  "when": [
+                    {
+                      "op": "has_protocol_role",
+                      "role": "EDITOR"
+                    },
+                    {
+                      "capability": "EDIT",
+                      "op": "has_capability"
+                    },
+                    {
+                      "op": "exact_ref",
+                      "ref": {
+                        "from": "ref",
+                        "path": [
+                          "parent_ref"
+                        ],
+                        "scope": "INSTANCE",
+                        "source": "body"
+                      }
+                    }
+                  ]
+                }
+              ],
+              "writes": []
+            },
+            {
+              "id": "wiki.select_head",
+              "reads": [],
+              "revisionEffects": {
+                "contentEntities": [],
+                "control": true
+              },
+              "variants": [
+                {
+                  "effects": [
+                    {
+                      "expected": {
+                        "from": "ref",
+                        "path": [
+                          "expected_head"
+                        ],
+                        "scope": "INSTANCE",
+                        "source": "body"
+                      },
+                      "op": "select_head",
+                      "target": {
+                        "from": "ref",
+                        "path": [
+                          "target"
+                        ],
+                        "scope": "INSTANCE",
+                        "source": "body"
+                      }
+                    }
+                  ],
+                  "when": [
+                    {
+                      "op": "has_protocol_role",
+                      "role": "EDITOR"
+                    },
+                    {
+                      "capability": "EDIT",
+                      "op": "has_capability"
+                    },
+                    {
+                      "op": "exact_ref",
+                      "ref": {
+                        "from": "ref",
+                        "path": [
+                          "expected_head"
+                        ],
+                        "scope": "INSTANCE",
+                        "source": "body"
+                      }
+                    },
+                    {
+                      "op": "exact_ref",
+                      "ref": {
+                        "from": "ref",
+                        "path": [
+                          "target"
+                        ],
+                        "scope": "INSTANCE",
+                        "source": "body"
+                      }
+                    }
+                  ]
+                }
+              ],
+              "writes": []
+            }
+          ],
+          "capabilities": [
+            "EDIT"
+          ],
+          "constraints": {},
+          "dependencies": [],
+          "display_version": "1",
+          "historical_role_conflicts": [],
+          "initial_state": {},
+          "name": "peerwork.wiki.v1",
+          "protocol_roles": [
+            "EDITOR"
+          ],
+          "record_schemas": {
+            "wiki.revision": {
+              "fields": {
+                "author": "string",
+                "body": "string",
+                "parent": "json",
+                "title": "string"
+              },
+              "max_bytes": 16384,
+              "required": [
+                "title",
+                "body",
+                "author",
+                "parent"
+              ],
+              "type": "object"
+            }
+          },
+          "role_conflicts": [],
+          "semantics": "peerwork.kernel.v1"
+        },
+        "resolved_manifest": {
+          "actions": [
+            {
+              "id": "wiki.create",
+              "reads": [],
+              "revisionEffects": {
+                "contentEntities": [
+                  "document",
+                  "second"
+                ],
+                "control": true
+              },
+              "variants": [
+                {
+                  "effects": [
+                    {
+                      "entity": {
+                        "mode": "new",
+                        "slot": "document"
+                      },
+                      "op": "append",
+                      "recordSlot": "revision",
+                      "relations": [],
+                      "schema": "wiki.revision",
+                      "selectHead": true,
+                      "value": {
+                        "fields": {
+                          "author": {
+                            "field": "actorId",
+                            "from": "auth"
+                          },
+                          "body": {
+                            "from": "body",
+                            "path": [
+                              "body"
+                            ]
+                          },
+                          "parent": {
+                            "from": "literal",
+                            "value": null
+                          },
+                          "title": {
+                            "from": "body",
+                            "path": [
+                              "title"
+                            ]
+                          }
+                        },
+                        "from": "object"
+                      }
+                    },
+                    {
+                      "entity": {
+                        "mode": "new",
+                        "slot": "second"
+                      },
+                      "op": "append",
+                      "recordSlot": "second",
+                      "relations": [],
+                      "schema": "wiki.revision",
+                      "selectHead": true,
+                      "value": {
+                        "fields": {
+                          "author": {
+                            "field": "actorId",
+                            "from": "auth"
+                          },
+                          "body": {
+                            "from": "body",
+                            "path": [
+                              "body"
+                            ]
+                          },
+                          "parent": {
+                            "from": "literal",
+                            "value": null
+                          },
+                          "title": {
+                            "from": "body",
+                            "path": [
+                              "title"
+                            ]
+                          }
+                        },
+                        "from": "object"
+                      }
+                    }
+                  ],
+                  "when": [
+                    {
+                      "op": "has_protocol_role",
+                      "role": "EDITOR"
+                    },
+                    {
+                      "capability": "EDIT",
+                      "op": "has_capability"
+                    }
+                  ]
+                }
+              ],
+              "writes": []
+            },
+            {
+              "id": "wiki.revise",
+              "reads": [],
+              "revisionEffects": {
+                "contentEntities": [
+                  "document"
+                ],
+                "control": true
+              },
+              "variants": [
+                {
+                  "effects": [
+                    {
+                      "entity": {
+                        "mode": "revise",
+                        "parent": {
+                          "from": "ref",
+                          "path": [
+                            "parent_ref"
+                          ],
+                          "scope": "INSTANCE",
+                          "source": "body"
+                        },
+                        "slot": "document"
+                      },
+                      "op": "append",
+                      "recordSlot": "revision",
+                      "relations": [
+                        {
+                          "kind": "parent",
+                          "target": {
+                            "from": "ref",
+                            "path": [
+                              "parent_ref"
+                            ],
+                            "scope": "INSTANCE",
+                            "source": "body"
+                          }
+                        }
+                      ],
+                      "schema": "wiki.revision",
+                      "selectHead": true,
+                      "value": {
+                        "fields": {
+                          "author": {
+                            "field": "actorId",
+                            "from": "auth"
+                          },
+                          "body": {
+                            "from": "body",
+                            "path": [
+                              "body"
+                            ]
+                          },
+                          "parent": {
+                            "from": "ref",
+                            "path": [
+                              "parent_ref"
+                            ],
+                            "scope": "INSTANCE",
+                            "source": "body"
+                          },
+                          "title": {
+                            "from": "body",
+                            "path": [
+                              "title"
+                            ]
+                          }
+                        },
+                        "from": "object"
+                      }
+                    }
+                  ],
+                  "when": [
+                    {
+                      "op": "has_protocol_role",
+                      "role": "EDITOR"
+                    },
+                    {
+                      "capability": "EDIT",
+                      "op": "has_capability"
+                    },
+                    {
+                      "op": "exact_ref",
+                      "ref": {
+                        "from": "ref",
+                        "path": [
+                          "parent_ref"
+                        ],
+                        "scope": "INSTANCE",
+                        "source": "body"
+                      }
+                    }
+                  ]
+                }
+              ],
+              "writes": []
+            },
+            {
+              "id": "wiki.branch",
+              "reads": [],
+              "revisionEffects": {
+                "contentEntities": [
+                  "document"
+                ],
+                "control": true
+              },
+              "variants": [
+                {
+                  "effects": [
+                    {
+                      "entity": {
+                        "mode": "revise",
+                        "parent": {
+                          "from": "ref",
+                          "path": [
+                            "parent_ref"
+                          ],
+                          "scope": "INSTANCE",
+                          "source": "body"
+                        },
+                        "slot": "document"
+                      },
+                      "op": "append",
+                      "recordSlot": "revision",
+                      "relations": [
+                        {
+                          "kind": "parent",
+                          "target": {
+                            "from": "ref",
+                            "path": [
+                              "parent_ref"
+                            ],
+                            "scope": "INSTANCE",
+                            "source": "body"
+                          }
+                        }
+                      ],
+                      "schema": "wiki.revision",
+                      "selectHead": false,
+                      "value": {
+                        "fields": {
+                          "author": {
+                            "field": "actorId",
+                            "from": "auth"
+                          },
+                          "body": {
+                            "from": "body",
+                            "path": [
+                              "body"
+                            ]
+                          },
+                          "parent": {
+                            "from": "ref",
+                            "path": [
+                              "parent_ref"
+                            ],
+                            "scope": "INSTANCE",
+                            "source": "body"
+                          },
+                          "title": {
+                            "from": "body",
+                            "path": [
+                              "title"
+                            ]
+                          }
+                        },
+                        "from": "object"
+                      }
+                    }
+                  ],
+                  "when": [
+                    {
+                      "op": "has_protocol_role",
+                      "role": "EDITOR"
+                    },
+                    {
+                      "capability": "EDIT",
+                      "op": "has_capability"
+                    },
+                    {
+                      "op": "exact_ref",
+                      "ref": {
+                        "from": "ref",
+                        "path": [
+                          "parent_ref"
+                        ],
+                        "scope": "INSTANCE",
+                        "source": "body"
+                      }
+                    }
+                  ]
+                }
+              ],
+              "writes": []
+            },
+            {
+              "id": "wiki.select_head",
+              "reads": [],
+              "revisionEffects": {
+                "contentEntities": [],
+                "control": true
+              },
+              "variants": [
+                {
+                  "effects": [
+                    {
+                      "expected": {
+                        "from": "ref",
+                        "path": [
+                          "expected_head"
+                        ],
+                        "scope": "INSTANCE",
+                        "source": "body"
+                      },
+                      "op": "select_head",
+                      "target": {
+                        "from": "ref",
+                        "path": [
+                          "target"
+                        ],
+                        "scope": "INSTANCE",
+                        "source": "body"
+                      }
+                    }
+                  ],
+                  "when": [
+                    {
+                      "op": "has_protocol_role",
+                      "role": "EDITOR"
+                    },
+                    {
+                      "capability": "EDIT",
+                      "op": "has_capability"
+                    },
+                    {
+                      "op": "exact_ref",
+                      "ref": {
+                        "from": "ref",
+                        "path": [
+                          "expected_head"
+                        ],
+                        "scope": "INSTANCE",
+                        "source": "body"
+                      }
+                    },
+                    {
+                      "op": "exact_ref",
+                      "ref": {
+                        "from": "ref",
+                        "path": [
+                          "target"
+                        ],
+                        "scope": "INSTANCE",
+                        "source": "body"
+                      }
+                    }
+                  ]
+                }
+              ],
+              "writes": []
+            }
+          ],
+          "capabilities": [
+            "EDIT"
+          ],
+          "constraints": {},
+          "dependencies": [],
+          "display_version": "1",
+          "historical_role_conflicts": [],
+          "initial_state": {},
+          "name": "peerwork.wiki.v1",
+          "protocol_roles": [
+            "EDITOR"
+          ],
+          "record_schemas": {
+            "wiki.revision": {
+              "fields": {
+                "author": "string",
+                "body": "string",
+                "parent": "json",
+                "title": "string"
+              },
+              "max_bytes": 16384,
+              "required": [
+                "title",
+                "body",
+                "author",
+                "parent"
+              ],
+              "type": "object"
+            }
+          },
+          "role_conflicts": [],
+          "semantics": "peerwork.kernel.v1"
+        },
+        "workspace_id": "mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm"
+      }
+    },
+    {
+      "id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+      "kind": "instances",
+      "provenance": "AUTHOR_SIGNED",
+      "revision": 1,
+      "value": {
+        "created": 3,
+        "event_revision": 0,
+        "id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+        "origin_entrypoint": "wiki",
+        "protocol_digest": "dc3fc8957be612488242c5de89b3bc502f5d4dad2fde8b3c7dcae92430a9dda0",
+        "revision": 0,
+        "semantics": "peerwork.kernel.v1",
+        "state": {},
+        "workspace_id": "mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm"
+      }
+    },
+    {
+      "id": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
+      "kind": "records",
+      "provenance": "AUTHOR_SIGNED",
+      "revision": 1,
+      "value": {
+        "actor_id": "OnDJKGhj931gFmPPTA7n24O34hyuSp1epwxeANaFfPI",
+        "created": 4,
+        "entity_id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "id": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
+        "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+        "payload": {
+          "author": "OnDJKGhj931gFmPPTA7n24O34hyuSp1epwxeANaFfPI",
+          "body": "Writer-generated multi effect",
+          "parent": null,
+          "title": "Two"
+        },
+        "protocol_digest": "dc3fc8957be612488242c5de89b3bc502f5d4dad2fde8b3c7dcae92430a9dda0",
+        "revision": 1,
+        "schema_ref": "wiki.revision",
+        "workspace_id": "mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm"
+      }
+    },
+    {
+      "id": "sssssssssssssssssssssssssssssssssssssssssss",
+      "kind": "records",
+      "provenance": "AUTHOR_SIGNED",
+      "revision": 1,
+      "value": {
+        "actor_id": "OnDJKGhj931gFmPPTA7n24O34hyuSp1epwxeANaFfPI",
+        "created": 4,
+        "entity_id": "fffffffffffffffffffffffffffffffffffffffffff",
+        "id": "sssssssssssssssssssssssssssssssssssssssssss",
+        "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+        "payload": {
+          "author": "OnDJKGhj931gFmPPTA7n24O34hyuSp1epwxeANaFfPI",
+          "body": "Writer-generated multi effect",
+          "parent": null,
+          "title": "Two"
+        },
+        "protocol_digest": "dc3fc8957be612488242c5de89b3bc502f5d4dad2fde8b3c7dcae92430a9dda0",
+        "revision": 1,
+        "schema_ref": "wiki.revision",
+        "workspace_id": "mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm"
+      }
+    },
+    {
+      "id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "kind": "entity_heads",
+      "provenance": "AUTHOR_SIGNED",
+      "revision": 1,
+      "value": {
+        "entity_id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+        "record_id": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
+        "revision": 1,
+        "updated": 4,
+        "workspace_id": "mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm"
+      }
+    },
+    {
+      "id": "fffffffffffffffffffffffffffffffffffffffffff",
+      "kind": "entity_heads",
+      "provenance": "AUTHOR_SIGNED",
+      "revision": 1,
+      "value": {
+        "entity_id": "fffffffffffffffffffffffffffffffffffffffffff",
+        "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+        "record_id": "sssssssssssssssssssssssssssssssssssssssssss",
+        "revision": 1,
+        "updated": 4,
+        "workspace_id": "mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm"
+      }
+    },
+    {
+      "id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+      "kind": "instances",
+      "provenance": "AUTHOR_SIGNED",
+      "revision": 2,
+      "value": {
+        "created": 3,
+        "event_revision": 1,
+        "id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+        "origin_entrypoint": "wiki",
+        "protocol_digest": "dc3fc8957be612488242c5de89b3bc502f5d4dad2fde8b3c7dcae92430a9dda0",
+        "revision": 1,
+        "semantics": "peerwork.kernel.v1",
+        "state": {},
+        "workspace_id": "mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm"
+      }
+    }
+  ],
+  "operations": [
+    {
+      "input": {},
+      "kind": "BOOTSTRAP",
+      "objects": [
+        {
+          "id": "mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm",
+          "kind": "workspaces",
+          "provenance": "AUTHOR_SIGNED",
+          "revision": 1,
+          "value": {
+            "created": 3,
+            "id": "mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm",
+            "name": "Signed many effects",
+            "owner": "OnDJKGhj931gFmPPTA7n24O34hyuSp1epwxeANaFfPI",
+            "visibility": "PRIVATE"
+          }
+        },
+        {
+          "id": "dc3fc8957be612488242c5de89b3bc502f5d4dad2fde8b3c7dcae92430a9dda0",
+          "kind": "protocols",
+          "provenance": "AUTHOR_SIGNED",
+          "revision": 1,
+          "value": {
+            "digest": "dc3fc8957be612488242c5de89b3bc502f5d4dad2fde8b3c7dcae92430a9dda0",
+            "manifest": {
+              "actions": [
+                {
+                  "id": "wiki.create",
+                  "reads": [],
+                  "revisionEffects": {
+                    "contentEntities": [
+                      "document",
+                      "second"
+                    ],
+                    "control": true
+                  },
+                  "variants": [
+                    {
+                      "effects": [
+                        {
+                          "entity": {
+                            "mode": "new",
+                            "slot": "document"
+                          },
+                          "op": "append",
+                          "recordSlot": "revision",
+                          "relations": [],
+                          "schema": "wiki.revision",
+                          "selectHead": true,
+                          "value": {
+                            "fields": {
+                              "author": {
+                                "field": "actorId",
+                                "from": "auth"
+                              },
+                              "body": {
+                                "from": "body",
+                                "path": [
+                                  "body"
+                                ]
+                              },
+                              "parent": {
+                                "from": "literal",
+                                "value": null
+                              },
+                              "title": {
+                                "from": "body",
+                                "path": [
+                                  "title"
+                                ]
+                              }
+                            },
+                            "from": "object"
+                          }
+                        },
+                        {
+                          "entity": {
+                            "mode": "new",
+                            "slot": "second"
+                          },
+                          "op": "append",
+                          "recordSlot": "second",
+                          "relations": [],
+                          "schema": "wiki.revision",
+                          "selectHead": true,
+                          "value": {
+                            "fields": {
+                              "author": {
+                                "field": "actorId",
+                                "from": "auth"
+                              },
+                              "body": {
+                                "from": "body",
+                                "path": [
+                                  "body"
+                                ]
+                              },
+                              "parent": {
+                                "from": "literal",
+                                "value": null
+                              },
+                              "title": {
+                                "from": "body",
+                                "path": [
+                                  "title"
+                                ]
+                              }
+                            },
+                            "from": "object"
+                          }
+                        }
+                      ],
+                      "when": [
+                        {
+                          "op": "has_protocol_role",
+                          "role": "EDITOR"
+                        },
+                        {
+                          "capability": "EDIT",
+                          "op": "has_capability"
+                        }
+                      ]
+                    }
+                  ],
+                  "writes": []
+                },
+                {
+                  "id": "wiki.revise",
+                  "reads": [],
+                  "revisionEffects": {
+                    "contentEntities": [
+                      "document"
+                    ],
+                    "control": true
+                  },
+                  "variants": [
+                    {
+                      "effects": [
+                        {
+                          "entity": {
+                            "mode": "revise",
+                            "parent": {
+                              "from": "ref",
+                              "path": [
+                                "parent_ref"
+                              ],
+                              "scope": "INSTANCE",
+                              "source": "body"
+                            },
+                            "slot": "document"
+                          },
+                          "op": "append",
+                          "recordSlot": "revision",
+                          "relations": [
+                            {
+                              "kind": "parent",
+                              "target": {
+                                "from": "ref",
+                                "path": [
+                                  "parent_ref"
+                                ],
+                                "scope": "INSTANCE",
+                                "source": "body"
+                              }
+                            }
+                          ],
+                          "schema": "wiki.revision",
+                          "selectHead": true,
+                          "value": {
+                            "fields": {
+                              "author": {
+                                "field": "actorId",
+                                "from": "auth"
+                              },
+                              "body": {
+                                "from": "body",
+                                "path": [
+                                  "body"
+                                ]
+                              },
+                              "parent": {
+                                "from": "ref",
+                                "path": [
+                                  "parent_ref"
+                                ],
+                                "scope": "INSTANCE",
+                                "source": "body"
+                              },
+                              "title": {
+                                "from": "body",
+                                "path": [
+                                  "title"
+                                ]
+                              }
+                            },
+                            "from": "object"
+                          }
+                        }
+                      ],
+                      "when": [
+                        {
+                          "op": "has_protocol_role",
+                          "role": "EDITOR"
+                        },
+                        {
+                          "capability": "EDIT",
+                          "op": "has_capability"
+                        },
+                        {
+                          "op": "exact_ref",
+                          "ref": {
+                            "from": "ref",
+                            "path": [
+                              "parent_ref"
+                            ],
+                            "scope": "INSTANCE",
+                            "source": "body"
+                          }
+                        }
+                      ]
+                    }
+                  ],
+                  "writes": []
+                },
+                {
+                  "id": "wiki.branch",
+                  "reads": [],
+                  "revisionEffects": {
+                    "contentEntities": [
+                      "document"
+                    ],
+                    "control": true
+                  },
+                  "variants": [
+                    {
+                      "effects": [
+                        {
+                          "entity": {
+                            "mode": "revise",
+                            "parent": {
+                              "from": "ref",
+                              "path": [
+                                "parent_ref"
+                              ],
+                              "scope": "INSTANCE",
+                              "source": "body"
+                            },
+                            "slot": "document"
+                          },
+                          "op": "append",
+                          "recordSlot": "revision",
+                          "relations": [
+                            {
+                              "kind": "parent",
+                              "target": {
+                                "from": "ref",
+                                "path": [
+                                  "parent_ref"
+                                ],
+                                "scope": "INSTANCE",
+                                "source": "body"
+                              }
+                            }
+                          ],
+                          "schema": "wiki.revision",
+                          "selectHead": false,
+                          "value": {
+                            "fields": {
+                              "author": {
+                                "field": "actorId",
+                                "from": "auth"
+                              },
+                              "body": {
+                                "from": "body",
+                                "path": [
+                                  "body"
+                                ]
+                              },
+                              "parent": {
+                                "from": "ref",
+                                "path": [
+                                  "parent_ref"
+                                ],
+                                "scope": "INSTANCE",
+                                "source": "body"
+                              },
+                              "title": {
+                                "from": "body",
+                                "path": [
+                                  "title"
+                                ]
+                              }
+                            },
+                            "from": "object"
+                          }
+                        }
+                      ],
+                      "when": [
+                        {
+                          "op": "has_protocol_role",
+                          "role": "EDITOR"
+                        },
+                        {
+                          "capability": "EDIT",
+                          "op": "has_capability"
+                        },
+                        {
+                          "op": "exact_ref",
+                          "ref": {
+                            "from": "ref",
+                            "path": [
+                              "parent_ref"
+                            ],
+                            "scope": "INSTANCE",
+                            "source": "body"
+                          }
+                        }
+                      ]
+                    }
+                  ],
+                  "writes": []
+                },
+                {
+                  "id": "wiki.select_head",
+                  "reads": [],
+                  "revisionEffects": {
+                    "contentEntities": [],
+                    "control": true
+                  },
+                  "variants": [
+                    {
+                      "effects": [
+                        {
+                          "expected": {
+                            "from": "ref",
+                            "path": [
+                              "expected_head"
+                            ],
+                            "scope": "INSTANCE",
+                            "source": "body"
+                          },
+                          "op": "select_head",
+                          "target": {
+                            "from": "ref",
+                            "path": [
+                              "target"
+                            ],
+                            "scope": "INSTANCE",
+                            "source": "body"
+                          }
+                        }
+                      ],
+                      "when": [
+                        {
+                          "op": "has_protocol_role",
+                          "role": "EDITOR"
+                        },
+                        {
+                          "capability": "EDIT",
+                          "op": "has_capability"
+                        },
+                        {
+                          "op": "exact_ref",
+                          "ref": {
+                            "from": "ref",
+                            "path": [
+                              "expected_head"
+                            ],
+                            "scope": "INSTANCE",
+                            "source": "body"
+                          }
+                        },
+                        {
+                          "op": "exact_ref",
+                          "ref": {
+                            "from": "ref",
+                            "path": [
+                              "target"
+                            ],
+                            "scope": "INSTANCE",
+                            "source": "body"
+                          }
+                        }
+                      ]
+                    }
+                  ],
+                  "writes": []
+                }
+              ],
+              "capabilities": [
+                "EDIT"
+              ],
+              "constraints": {},
+              "dependencies": [],
+              "display_version": "1",
+              "historical_role_conflicts": [],
+              "initial_state": {},
+              "name": "peerwork.wiki.v1",
+              "protocol_roles": [
+                "EDITOR"
+              ],
+              "record_schemas": {
+                "wiki.revision": {
+                  "fields": {
+                    "author": "string",
+                    "body": "string",
+                    "parent": "json",
+                    "title": "string"
+                  },
+                  "max_bytes": 16384,
+                  "required": [
+                    "title",
+                    "body",
+                    "author",
+                    "parent"
+                  ],
+                  "type": "object"
+                }
+              },
+              "role_conflicts": [],
+              "semantics": "peerwork.kernel.v1"
+            },
+            "resolved_manifest": {
+              "actions": [
+                {
+                  "id": "wiki.create",
+                  "reads": [],
+                  "revisionEffects": {
+                    "contentEntities": [
+                      "document",
+                      "second"
+                    ],
+                    "control": true
+                  },
+                  "variants": [
+                    {
+                      "effects": [
+                        {
+                          "entity": {
+                            "mode": "new",
+                            "slot": "document"
+                          },
+                          "op": "append",
+                          "recordSlot": "revision",
+                          "relations": [],
+                          "schema": "wiki.revision",
+                          "selectHead": true,
+                          "value": {
+                            "fields": {
+                              "author": {
+                                "field": "actorId",
+                                "from": "auth"
+                              },
+                              "body": {
+                                "from": "body",
+                                "path": [
+                                  "body"
+                                ]
+                              },
+                              "parent": {
+                                "from": "literal",
+                                "value": null
+                              },
+                              "title": {
+                                "from": "body",
+                                "path": [
+                                  "title"
+                                ]
+                              }
+                            },
+                            "from": "object"
+                          }
+                        },
+                        {
+                          "entity": {
+                            "mode": "new",
+                            "slot": "second"
+                          },
+                          "op": "append",
+                          "recordSlot": "second",
+                          "relations": [],
+                          "schema": "wiki.revision",
+                          "selectHead": true,
+                          "value": {
+                            "fields": {
+                              "author": {
+                                "field": "actorId",
+                                "from": "auth"
+                              },
+                              "body": {
+                                "from": "body",
+                                "path": [
+                                  "body"
+                                ]
+                              },
+                              "parent": {
+                                "from": "literal",
+                                "value": null
+                              },
+                              "title": {
+                                "from": "body",
+                                "path": [
+                                  "title"
+                                ]
+                              }
+                            },
+                            "from": "object"
+                          }
+                        }
+                      ],
+                      "when": [
+                        {
+                          "op": "has_protocol_role",
+                          "role": "EDITOR"
+                        },
+                        {
+                          "capability": "EDIT",
+                          "op": "has_capability"
+                        }
+                      ]
+                    }
+                  ],
+                  "writes": []
+                },
+                {
+                  "id": "wiki.revise",
+                  "reads": [],
+                  "revisionEffects": {
+                    "contentEntities": [
+                      "document"
+                    ],
+                    "control": true
+                  },
+                  "variants": [
+                    {
+                      "effects": [
+                        {
+                          "entity": {
+                            "mode": "revise",
+                            "parent": {
+                              "from": "ref",
+                              "path": [
+                                "parent_ref"
+                              ],
+                              "scope": "INSTANCE",
+                              "source": "body"
+                            },
+                            "slot": "document"
+                          },
+                          "op": "append",
+                          "recordSlot": "revision",
+                          "relations": [
+                            {
+                              "kind": "parent",
+                              "target": {
+                                "from": "ref",
+                                "path": [
+                                  "parent_ref"
+                                ],
+                                "scope": "INSTANCE",
+                                "source": "body"
+                              }
+                            }
+                          ],
+                          "schema": "wiki.revision",
+                          "selectHead": true,
+                          "value": {
+                            "fields": {
+                              "author": {
+                                "field": "actorId",
+                                "from": "auth"
+                              },
+                              "body": {
+                                "from": "body",
+                                "path": [
+                                  "body"
+                                ]
+                              },
+                              "parent": {
+                                "from": "ref",
+                                "path": [
+                                  "parent_ref"
+                                ],
+                                "scope": "INSTANCE",
+                                "source": "body"
+                              },
+                              "title": {
+                                "from": "body",
+                                "path": [
+                                  "title"
+                                ]
+                              }
+                            },
+                            "from": "object"
+                          }
+                        }
+                      ],
+                      "when": [
+                        {
+                          "op": "has_protocol_role",
+                          "role": "EDITOR"
+                        },
+                        {
+                          "capability": "EDIT",
+                          "op": "has_capability"
+                        },
+                        {
+                          "op": "exact_ref",
+                          "ref": {
+                            "from": "ref",
+                            "path": [
+                              "parent_ref"
+                            ],
+                            "scope": "INSTANCE",
+                            "source": "body"
+                          }
+                        }
+                      ]
+                    }
+                  ],
+                  "writes": []
+                },
+                {
+                  "id": "wiki.branch",
+                  "reads": [],
+                  "revisionEffects": {
+                    "contentEntities": [
+                      "document"
+                    ],
+                    "control": true
+                  },
+                  "variants": [
+                    {
+                      "effects": [
+                        {
+                          "entity": {
+                            "mode": "revise",
+                            "parent": {
+                              "from": "ref",
+                              "path": [
+                                "parent_ref"
+                              ],
+                              "scope": "INSTANCE",
+                              "source": "body"
+                            },
+                            "slot": "document"
+                          },
+                          "op": "append",
+                          "recordSlot": "revision",
+                          "relations": [
+                            {
+                              "kind": "parent",
+                              "target": {
+                                "from": "ref",
+                                "path": [
+                                  "parent_ref"
+                                ],
+                                "scope": "INSTANCE",
+                                "source": "body"
+                              }
+                            }
+                          ],
+                          "schema": "wiki.revision",
+                          "selectHead": false,
+                          "value": {
+                            "fields": {
+                              "author": {
+                                "field": "actorId",
+                                "from": "auth"
+                              },
+                              "body": {
+                                "from": "body",
+                                "path": [
+                                  "body"
+                                ]
+                              },
+                              "parent": {
+                                "from": "ref",
+                                "path": [
+                                  "parent_ref"
+                                ],
+                                "scope": "INSTANCE",
+                                "source": "body"
+                              },
+                              "title": {
+                                "from": "body",
+                                "path": [
+                                  "title"
+                                ]
+                              }
+                            },
+                            "from": "object"
+                          }
+                        }
+                      ],
+                      "when": [
+                        {
+                          "op": "has_protocol_role",
+                          "role": "EDITOR"
+                        },
+                        {
+                          "capability": "EDIT",
+                          "op": "has_capability"
+                        },
+                        {
+                          "op": "exact_ref",
+                          "ref": {
+                            "from": "ref",
+                            "path": [
+                              "parent_ref"
+                            ],
+                            "scope": "INSTANCE",
+                            "source": "body"
+                          }
+                        }
+                      ]
+                    }
+                  ],
+                  "writes": []
+                },
+                {
+                  "id": "wiki.select_head",
+                  "reads": [],
+                  "revisionEffects": {
+                    "contentEntities": [],
+                    "control": true
+                  },
+                  "variants": [
+                    {
+                      "effects": [
+                        {
+                          "expected": {
+                            "from": "ref",
+                            "path": [
+                              "expected_head"
+                            ],
+                            "scope": "INSTANCE",
+                            "source": "body"
+                          },
+                          "op": "select_head",
+                          "target": {
+                            "from": "ref",
+                            "path": [
+                              "target"
+                            ],
+                            "scope": "INSTANCE",
+                            "source": "body"
+                          }
+                        }
+                      ],
+                      "when": [
+                        {
+                          "op": "has_protocol_role",
+                          "role": "EDITOR"
+                        },
+                        {
+                          "capability": "EDIT",
+                          "op": "has_capability"
+                        },
+                        {
+                          "op": "exact_ref",
+                          "ref": {
+                            "from": "ref",
+                            "path": [
+                              "expected_head"
+                            ],
+                            "scope": "INSTANCE",
+                            "source": "body"
+                          }
+                        },
+                        {
+                          "op": "exact_ref",
+                          "ref": {
+                            "from": "ref",
+                            "path": [
+                              "target"
+                            ],
+                            "scope": "INSTANCE",
+                            "source": "body"
+                          }
+                        }
+                      ]
+                    }
+                  ],
+                  "writes": []
+                }
+              ],
+              "capabilities": [
+                "EDIT"
+              ],
+              "constraints": {},
+              "dependencies": [],
+              "display_version": "1",
+              "historical_role_conflicts": [],
+              "initial_state": {},
+              "name": "peerwork.wiki.v1",
+              "protocol_roles": [
+                "EDITOR"
+              ],
+              "record_schemas": {
+                "wiki.revision": {
+                  "fields": {
+                    "author": "string",
+                    "body": "string",
+                    "parent": "json",
+                    "title": "string"
+                  },
+                  "max_bytes": 16384,
+                  "required": [
+                    "title",
+                    "body",
+                    "author",
+                    "parent"
+                  ],
+                  "type": "object"
+                }
+              },
+              "role_conflicts": [],
+              "semantics": "peerwork.kernel.v1"
+            },
+            "workspace_id": "mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm"
+          }
+        },
+        {
+          "id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+          "kind": "instances",
+          "provenance": "AUTHOR_SIGNED",
+          "revision": 1,
+          "value": {
+            "created": 3,
+            "event_revision": 0,
+            "id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+            "origin_entrypoint": "wiki",
+            "protocol_digest": "dc3fc8957be612488242c5de89b3bc502f5d4dad2fde8b3c7dcae92430a9dda0",
+            "revision": 0,
+            "semantics": "peerwork.kernel.v1",
+            "state": {},
+            "workspace_id": "mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm"
+          }
+        }
+      ],
+      "v": 1
+    },
+    {
+      "input": {
+        "action_id": "wiki.create",
+        "allocations": [
+          {
+            "entity_id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "record_id": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr"
+          },
+          {
+            "entity_id": "fffffffffffffffffffffffffffffffffffffffffff",
+            "record_id": "sssssssssssssssssssssssssssssssssssssssssss"
+          }
+        ],
+        "body": {
+          "body": "Writer-generated multi effect",
+          "title": "Two"
+        },
+        "exact_input_refs": [],
+        "expected_instance_revision": 0,
+        "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii"
+      },
+      "kind": "ACTION",
+      "objects": [
+        {
+          "id": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
+          "kind": "records",
+          "provenance": "AUTHOR_SIGNED",
+          "revision": 1,
+          "value": {
+            "actor_id": "OnDJKGhj931gFmPPTA7n24O34hyuSp1epwxeANaFfPI",
+            "created": 4,
+            "entity_id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "id": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
+            "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+            "payload": {
+              "author": "OnDJKGhj931gFmPPTA7n24O34hyuSp1epwxeANaFfPI",
+              "body": "Writer-generated multi effect",
+              "parent": null,
+              "title": "Two"
+            },
+            "protocol_digest": "dc3fc8957be612488242c5de89b3bc502f5d4dad2fde8b3c7dcae92430a9dda0",
+            "revision": 1,
+            "schema_ref": "wiki.revision",
+            "workspace_id": "mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm"
+          }
+        },
+        {
+          "id": "sssssssssssssssssssssssssssssssssssssssssss",
+          "kind": "records",
+          "provenance": "AUTHOR_SIGNED",
+          "revision": 1,
+          "value": {
+            "actor_id": "OnDJKGhj931gFmPPTA7n24O34hyuSp1epwxeANaFfPI",
+            "created": 4,
+            "entity_id": "fffffffffffffffffffffffffffffffffffffffffff",
+            "id": "sssssssssssssssssssssssssssssssssssssssssss",
+            "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+            "payload": {
+              "author": "OnDJKGhj931gFmPPTA7n24O34hyuSp1epwxeANaFfPI",
+              "body": "Writer-generated multi effect",
+              "parent": null,
+              "title": "Two"
+            },
+            "protocol_digest": "dc3fc8957be612488242c5de89b3bc502f5d4dad2fde8b3c7dcae92430a9dda0",
+            "revision": 1,
+            "schema_ref": "wiki.revision",
+            "workspace_id": "mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm"
+          }
+        },
+        {
+          "id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "kind": "entity_heads",
+          "provenance": "AUTHOR_SIGNED",
+          "revision": 1,
+          "value": {
+            "entity_id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+            "record_id": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
+            "revision": 1,
+            "updated": 4,
+            "workspace_id": "mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm"
+          }
+        },
+        {
+          "id": "fffffffffffffffffffffffffffffffffffffffffff",
+          "kind": "entity_heads",
+          "provenance": "AUTHOR_SIGNED",
+          "revision": 1,
+          "value": {
+            "entity_id": "fffffffffffffffffffffffffffffffffffffffffff",
+            "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+            "record_id": "sssssssssssssssssssssssssssssssssssssssssss",
+            "revision": 1,
+            "updated": 4,
+            "workspace_id": "mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm"
+          }
+        },
+        {
+          "id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+          "kind": "instances",
+          "provenance": "AUTHOR_SIGNED",
+          "revision": 2,
+          "value": {
+            "created": 3,
+            "event_revision": 1,
+            "id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+            "origin_entrypoint": "wiki",
+            "protocol_digest": "dc3fc8957be612488242c5de89b3bc502f5d4dad2fde8b3c7dcae92430a9dda0",
+            "revision": 1,
+            "semantics": "peerwork.kernel.v1",
+            "state": {},
+            "workspace_id": "mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm"
+          }
+        }
+      ],
+      "v": 1
+    }
+  ],
+  "receipt": {
+    "command_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "commit_hash": "602adf32ea921e0607c48a12a31cf848628f9cf1acc16ad7603da61a78de570b",
+    "sequence": 2,
+    "actor_id": "OnDJKGhj931gFmPPTA7n24O34hyuSp1epwxeANaFfPI",
+    "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+    "action_id": "wiki.create",
+    "effects": [
+      {
+        "record_id": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
+        "revision": 1,
+        "schema_ref": "wiki.revision",
+        "entity_id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+      },
+      {
+        "record_id": "sssssssssssssssssssssssssssssssssssssssssss",
+        "revision": 1,
+        "schema_ref": "wiki.revision",
+        "entity_id": "fffffffffffffffffffffffffffffffffffffffffff"
+      }
+    ]
+  },
+  "wrong_head": {
+    "commits": [
+      {
+        "payload": {
+          "v": 1,
+          "workspace_id": "mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm",
+          "sequence": 1,
+          "previous": null,
+          "policy_hash": "b77e2a0c776c05353fabaff3222edcdff341c52e95e7b8712231a5cfd3af9520",
+          "epoch": 1,
+          "actor_id": "OnDJKGhj931gFmPPTA7n24O34hyuSp1epwxeANaFfPI",
+          "signing_key": "lNMgBRLRQk3DlS4zCwRmTpwoLGZh9Qg8hEdti2yc40I",
+          "command_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "action_id": "secure.bootstrap",
+          "instance_id": null,
+          "issued_at": 3,
+          "delegation": null,
+          "mode": "PRIVATE",
+          "body": {
+            "v": 1,
+            "alg": "A256GCM",
+            "nonce": "PsfrsUr9TpBmGl08",
+            "chunks": [
+              "Vt90QgU-fmEhMZvZav4QHmGkquQqe-5xaOn3DILXsYoJxp4BFS4tmnY69YV8Ro1XRP3O1AW5rSwvPm5iXu37qLjdkVnPOPHmwQ6Q13jkIo-bXMWF8C36i13tIOqV0Atys77KOaacUx44VEbZFFXJfBl0p2vf4FkSj4nBnakY90Oz01s7fG1GytbrPm_e_35yLpSAnLuLW2xXOje1YmUBVFE4HyROYuqVdxREees_GgyuFExIzejm_NLXAxzD1wAFOdoIfXQfCnPf7bOwJSs_NH387-O5uXkjhLk23yOKFx661r9C18C65LeofGYEnJNJU0Npnab15waVQpUUpRgQQopUemB6qk8NgsJUdbn4FT2n7p0B2SwJX63SwSeZ6KDWKmQmwtqEzJPy6qYnUpxYKjGT3rwijbrW6t2O9LeP0DwShkKDyjNNMpI60frmtYDWz3LWdKYT62pbNYb90mCrKh77PnEI1bw2-yPXWjNC57LTCMroO9OIstOxqu4Elj7zUHfGLVjGiik1ZPmP5txCxP2WR-BPmiTEp9vohUB4YPPwJIlZAxS7OaOl1Hwx_5rgx99vUwmFfEAeGmSkg6oy9LgUdEf_wzOLlEX6Welkn7IWaD9atRQdisZF6UE9Xwc7v0ytsU_ouiapWL9yFGwYK1MGqekDUFHMfYb3yywv8s0VPXSREjCsv37gt2YvP4QA4IYqdl1yaCdP7jaXj8XB6i2sI9D2CrMY8yVlOOnHE_U6zgupmAV17SCQ3naxSIYO7qvZglhUpJVFg7YMJVVb8VQ3-YNcJbGYcpo1uGvLEWZ0XhWdQldpC4ihJzc-HtTKfRkY3FqDu3IsrzVDY1CVdw84XTaK1K9f117ZxwcO6Q5tB9eaDivp864syP34PaQkRwVqeNnrbXSQsuZcD4MASUKLmExOITRroqJqZvSz_nhwdlrvq9--7guwyP1MO9UIOgLtQuHBKhoM-hV7cZvDOnpsuq6WOXS06fFbE7oxvNVwbFdxl_zDQ0BVzoQBTVQ4IR7oMennt-7400TlslaCupKL5lLZDf4A5nKD0XvLA1epYy9pDYd1P3IJApbzhX9hTjhBNKssnke-UkrEcNJYFUriEChJhQYNELh_CHK8owAUuOVCUJQanMa_pR2ySFIdt_mFLy_jOebIlbXtjp4o-0LF__7xo2eCL8_i14kzNhmunOT-o1Iucy_50Jj5eO01TKfTVnIgwda0CWPMcUW-HjAy9tyNuh8ffxG-XQmzM5KpRq-dGlaKA8fznZFoDidxMb3sz8Ey_X1lHWALgck1Ky4zdAxNUb9oPJPskH5KBkErr1U96Yq8QNL25XdoZrGn3Sba16DUWDtkAnUhdi7V1_txt-l1s8jNsMI1mmIPxJCJdK-c72HFyUQ_ScyriHXUTtalkOYWC56r_sNPQo-D4XT9823uqwHc07l3AlkPf9R_qrOxp28vBMt7QSnUkavAiNkOhAluEUVObie2i2NF7wpnHMVcVY7Mh-PFdCpZicIQPrpkyyxPhu8iQH46eKZh2o2FyNtETxMs5M7dhfGHN8VRpIFbdw_ZWnYcqEl1grS78BKm0gEmxDofLTrf5vB2RCKecuFv0ZC9E7XH9w7ccQQaGoNF5DMc9PzSpbH1rfajndx9ncGYUZRm7CEYVlPpzTPyDQJNk7n0Gbf_y-dxuzOnsN-2i4nV_9q3IAoAZ3Nn09LsK-mGZH8vgSxN7OKAeOf6LiArhHJ2z37nnD3FfytAHkfU--9aCWwmOcFdxFwT110wNOHfAA_o38t3jZKUYD9HeCUQMEiTtfLcaDv7ZushH3Sy3ywRmIGqoroU97IlxaVZkKXWmfLGkE2sr8oIIjzp6CIfai8VJE6tYHm2cbJGIv9b4dD-yb_qvCr5VRHcyrYKPKaaeJ0OADc88olmIPQ0SyfQX9-bpSZmr29VDKadkttzmjOoHEE30fik-pfPBuP1Bn66GFibM_T7eMr8bmEWrPLL3EP_q5m_Ft_70xUzyvDAQZXjSxeggTfr5cnLrgirjAw08wC1ujT8dkIdrtl86CkdY2Woe8Ys_wx7skP4ZQoVYGCxJCxbxHrJlbA_5OlSPuAIwcnS4by34U2wup7hq9-H2W2ODpqKlNoEB7TgxTycekr0-ASJkOFMZo8DdVfmlQGR8cARCxNTYG3X5RiEBAH80yibMzwKKIzxuILGfwCAgHG8hywFXMkD7RWa5WZEYBZsHRZ1zskf2cuSu0PONXAgasMogtijk3X3rBFap7M0Z67uQfihWa_2zNgjWYqsccULmLc3VX70vOJ7boi85vx6XUOM3oFolYtdlOI39Me9Mi0g3S6IyygbJ1ODZ7taMvTOjnt8N-IS8aYYkCENEauyRC21-yzpd7y3eQ_0PwFznfs_3z6TK0mq-5XJgQjO83zaEOgYJqcdhWwSRlux7z1OlHuxeScQ3v28GkgEs8BYOUdjTDHdPvzvQfgrL0tTUXwJ2pjIeMG0J9kpZMrjFrcDwr8eA3oVq0wbGbYqWTZ2sSxm4Yi4BbENLjKzA9yJUfe1-_DaxhpZr-Aa-lewsykTGpM9ypb6gzYX6FdXvC1h-GK07K9OVnMzPiTWI45CUjzOKghX-vrnmq1HdJ5ALN4Ne_odK4bO-5gkHTxiEHtVWOtbEe2PMMVQbM70jlVuAbLz79p9Q1b0vDY-qxWhY9FYw-05FuzA5D3R9n3N16e1RiYadkSLNXXijenOhMPeM7lvpio1A4uNXiKjtqOkJak9MGOcxI7NXtdGZCGsTF099PIXV9RS3Tz1mgPr2zk3w3Sm3DPNU7Q_e7WJNDc6XZtt_kf1kaQ0k46ZnIlYZnxpcGwgcUFwTwfoG6Cr8SZeZDYh1q4wQMsqMeHoYdAhsUs20r5eI8a3PczKb8AciYvUjc90fEcHen2wdIjwiy3Oekdrgh1Lh-FfPsEaNMBNM97FnQtom1HaVedJSfoYdZiBTymxm95EYmG4jrV43Ch_O-7NAQFy5QqXq8QHSXuVDzTGxdkMdeSVChOa-QimPb2XCLbJPPDLf4CMDYjUX1g_z15Yzqfzlctbnxj00ZGLokNpcB9t-mpBob-iVjRiUBWQhxR2o358JfofS4YwhzyExEMYBK3mtIrq2U4cu4oM43ORNaOHJyVHkb3Mn5XBCghGi0vYRpzr0QJbOQxbE1fclW9KMT-JFStx9NKeoNWW9dVwU1ICVNSdPR_AeeP4ywckXrqeSyyIWiVugpfoGC8qpP1hWAm3WmwpHjOcpasEHqh72k6JVBUUxRuqnNxE64etp9kFgrBq2vudLz6qln1462ZAEl-CJOrW6-sVLIlrs7ngqSvSVtrlrkzHS9LKtyEzZvtjVHdtW4CLKj7-IdIi_ouSGiPldli1fDUB7PmdnAXHxJbRO5OP9GWtkWM7-Y7OQmUMGWVir6kdChQar8b1c9jQXJ8LT2uEEMwhhES9Im-9M7rCRGjhiBTbVpzvZyzGjtWlAbl-Zx9eXukTbFowckMx05Qk-sV11IrTPoh8iRWnDp_KZROBScn9s9L-I4lD3bnMuNFQoYGq25mGsRzWxoDkHmmLEzsU5pwc2AU1umbgToF3m-aqKCshCiCnyZYax7shK3RKVodIX1c6p_tkuIt8YIRUjF_Ih95Dw6Jvn6bG_ZxlNBycUvNnAAymlYq65AhZWgc5PdOIApW7uv1NMw5aOv3peI9te4y279dSMjNse4B8MhPNCWhcaXwQunNWh3RetI31-3APtrLKTZkwJ2OOm5euGKPkt8zZE1Uhuoot2RHaj6sxbrJlJi6Q1Krmvm96iKva7WXy7N0rrwroZKkBOFVsZ6PNGgi5PFxgkftD4k5l9KkieHlu7a4bQSL-xiJ4Xs-O7SSzw7QkVEhnK7t3N7PpmGmSA5n-ZJd1QoSBxI3GAYHvWQ3wdcoICKKsmX4eUw175-grIpFZgvyB4iKLtNiP9l-RCvWNtAnl6xjaJSY-g4kC4Jf6StShzd3U5liPN0vRIBbqVX8kicUvf5US91GjNzM6NY5I7Fl6spBg7TkS0lDSszmgsJ3VXAkIUGCLRkJ6Ss3cx_sNp5RyZET6PqhahuZk7DaWnsTGuT2f8REQs49LZmj1OC7LgTs9eExES1siYwhyTHFCXOe7jy4EWF5VjBMxWxVMqi-4EH9pyNXoqW05TwKb1MufJbFWrekxWNsIEbxXiq571arto2Kk6pdLnTpbE2EOy32vVV34lN7FGfUZ_YmGFDVHz2TVLpy_40g_jRh7cJNOBmfHs_BOgjue0yeJtJkbqEUot8uREqYt8ZZD2UHspzfwolyhTH0_15OJgdytqz8gWz0rmQJRlacl6ye6Isdyyti8xlaknJAtAHNAnugwAe3bjdRv-tjgsEq0YenNIHSwvJKPsGskMgqO6AiLIysR7g4JB2QSdhRQypQl4FFD47QBSj2tJt0ApZjMim70cBMxuCumb8eMwKX1vWF8xW3MdKMhrporUWkXHkjDFuzcxGvcuI45HQZog-qI1J2YGakD_KTVLY8kIqBTS9vP3cZfaBHWMtZLg5Xj5fWCWniD56mlwUnWhYPcm6RRfhlPgLbgdx_rc33Q-LErJlJmqDZWZBZb1-8KUYkHpPjG8AdQFa4Jc_KNevta2hpuVdeOSkDlX0ZipfWcCQyr2EB8r9VKUtIYJMOCEzah0KTkzxI6jqaonwEi24vx3mB-_r21UiovDAUAo0cgsUAkhwRDGxyVNuX67OfRervWYU3TXKVdGpWgwldZzYXvBO6MqxtVDu2JNWo4nnrV6pFJLXtfBnkKPf61Kl2Hw9uK2xTn7TIMuqv9rIIR50Om-11Ca6kKtYTkn95d157nZu9V_XeMAz6q6bDVwfhLwmOJgWT9YNBsI8gLeqv3yHjOYVvw1dVPWAlLImPHbqWnDiU6M5-kQWIL_ziMji8G23XinaO9VTalWvkJeX9DWfW60-CH7sEQhefCKIa-rtAHZUsWpaKjubaQqzFcsJsd2AFxAK3SsmmmJmFpCGymWokgZMM7NmuTFnW-RboKTc5qETD7lGkeFUQFxXrvEepAzq-Sddd_m0XW9VkECveuRsTvxqTYHe2e_4XKrXeBHpdSaVLIpQt9SQ8sokBFWLiDQV5S_fWy1XfiIht2wmrG8x-r_LzNjva-l69qyFHoxpmB35LFCsycWn1rJUCb_k4QdzfETcI2hAb6LTSoCTxJ4OFqnp1nahdYwmDcoN9lJN4irplQYMkXRQUQG-5QFzz-_yhc2uayEKbMqf6uklT3U_hfBzF2TFEL-wXgKbqjlOu-bogbqN_d-DrsCX3bntNjgtVL931Ykr3xBMvfnCn_zYZ79fRjwgJgL2baIowXNfYT_0A06f_zdARNnduA4XndVa6BqVe5MEydFHFbgkqWyTtaV6lit5-bX3CXfzYCxk1AbIEbrQW_7-BDqvD07uAzowkCDrzMyKHJ0K7-pJN2HkCj2-SV0cbPutlZ5MTs0CeHXkLU8ochp3J-6wD3MG6tY6NnnnntPw_JHrgi3c7dnQ64voSj7bUAkRyFHG8xcR8FkNYhgmxrAXBC9xkG7JiUDd3AnQ_OP0b5BWOH7wj6rP9S4jFvsNhfYFYw2zBrtCIHGQDuh4P3DmWJvwuj1Pw3FxtUgXJIGJ7sDukUjtfj2l_XmhKM1AlrnZddPJQtmVs4f1UnTrEcTtKW4Do9knzLr_FSsFSEVs0t1_4oUoHsjhN82Y8u0jdVq_MghT1MCVe6mjSX2k-r6KvxktHJ6Y6HI_JplG7rwrP-s2QTdgoJef1cIjT779cZeL60N3fhKjOdph77tlExXqL7t8LOgAmADpAbDYyQcchZ3ndR2fXqvIxo6x6Fe6JQPJZrEzCzHTGIb1dBYRhJVmFd-QeQBxw1Nd6Cg_HUhAMK5OGVXJOomYminsod3Ah4rzlgBsNCbC58E7MvRkVtSpymkLv3_JNJJhNkxiSpB4dCJfTXAOFNY4qB5z0iaW1oBA3wEYNn01QWtkrcPt-CLaYZ8bPfE3T5e4dj1Il_Z2gM1WG9bmsbTXjYgM5IALNBZuhIGMi4D8oSWsc1UUJSjChgnIJ2oS3kx5_JfoTdapOiD20X49IiSYoASXrv4yp4StY41TWSJqxmfdmhmSfEJP2Vtjt6LBnOMmjlReupeOAjXWYVuPX8bGgmvjtq3NbZkkdceS5hpLPiEFRZafodJP8NYIITlIz90951YmyTFd5UC866j9UF-T3mFw6jlw9NrsEFaIJGxNRl7v58xRRyWDj7ww-vb0IMvFfiC1Ffcw-Hhkq-DlDjNrhhOeK9Nurl006uiiZGZGE09jLPQi5nKqnln-j8KfTUwd2Uqza0glPI6-ZQuFoTsjKyx8zxLXd0I1Wz08B8g-UPYBRsR5BVuWjQXAV7C_D3e2HISxiJAUudeqOZin5lxLuLvpbq5ZvkSWE0N6uflv8y9Ib7-z4v_dy01AfDpFl34fsc29mNuZSPO7Wr93Tf5EZ2U_IxAlitlFC0V76fHmaD1RthrBN-qoLmbsfmZ3xFW_XHiyOQloc-qHCdieb7tP_xF2fI-Y9ocVLFnNY2Hkex6ndnFdZfKXUYLcvbo3Q7Igm39pxM2rFHNhiSx6csVbGRw0L1H9XUoKdPHYX83-PxQDBklkavIqyqsKMiMnxfmuJJrixcKrA4LWUsbyYb9w5F9VYcsTLHFciTZTWN_nkc5yD9l6E14rtGhPq9cL_ObSESlNzFz8tzrwnjTDTVennGnsnZk9dtUjNT0toUg2yjUQyG1yBumez22qRxsLuz4GwpGuQeDBNwRLeSwKNjpMeJtD9XCQAIjVxFa5UFFFpm8VCv1r3le_7Vo9a69ufTqjayy8Rwpmi4QOOcI-ag4LduiBhGn75UYz7fn1NWDvFZPxiKlmBpSFWOFIQhmn-r0xXUw5JZ4g2VKY8LPmBitTDqy7oAF847iOBHAkUU3oQEr5hi-PWg1naaxuggSsXDlYkdz0G9qfuOxyREOWAuns4ZsJcUv6IF-64yTVg4DOboQ2hyowuZdsdx0BvXEIu2lHy--Lis8H3Rpan_VtbLTMDzoBX5V11cpyzy1DzXmfuNLKtHASHdsVWAdTrcXzvddIwQvHbuldKsguL9bYZWg1TxNVbY144iwU0k2wX5TeOo6Sa-AEYLn9A1qWvUCd1gx_vxYcy0TABvEvv__GEOaDhgYBjTU7jqzu1ga40y63wFOuhGPZfsAaFM9iIB1Ov7tD-meNP1y9GUOq7k1ANkaYNFpQMKxxAV901e7q_2ouFo47eBLGYaEh0HFzk5OSsmcRLs7xGwecyRKRGiYXfX7J5G4Yo13MwQHF7dVfm8NuN6VahRHdH9y670jFDtMovHKgHstHhoy7rblOKYHO0rvFBn3gN2G8WoeL_HWH64zkbsL2Fm0f9F6RqAs6bhvZyYsK6-5OFkyiteSooEPC03dRKmutGvkO6FqTu3I6D408NQaoKy2qjj52z9YRFCB2Lzw8E2_nLCcuYu9Nc3rUg1cU1hpDzm0gwlL5tQ-sxXFqxZ8UUxwfr-S6ymCXR94onU-0pxibxyMOSKhCdSZomCClfCU1Yrw2cB6vXO-kok6C3NsS__7pZCebgb1tK67eLXHFyMV9ufaiQIDnUoFWGRRw-5mDfpAHAa2_tRRZR46zy9e2YahTCtiQsZ42EWVTURd22RnTvgWnJryv3wcpUaJaXswz2cCgzKcSNbq-O3WQlVmq5_c4vi3QGIrMbzrjQ8rRq5b3zKyYFemZCZVtj7xRNadXdwt2AZs3rmOdZnWvs9MNhprdT8h3AnVaau6byZyJyQBQiDR5hgxJXDvHUKLe_CC01tADtkECHuJr-n7dJfSVND1MDVPaQSqCm-WeSpHC8T5tyPF7It_I4VgK1oJ4PimcMhOi3Q3ElUCMlkRt98B43jsIfHK0i7gLeqkfo5GkvIkHMfeXK7bIgD58SJYem1isCwTFhTEI0gbyksvn1gduhZ6idIOy4wEYbMYELL_EPXZNRXEPjYlaI9VMACg4odIq4cU7DjCRERHYWlm1Htxx7Uis8s9UORypKsoTp-hr_ao-ZCOgmmCc0hetZb9-jaI76nROAa1lFNDWtilNRwpXUnJOOHw45tchfrgViKVNCl0gg4fZtxIrK9zGh9vTRPpa7pkqleQwYCUmctaLdCeOnWaceS-RNn",
+              "cncx6lfFq_vWsQU7_sgiYsFfSpLF-0hMIpiWa3P9-P03gAm5kB_BKJfVA5Pwl7HEfQHkS2sMM1EuS0kgwzGPtz7mvf_gh6C4bb7sRm-tUk6Udym_JAukNqTRD0OB2RoO78V9PuYjyEujIaayqUOqSMFHygwRLd9fpP2QLXl080x8WiibmtCc7tgB1vvJCShIfYgAfUL3fFPyhZvRwk5EK7US0go0EV2utgqRShzOgFvF_cRdCxsCNS7NQ1LwdmFyuxnYu6sG8WRHYhv_fddBLWIZwoNUG7owJ-ciBG1NgPipb6GYfzVMvM1Zn_xjPnho83WaGcVdPJfmg-YLdKqGhCNZYassMOzQoKTcXjqZjPng8L8S_9EtvZRHNBh2pg9AXJSqBVeFxmyAQx8Og23U7NLJhvlZt4ltGy5qNeegrjx1Id4IplPtGPoquMgHaw-43vRNGt9rVUFUWTIsR4NmPdvIXQZTv06V-_b2T-M3ef6Od8l9-TL8aLkNTCIe-HTaaYLTVsEsjBCAZ4I_QSPUyC3B1N6_8qhlD_tPLog8Zs5Is4rU3Z3Mrot4d4Wy7iJdjuNlsi5WbV7PnGJ8umnlMQZfQlJgzjXememZWSjtbl3hV7tA9FIQ-sDJMlw6t5IRH_ulnF92BsfqwAfpVxQitQwm-DRpS7l11YhUPE6HQn9PWUEfVeQNALN4BE8ieCinXv7R9ck83hUZ6DNvl_3UZfFaZ5UI0Z4dILXc-DtWraGP5Xp27Ok5wRRpgpuCTWqUAQqVvThEH-B3bPOfhILS7F5kpamJNO0uOcPgASJGMLc-30TV9K9sYLDVQx9-xRnc-xvioanAej2UnerNuVWeO8VSg97NvM7P85saLRtNGlqSWS-4mZTWltL8NBNUGsB06SBtA7D7IEeUPK06dXPZKjU4Y3idOdZ5TzJpl-iIxplA1aeZYA8dyeItg9atwxZScOmz5VrhML9p5nMQkf8shJfynpLNc3Z23OVMZeSn5HoTueJYxtvLKveJRGCG2y5JRZ6pGQMhqzWeAOe8uZF9DJT6V05d2uBy0yggt21JRN1vPDC8dTJKC0ABgktl4NmwztikC1QA8AR0kAwoGEKb8tMe1B-twHJiefqL12R0fb-oEPL1H7DNi9vwK0MYSk-T9j4IFcFzqBeRP41ckDFnFMMyQucxcawbqx7rETDGHIEm-ndPfZrKV2eECA0n_GCvVSN49to98NdmqDYdgkn78x4W9fsa3dInlyQGlXh48gjAxxOU0Z0_AZa0YJPN_nXHTc824-SrpsfgxmsLpjTfK2BZYbJLqr8lhrOvFMFNDFMvE-3tTQsZ4Aulsngm0eUa31YW8o8bI72WBB6hk5GGA6k9p5DN6f3sijtKj-xklfugWFZLP7IQ-TfEwymZa0L4_hpDQpjbEZzwzvse8OZ0Mx5Bc52kWsWtQikXwOdEOiIzAbowmKHRlzX_MtVe7MyzLVbldxg-XXN6zxtLvjCIslRF8JoS9X9tCDpJgPvdSjPT_AAv-jiQEMRYElH0kwxk665uTbvpM1JOlSFMTlx--AQsnxIaToID0cNV8IHIdbUG3O6rI9A8UrQbPTAMzNxMaPikVM3HR_wSlur4bfT4ip_-A41t31l7abJRW6EzomO_8TxapoYjdb2j8qCCtP_JiSkVagD1B9tltDWRZANBQyHoS0MzJl2w5jt3dfF5WnBDcclJogOHiWvbBYjkFjcjCYEcrgWnVTzD_424-NU0QbiDOr1tIDm5tfd8KLz2_UCQ-nNfIY_aH77-MK1o09U53vODmpIfXqU1jv4maUnBQ6m6akBFRjgnk2dQYAOiD78YHxfiZ0qGWWH_c-WbS-AzFiQj1blW9LbIgQAqvutdIoxAtODqaQZPydIyRx0Zdk5XL2EcBgOVQI-ClChFeTpXL_ZMI_vZbARR72CCtzYK5xf1IDD761Wxh5fxxkpxozF9MYd-jA_JMKfAnFfGY-24a619bqRxNhuJrzlEv7jumZw4_47klOQ6MZ7s8Ca17lsH20njd57JQXJi5jmS2Gg8GgzzMOdxINIcx52xvkl4L_dZO1I-u8P7JlcIikdFfYAzRBn1dPmLh5aZzT9iGOg9DNnkvxkLKUGjG3TwhotjnjfiYSCwCUdtNz8Lbcd1EE3KvQhnNeryK8ISgmUaU83W44F-ki8t1UmiShNjc1MveGxeif-LytG7JqurPDpYwVWqHX-mktCNMcxVUmsPq00AC4iR1KZ11Ud_P6v8dkE0WmXRQowCOyJv89qZFZA8Nveh97CqvRcZ3nMJq57LR80VktQnEQDDPEBDro_MJr1yN-kYevodk-dSLoPb0veYQJ-swHHH1BKhXu1SZ5fLHumnhrgu3T4PuIg8b2L5vbaLbKOXjxhB9lr0Y0SxRImXlLb5OLoeLN2VzpiPGd75o8U7Q7e65ShvfbZern8Ctr5cgS-oEfwW9fMucBA_-Y4xvX_R7xlycwIRRDcDgy09dlXsnMOT6CRCnKwOf-vSVUu1ha-hmeIsyEh2ti3b1mbrFW1zgzvnSK1j_bn-8io_iPPGE2PWB21JZguhE-aQFWiI8urJ7T5B4C3B4v9uMNBWmZBUACObMohxhffyEeoVLymjt9XdbtR_ks-C3tuxru0cylmsuKA11IRn0a-UYXHtRW0KvZRBf3-nIm8OB-2AdJwfJbmkYR9jlm-ETqXIcP65sTSCKH_YXLyqLJxglv_-OTeg9kuVXxTxH1AKzQ1dOS2wAnKZ0qIQKnTfBMHqOgLzYlopmZRiROzqNS48s2xkrQVjFwRX1Mbk0r0B8nn39iOf-Wl0vkKDtAVCtlTfDSyoJj1G6pDyTZVHpShWN6N6j9kVVIof5cc6-WHi7BfT-SBKoXyg_uDynGGQq5UnEpO0AD9CFFD9Q29sMreSW0uLWmWbT2swIdjdMAY-SBW3POStv7sjFIBL4NxlxfpJ4vOXq0knL6V_JcZ7LuKPkAymLofjszjCy03siV-EjGfm_l3cEW5NdaP5Ra-jb-jpVGn-u9JTBfNRFF2ufS4B71koUQ5IUWFNo0av-LF233yU7nSXoz90bic9qs5YhUU7y0M6AzcUKY8isgjSHSNuwGKfcMmhgHw-i79TzOPCvRhSVYz2UrJYVrjVvenb1DqHpkuyo2Fqw3KK9A4kYm1OoUTpmiLIZ2C4twqrpZQKAW1qaEr07C0KIMSRa_bp_-wrPlGJ5fxIqfztXX_i7xBdTsHvL6-IRQXrRmf3RTEL9SjMUYU4YX9VVUA3pD64dTeSWUxcSkmUZu4_XFTeksnXH8lDsB-p9g"
+            ]
+          }
+        },
+        "signature": "ENx_QmqBknS4REIHZPyN81_tDa4lAbMeJixRy_hA-3i9Q1oAA5NTSzPtnah6kkfGNq9PoPqtQ89H_Cd5pn_-DQ"
+      },
+      {
+        "payload": {
+          "v": 1,
+          "workspace_id": "mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm",
+          "sequence": 2,
+          "previous": "4c784b94fc85c5bc0fa5520e5e2bb8d70214124fe9dbe25e514f8550d41313e5",
+          "policy_hash": "b77e2a0c776c05353fabaff3222edcdff341c52e95e7b8712231a5cfd3af9520",
+          "epoch": 1,
+          "actor_id": "OnDJKGhj931gFmPPTA7n24O34hyuSp1epwxeANaFfPI",
+          "signing_key": "lNMgBRLRQk3DlS4zCwRmTpwoLGZh9Qg8hEdti2yc40I",
+          "command_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "action_id": "wiki.create",
+          "instance_id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+          "issued_at": 4,
+          "delegation": null,
+          "mode": "PRIVATE",
+          "body": {
+            "v": 1,
+            "alg": "A256GCM",
+            "nonce": "OVHFJjq3EghfH7qT",
+            "chunks": [
+              "OdIB_m_51b-XMysXwo4QNOdQ2ZFpzpLeD_VG69pdHXqcFhgH0z8LzRZrrTpgoQH-bZc3hnXqTadtyYlu3hXwo1E75F7fr9eE2qy5aR6LU24sGbtY1uckXz3N3LlcSPZHts4OIylQkXHgySSIqoao36ql_8E0RvFVEuLX3XnBI8NKnTUrZZE6PutTy_YJUm3h7vmDmewMD5wVjRHENdDgR1JdxGiOkMR1iiVkqZ710xH55M7CP7infOjq1rTqroMHdJEqi8abWOmMH7QP5LRYE49wpkTcAwFsvkzc4XTJFji7NQB6U0_SIY96Ijiy6CY4JaGUazShrb3YqcxTaJXYfEN99ZM4THwmhEgH7qsThQugykFfmPcd6KTRJu92Bx3ehsX7RHznKt7UKq0UDm77_0csCQPMUFmZ8vG-yinloT60sliEtOlxmNBvIUfNz4z-W-sEPPm9ZSoHS_U7kPqsLUW8Xc3g5oKrhiNLUFVjPc8pPsT_bcSUOUfCA-2syED-Xe2fpnJxKd3Or8OtvhZlfhW7Dm4WFlCoFgSp1aUVrH86cCf6yoQAc394uUAe_z3TfQ4kQd35cXqXAB9i7juclfJzHh81OCNicnxgymig6rJ-aJ3PyHtMAFoviU8jtfkkw4RqjTc7nlvXRtDUrVpFiKgbSkkP5hR0BbXj3GiG0L4mJrjSR2SkJXO68mElP146lsn4-Z2T09yZQQDzVJWglo8EpYWlul8qxu_shd3iRmR4caQ5uN1xjvj9iXJX5QYM5v26SssQD4tQhIa0J_RjcKyRHHolYfptEvvreMF3QWy_twfMgO1MEAJNxQmpL_fi0ZqJzZ-ikpkG7WccUHt8yJDEoIqF0v5aoNK8bgSp_cZp3xBblTp7h94zKXexqS40SkKpy2iszZ6Fgo3PHA3rlFIO8ApJb0M4GHWUuBQrgPvjU3EtNFtPyzjORKPOhpVrhQv7w3cK-jFcSsR1mSpWTSEfNFTGbyFjkkWy8VzKtsbyluSAmLzhRVTy-pnOyqImZIjGeMMVH2YAaVC5uS7maCczKbi6sD-aa_Ni71FeWl0bdLaUdiqNPWny3ad18HhwYSeML8jjSxYRb6cnU5sZHlZjIXYqRSlzGBYrq5NBwzCGUOf64a8U0E1UyRW5GDpEGhjBM0-TpwD8dCy51FVmz8r1i9qAnympun0OOEob-Ppwp521wnogmY10QQY38Hph6uB_g34Nvq8Zw0wIczA1IqlmUS1CAzQ0l0IggwvJuKzBelHn69fkYXZufDprPFkcI5OyukqBpyUpHl2G7mtnfJ7T44KwvPiOmGGPSGgZRFo2hQHvG_VRkVRTuK4Byi6V5NK250cN9wjCnr1_CnCwRsjxJo-rVPyQD94OS5NSRpF94hWEqYuH0n2BucgZjjgEnRxoivV4Od1NC22tF1mTIedjJ7-RgNVjh8y25FbbddseEtP2-J25ifmiqmmWnRuYOpKsvG3pQl3LO1lCHd4SXd5yZoJBzj4fP2U44i2ZhCHdAzJg4MaHBzmqrWk_1Fx5g7s4bVBRvklVNaH_sw6w6jWVN-TbD0g_nCiJ5dHKDTmxL_eWOpPfJDwyP724Z4OHb1BhSj7FP2i9B6bNBLAxKVlNPBnA1__WiEmRd1987wrDme00l7qr07NeUiiK_2kLs2952Jmq1Z5U7JUxeLl-xFMXOgoalGtwiqUuEzORxvEmmPYlKzckmLBsvFjcdTk2xJkCo8rUVDLeZEwkN8BhKKur3TaI-Js3ePR9oVHS9R4dRt-7rrquCZlcGw03kObwTkfe2qM5-ZRpBbaNjbetRDphD2bemErCPFIQKdLaD2TM1Py1KbI5PpoJz6ihF5-o7NbKeEXFMy32k1vLdbDZedqUbwsWse19IVkvmRbL7Exi0Qud0rVkSdeSYyxtv3E1FGz6k7KPQptSwr22gh2gNfTj5X2_NGMLcg6L_B9mFvysXQkUrnvW0rgdrU5euGotezBvJgMHxJhCyHs0BvMGXBxJOwa_tod0Ts5L5nR6BJ058w9C3Y0nsi7vkT58OB_LopMcwqUQgAZ0vNVFtgA4nOeYLbKm_c1Ta1qp5Z1E2h86uH85CUKAzOlrfBSVMdWiof7ZDS2w-pSbKhONg1oqXJATXYjH4bQb-OeIyaOuk6CKXwxcYPtPJVOec4EF7W80mygJiWg-x7LgVBvL4u9Frhq-kABYBmMeZ9YOahv1a6xBotX0ZLueZvx24snFMe86IRgLJh6ZsWaDlkik-vUg4gQY8rjAMxf1d-LflkKc_dWb1JrSBQs4GHkc7s942frANVDsC3Mj93ahDvfB4Gd10ran_A_qmMGaP6Ft-mD9w2yophzukxZtbdnMUCI27-Smy9dKJhrnL7ZQKDJ-2P6kA3a1BWHREaJ69xLqmMZ1CdHppXczkMjyQtkjrT1CE9SinD9nWBmKwz-jwJ2iUGY06T_f5ZtpNQOt1hv_kaZwFF2EZJ0qtSY-uJK0YqaZZ4f9mB1zNyGIMTMaofc2XTUnC5OV0-ytASbypV6QXxIgEMFEMQ7s3AlZCCsGPVP0K08_nmf_IJD_T51A5yZtt_R3hJFRKY1QLbEEks2Tc_6eYvQKxi3hHbG5Ng1vUhBKmnxZbuyOFjOqyIcA5ffNA-8ES6gjZ_AJDJ_yE2js3amMer_CIq_MQyvQfQ2hSopBc-Ry6DNQCJfMUbTgTWmCnkXI6a03s2hOHtubg6mGhEXajkxv5Qvj6VYQF3FlzvCkSO21A5aijKI4A4ITc0VmqHEvRq47Y1EFUDD_oJcsH7NMn4qP2DykpqsJjbJBHC8lRVGDzWGJn4YJbmf5PRS2YGSBzg4Mt_ZRb4Z0vGUS9E1Gobrl8kpSaRWEc2at3fPHk-ebnS76fHPTtEDH0YwfzeTCDrQaBPUiRugRL-dhd3KPfHOFzrxOSUb9IuVPkSFNRlzQQU0WCZ9tUWoM-LfzANj_F_hYpFN7xraJASYazvY1m5fza0aadce_nMm3GopHipMw2H7_HQDkK-m4dMjj2WZ5zaS98X48uew9O5CN8-rcF0jvf2uuQU1TN9D_AXF8OeUGwWv6UpCmvOgWRkEZ17SjUHdkT6OtPS3tGmdpgBWn7-WltaVfoOXANL8oKjGHnd-5JznmF8DZ8ijxkSsQ9mBa65q5f7-7dG9pU6PBef0BNYMokFDFAxbCe7dS8KcXtz47za3x4YJdKTZviVafy0L_HHau-VKQrL5FtJRtiALDDO0d4RUTGpgoCxwgTsVUACefR-FGrRzjPtPk-yf-ufiuWu-3twp6fDrZCngPqzEASIRNttKFqUAVZmCCixeceQ3UGNAOpieD-aEoFQ13OCUwFh6PPge5h0qF-OOSNI4H-jwpKU5Dok0U7XNKUZmrNqlN8WJQeZ18RhekR0cgmH-lV3xV5ehgIDf5rWhqE-pVywgUle-1dVWNJJmMyqTrQjw65YllIOo4Q6XaOjBEColfRFv5gxH-h_X6wH8u1Mgb8s34SjpyOig8pNzaTZJ9atSeuBZ083TK9zIL5Cw2vb1oXa3bV_p3tbWBQggAe2U-y8z9EUxYg0AJh3JLyeuZo8rzl45aut-CHzICZ4U67ft-f8yl2j76dfiVKcqfJD6VeaS-mhnaGFINEMF2xPLhwEsSdUm7FwGHS-xCzsWvGqRm1XWK2Ve1EsQ7PlwZ1olCNL-D2ZP1WPiOVa4HUXGSauW5tJ-_NsKNRb-dQtiYFQn3yHJGfj-smyBtwPf1WhUXzSXne7FkYk8NC-RfS5UDI1nMBK5XacQUb-nb1VRaA_fRPNOZGMceGck0C_wU3KCKDvyctT3iIL4d0IoP5SaZaqgW97qQpVhh0ojugUv78DqezfvASzLtZxTPZ2nlRPleanCV7glw532LIQk6x_FiJix82tna1jaYTnITeOHzV2xjshEt2EVp58INklfwn8lrxu2L803mIkLQ7UU6X_1-f_F-arurJ1XlbCPi8ewostqn-TkKpwa20elB-0vnYII_Sxp9w6gOhqPib6fLkUvq68Hyg1JFPp1zJDQwK2HHhT5jho0dgrfEaQHkHkfP_g0yrvFvJCP43IKK_PuSe_deHneemf1ohWRt4PkpiSom-KNaDKi-ZlY"
+            ]
+          }
+        },
+        "signature": "nm5X-TBPRRUm71v34BXYDzDr-lDE1NsBr4fN7JtWlhkhESpjJ0PG0Hfs9hazHaF3TUqjzYEEmH2BlljW-G5sDg"
+      }
+    ],
+    "checkpoint": {
+      "v": 1,
+      "workspace_id": "mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm",
+      "owner_id": "OnDJKGhj931gFmPPTA7n24O34hyuSp1epwxeANaFfPI",
+      "owner_key": "lNMgBRLRQk3DlS4zCwRmTpwoLGZh9Qg8hEdti2yc40I",
+      "sequence": 2,
+      "head": "c198a25339c09e50d4725bbbd74bddadb3f7eee72713a022000db70352e583ac",
+      "policy_hash": "b77e2a0c776c05353fabaff3222edcdff341c52e95e7b8712231a5cfd3af9520"
+    },
+    "error": "PROTOCOL_OUTPUT_MISMATCH"
+  }
+}

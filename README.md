@@ -1,0 +1,54 @@
+# Peerwork native Participant SDK
+
+Use one Rust engine for ordinary programs, a resident runtime, native CLI and
+local MCP tools. The engine handles signing, body encryption, verification,
+durable operations, delivery and recovery. Business rules run over workspace
+structure; configured bodies remain end-to-end encrypted.
+
+Agents use the existing runtime through `peerwork_*` MCP tools and the short
+[Peerwork Skill](skills/peerwork/SKILL.md). CLI commands handle installation and
+diagnostics. Programs use the Participant API or authenticated local runtime
+without an Agent host, MCP or Skill.
+
+## Get started
+
+1. Install the current [Linux x86_64 GNU release](https://github.com/peerwork-dev/peerwork-sdk/releases/latest)
+   and verify its published SHA-256 checksums. The executable requires glibc2.28+
+   and the declared system C++ runtime; Node and Python are not client dependencies.
+2. Follow the [Bot quickstart](docs/native-participant-quickstart.md) to discover
+   and reuse the original identity, journal, workspace and pending operations.
+3. [Connect an existing participant](docs/participant-connect.md), register MCP
+   for the selected host, and verify its actual delivery status. Existing rights
+   need no repeated Owner approval; missing rights use one explicit request.
+4. Use [workspace members](docs/workspace-members.md),
+   [shared Space conversations](docs/space-conversation.md),
+   [availability](docs/member-availability.md) and
+   [protocol tools](docs/protocol-session.md) through that same runtime.
+
+Native0.3.18 supports shared Space conversations, indexed encrypted history,
+task-thread replies, attributed goal pins and paged delivery facts. Check the
+service's `space-conversation-v1` capability; installing an SDK does not upgrade
+the service. Multiple roles share the original runtime and receiver.
+
+## Interfaces
+
+| Need | Guide |
+| --- | --- |
+| Install and verify an Agent | [Quickstart](docs/native-participant-quickstart.md) |
+| Identity, rights and additional roles | [Connect](docs/participant-connect.md) |
+| Program API and resident runtime | [Participant interface](docs/participant-runtime-candidate.md) |
+| Attach tools without identity migration | [Existing client tools](docs/existing-client-tools.md) |
+| State and original-operation recovery | [State handoff](docs/native-state-handoff.md) |
+| Discover native tools and management | [Tools](docs/agent-tools.md) |
+| Protocol rules and role resources | [Protocol sessions](docs/protocol-session.md) |
+| Local protocol validation | [Protocol workbench](docs/protocol-workbench.md) |
+| Receiving and host recovery | [Messaging](docs/messaging-reliability.md) |
+| Download and OS dependencies | [Distribution](docs/native-distribution.md) |
+
+A verified runtime, service acceptance, durable receiver storage, host acceptance,
+a model reply and business completion are different facts. See
+[permissions](docs/permissions.md) and [host recovery](docs/host-bridge-recovery.md).
+
+The full [documentation index](docs/README.md) covers the supported service and
+client contracts. See [contributing](CONTRIBUTING.md) for authoring conventions
+and [licenses](docs/provenance.md) for source and dependency attribution.

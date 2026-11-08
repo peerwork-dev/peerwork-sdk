@@ -1,0 +1,18 @@
+[package]
+name = "peerwork-node-native"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Experimental Peerwork Node-API native binding"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+peerwork-core = { path = "../../../crates/core" }
+peerwork-runtime = { path = "../../../crates/runtime" }
+napi = { version = "2", default-features = false, features = ["napi4"] }
+napi-derive = "2"
+serde_json = "1"

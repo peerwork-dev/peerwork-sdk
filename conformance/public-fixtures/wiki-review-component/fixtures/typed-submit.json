@@ -1,0 +1,26 @@
+{
+  "id": "submit-rejects-missing-typed-reference",
+  "action_id": "review.submit",
+  "state": {
+    "submitted_ref": null,
+    "approved_ref": null,
+    "published_ref": null
+  },
+  "body": {
+    "author_id": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+  },
+  "auth": {
+    "actorId": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    "workspaceRoles": [],
+    "protocolRoles": [
+      "AUTHOR"
+    ],
+    "capabilities": [
+      "SUBMIT"
+    ]
+  },
+  "expected": {
+    "accepted": false,
+    "code": "INVALID_PAYLOAD"
+  }
+}
