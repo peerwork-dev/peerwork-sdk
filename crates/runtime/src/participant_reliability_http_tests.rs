@@ -81,7 +81,7 @@ async fn receiver_capacity_recovers_claim_pulse_ack_and_stream_without_replacing
         }
         let sent=structure(&client.invoke(native_message("during-capacity",&scope,&mailbox,&mailbox,&"v".repeat(43),"recover-original-delivery"),Duration::from_secs(5)).await.unwrap());
         let ack=action=="structure.mailbox.ack";
-        let recovering=watch_until(&mut watch,|s|if ack{s.acknowledgment_code.is_some()}else{s.code.is_some()}).await;
+        let recovering=watch_until(&mut watch,|s|if ack{s.acknowledgment_code.as_deref()==Some(code)}else{s.code.as_deref()==Some(code)}).await;
         eprintln!("capacity refusal observed: {action}; code={:?}; checkpoint={}",recovering.code,recovering.checkpoint);
         assert!(service.counts().await["resource_refusals"].as_u64().unwrap_or(0)>0,"the configured resource refusal must actually occur");
         if ack {assert_eq!(recovering.acknowledgment_code.as_deref(),Some(code));assert!(recovering.receiver_link_verified);}
