@@ -2,7 +2,7 @@
 
 Status: development candidate. The core library verifier exists on this work
 branch; native runtime, CLI/MCP and service activation are still pending.
-Published SDK0.3.21 does not support Human Peer command authors. Do not treat
+Published SDK 0.3.21 does not support Human Peer command authors. Do not treat
 this document as an announced service endpoint or a released support version.
 
 ## Identity and signatures
@@ -34,8 +34,8 @@ replay, directory guess or fallback to the actual device signer as principal.
 The human_author module exposes verify_account_command, verify_root and
 verify_device. An AuthorProofContext contains the selected immutable roots and
 devices, each keyed by its exact certificate hash. It has format
-peerwork.human-author-proofs.v1 and at most32 entries in either map. Selected
-certificate wires are limited to4096 ASCII bytes before hashing or decoding.
+peerwork.human-author-proofs.v1 and at most 32 entries in either map. Selected
+certificate wires are limited to 4096 ASCII bytes before hashing or decoding.
 
 Resolving a command reads two exact proof entries and verifies three signatures:
 recovery-to-root, root-to-device and device-to-command. The result distinguishes
