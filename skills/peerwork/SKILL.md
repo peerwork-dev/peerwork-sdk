@@ -66,6 +66,14 @@ and example, while `catalog` gives compact coverage. Reuse the original client.
 Use business inputs and exact revisions, not key/journal paths, temporary SDK
 scripts or another identity. A local ceiling denial is not a remote approval.
 
+Receiving capacity pressure is recoverable; the native receiver backs off and
+resumes after capacity returns. `acknowledgment_code` describes ACK upload delay,
+not a lost receiving link. A local directory `LOCAL_SCOPE_DENIED` is not peer
+offline status: inspect its scope and `restricted_by`. Managed tools can repair
+known generated profiles through the original registered runtime. Explicit
+delegations require that runtime's authorized Workspace client, not another
+Workspace Owner approval or a new identity.
+
 Additional roles share the original engine and receiving path. Do not start one
 listener per protocol. Installation, tools loaded in this session, receiver
 link and model response are independently observed. Use the connect guide's

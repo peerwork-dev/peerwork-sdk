@@ -75,10 +75,11 @@ async fn managed_mcp_and_cli_repair_generated_directory_clients_without_replacin
     drop(restricted);drop(connect);
     let store=crate::secure_state::SecureStateStore::open(&registry.join("connect.state")).unwrap();let mut state:Value=serde_json::from_slice(&store.read_exact().unwrap().unwrap()).unwrap();let active=state["active"].as_str().unwrap().to_owned();
     state["setups"][&active]["profile"]=json!(profile);state["setups"][&active]["sender_capability"]=json!(narrow);state["setups"][&active]["result"].as_object_mut().unwrap().remove("client_authority_model");
+    let profile_path=PathBuf::from(state["setups"][&active]["result"]["profile_path"].as_str().unwrap());crate::onboarding_files::replace(&profile_path,&serde_json::to_vec(&profile).unwrap()).unwrap();
     let historical=serde_json::to_vec(&state).unwrap();store.write_exact(&historical).unwrap();drop(store);
     let(server,client)=tokio::io::duplex(1024*1024);let(sr,sw)=tokio::io::split(server);let(cr,mut cw)=tokio::io::split(client);let mut cr=tokio::io::BufReader::new(cr);
     let frontend=tokio::spawn(crate::agent_mcp::serve_local_selected(registry.clone(),Some("owner".into()),Some(ws.clone()),tokio::io::BufReader::new(sr),sw));
-    let found=super::management::mcp(&mut cr,&mut cw,1,"reachability",json!({"workspace":ws})).await;assert_eq!(found["members"].as_array().unwrap().len(),1,"{found}");
+    let found=super::management::mcp(&mut cr,&mut cw,1,"reachability",json!({"workspace":ws})).await;assert!(found["members"].is_array(),"{found}");assert_eq!(found["members"].as_array().unwrap().len(),1,"{found}");
     cw.shutdown().await.unwrap();drop(cw);drop(cr);frontend.await.unwrap().unwrap();
     let fixed=Connect::inspect(&registry).unwrap().profile_for_scope(Some("owner"),Some(&ws)).unwrap().unwrap();
     assert_eq!(fixed.expected_actor,config.expected_actor);assert_ne!(fixed.endpoint_path,legacy);assert!(fixed.recovery_views.values().any(|v|v.endpoint_path==legacy));
