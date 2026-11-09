@@ -191,4 +191,11 @@ pub fn verify_account_command(wire:&str,expected_audience:&[u16],proofs:Option<&
         assert!(verify_account_command(wire,&aud,Some(&ctx)).is_err());
         let mut ctx=proofs(&v);ctx.roots.insert(v["first"]["root_hash"].as_str().unwrap().into(),"a".repeat(1000000));assert!(verify_account_command(wire,&aud,Some(&ctx)).is_err());
     }
+    #[test]fn actual_chromium_generated_certificates_and_command_interoperate(){
+        let v:Value=serde_json::from_str(include_str!("../../../tests/fixtures/human-author-chromium-v1.json")).unwrap();let ctx=proofs(&v);
+        let aud=v["audience"].as_str().unwrap().encode_utf16().collect::<Vec<_>>();
+        let result=verify_account_command(v["command"].as_str().unwrap(),&aud,Some(&ctx)).unwrap();
+        assert_eq!(serde_json::to_value(result.author()).unwrap(),v["expected_author"]);
+        assert_eq!(result.command().get("author").unwrap().get("device_id").unwrap().as_string(),result.author().device_id);
+    }
 }
