@@ -40,6 +40,7 @@ fn agent() -> AccessKind {
 pub enum AccessMode {
     Session,
     KeysOnly,
+    Persistent,
 }
 fn session() -> AccessMode {
     AccessMode::Session
@@ -194,7 +195,20 @@ impl KernelClient {
         {
             return Err(KernelClientError::InvalidCommand);
         }
-        if selection.mode == AccessMode::KeysOnly {
+        // The browser explicitly signs the persistent request. Honor that
+        // version before deriving the durable operation; never downgrade it.
+        let request_parts:Vec<_>=selection.request_jws.split('.').collect();
+        if request_parts.len()==3 {
+            if let Some(header)=peerwork_core::crypto::decode_base64url(request_parts[0]).ok().and_then(|wire|peerwork_core::strict_json::parse_strict_json(&wire).ok()) {
+                if header["typ"]==peerwork_core::structure_access::PERSISTENT_ACCESS_REQUEST_TYPE {
+                    selection.mode=AccessMode::Persistent;
+                    if selection.deliver_content_keys{selection.follow_current_key=true;}
+                }
+            }
+        }
+        if selection.mode == AccessMode::Persistent {
+            if selection.ttl_ms.is_some()||!self.discovery.protocol_features().contains(&"persistent-browser-access-v1".encode_utf16().collect::<Vec<_>>()){return Err(KernelClientError::UnsupportedStructureProfile);}
+        } else if selection.mode == AccessMode::KeysOnly {
             if selection.ttl_ms.is_some() || selection.selected_write.is_some() {
                 return Err(KernelClientError::InvalidCommand);
             }
@@ -251,6 +265,27 @@ impl KernelClient {
         )?;
         if matches!(request.request().kind,peerwork_core::structure_access::AccessKind::Browser)
             && !self.discovery.protocol_features().contains(&"owner-pinned-browser-access-v1".encode_utf16().collect::<Vec<_>>()) {return Err(KernelClientError::UnsupportedStructureProfile);}
+        if (request.request().v==2)!=(selection.mode==AccessMode::Persistent){return Err(KernelClientError::InvalidCommand);}
+        let mut upgrade_from=None;
+        if selection.mode==AccessMode::Persistent {
+            let observed=self.execute_structure_intent(identity,authority,json!({"action":"structure.access.approval.get","workspace_id":selection.workspace_id,"body":{"owner_id":identity.actor_id(),"actor_id":request.request().actor_id}}).to_string().as_bytes(),cancel).await?;
+            let StructureIntentOutcome::Accepted(observed)=observed else{return Ok(observed);};
+            let previous=data(&observed)?;
+            if !previous["binding"].is_null(){
+                let binding=&previous["binding"];
+                let source=&previous["approval"];
+                let original=verify_structure_author_intent(source["author_intent"].as_str().ok_or(KernelClientError::InvalidResult)?,self.discovery.audience_utf16()).map_err(|_|JournalError::InvalidReceipt)?;
+                if original.actor_id()!=identity.actor_id()||original.workspace_id()!=Some(selection.workspace_id.as_str())||original.action_id()!="structure.access.authorize"||source["intent_digest"]!=original.intent_digest()||binding["recipient_key_id"]!=request.recipient_key_id(){return Err(KernelClientError::InvalidResult);}
+                let membership=binding["membership_id"].as_str().ok_or(KernelClientError::InvalidResult)?;
+                upgrade_from=Some(json!({"membership_id":membership,"authorization_digest":original.intent_digest()}));
+                if !binding["expires_at"].is_null()&&selection.deliver_content_keys {
+                    // One deterministic prerequisite, not a periodic renewal.
+                    // A lost response resumes the same publication operation.
+                    let rotation=Box::pin(self.publish_structure_content_key(identity,authority,StructureContentKeyRotation{workspace_id:selection.workspace_id.clone(),idempotency_key:format!("persistent-upgrade-{command_id}")},cancel)).await?;
+                    match rotation {StructureIntentOutcome::Accepted(result)=>{data(&result)?;},pending=>return Ok(pending)}
+                }
+            }
+        }
         let current=self.execute_structure_intent(identity,authority,serde_json::to_string(&json!({"action":"structure.workspace.get","workspace_id":selection.workspace_id,"body":{}})).unwrap().as_bytes(),cancel).await?;
         let StructureIntentOutcome::Accepted(current) = current else {
             return Err(KernelClientError::InvalidResult);
@@ -270,7 +305,9 @@ impl KernelClient {
             .expected_workspace_revision
             .or_else(|| current["workspace_revision"].as_u64())
             .ok_or(KernelClientError::InvalidResult)?;
-        let expires = if let Some(ttl) = selection.ttl_ms {
+        let expires = if selection.mode==AccessMode::Persistent {
+            request.request().authorization.as_ref().ok_or(KernelClientError::InvalidCommand)?.absolute_expires_at
+        } else if let Some(ttl) = selection.ttl_ms {
             let expires = context
                 .server_time_ms()
                 .checked_add(ttl)
@@ -306,6 +343,7 @@ impl KernelClient {
             None
         };
         let mut intent = json!({"action":"structure.access.authorize","command_id":command_id,"workspace_id":selection.workspace_id,"expected_workspace_revision":revision,"body":{"request_jws":selection.request_jws,"mode":selection.mode,"expires_at":expires,"content_grant":grant,"content_key_epoch":content_key_epoch,"follow_current_key":selection.follow_current_key,"selected_write":selection.selected_write}});
+        if selection.mode==AccessMode::Persistent{intent["body"]["authorization_version"]=json!(2);if let Some(prior)=upgrade_from{intent["body"]["upgrade_from"]=prior;}}
         if selection.include_history{intent["body"]["retained_key_epoch_ceiling"]=json!(content_key_epoch);}
         match self
             .execute_structure_intent_prepared(identity, authority, intent.to_string().as_bytes(), cancel)

@@ -59,7 +59,7 @@ impl KernelClient{
     let author=verify_structure_author_intent(auth_jws,self.discovery.audience_utf16()).map_err(|_|JournalError::InvalidReceipt)?;
     if auth["intent_digest"]!=author.intent_digest()||auth["command_id"]!=author.command_id()||auth["actor_id"]!=author.actor_id(){return Err(JournalError::InvalidReceipt.into());}
     let r:RetainedKeyAuthority=serde_json::from_value(page["authority"].clone()).map_err(|_|KernelClientError::InvalidResult)?;
-    if r.through_epoch!=ceiling||r.actor_id!=selected["actor_id"]||r.membership_id!=selected["membership_id"]||r.recipient_key_id!=selected["recipient_key_id"]||r.authorization_digest!=selected["authorization_digest"]||r.expires_at!=selected["expires_at"]{return Err(KernelClientError::InvalidResult);}
+    if r.through_epoch!=ceiling||r.actor_id!=selected["actor_id"]||r.membership_id!=selected["membership_id"]||r.recipient_key_id!=selected["recipient_key_id"]||r.authorization_digest!=selected["authorization_digest"]||serde_json::to_value(r.expires_at).map_err(|_|KernelClientError::InvalidResult)?!=selected["expires_at"]{return Err(KernelClientError::InvalidResult);}
     let (_,_,time)=self.access_context(cancel).await?;let audience=String::from_utf16(self.discovery.audience_utf16()).map_err(|_|KernelClientError::InvalidResult)?;
     let verified=verify_retained_authority(&author,identity.actor_id(),workspace,r,&audience,self.discovery.receipt_public_key(),time.server_time_ms())?;
     let mut epochs=Vec::new();let mut used=std::collections::BTreeSet::new();

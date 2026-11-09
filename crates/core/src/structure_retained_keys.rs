@@ -9,17 +9,17 @@ use serde_json::{json,Value};
 use zeroize::{Zeroize,Zeroizing};
 #[derive(Clone,Serialize,Deserialize,PartialEq,Eq)]
 #[serde(deny_unknown_fields)]
-pub struct RetainedKeyAuthority{pub actor_id:String,pub membership_id:String,pub recipient_key_id:String,pub authorization_digest:String,pub certificate_digest:String,pub expires_at:u64,pub through_epoch:u64}
+pub struct RetainedKeyAuthority{pub actor_id:String,pub membership_id:String,pub recipient_key_id:String,pub authorization_digest:String,pub certificate_digest:String,pub expires_at:Option<u64>,#[serde(default,skip_serializing_if="Option::is_none")]pub authorization_version:Option<u8>,pub through_epoch:u64}
 #[derive(Clone,Serialize,Deserialize,PartialEq,Eq)]
 #[serde(deny_unknown_fields)]
 pub struct RetainedKeyEntry{pub epoch:u64,pub key_id:String}
 #[derive(Clone,Serialize,Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RetainedKeyEnvelope{
- pub actor_id:String,pub membership_id:String,pub recipient_key_id:String,pub authorization_digest:String,pub certificate_digest:String,pub expires_at:u64,pub through_epoch:u64,
+ pub actor_id:String,pub membership_id:String,pub recipient_key_id:String,pub authorization_digest:String,pub certificate_digest:String,pub expires_at:Option<u64>,#[serde(default,skip_serializing_if="Option::is_none")]pub authorization_version:Option<u8>,pub through_epoch:u64,
  pub keys:Vec<RetainedKeyEntry>,pub r#box:KeyBox,
 }
-impl RetainedKeyEnvelope{pub fn authority(&self)->RetainedKeyAuthority{RetainedKeyAuthority{actor_id:self.actor_id.clone(),membership_id:self.membership_id.clone(),recipient_key_id:self.recipient_key_id.clone(),authorization_digest:self.authorization_digest.clone(),certificate_digest:self.certificate_digest.clone(),expires_at:self.expires_at,through_epoch:self.through_epoch}}}
+impl RetainedKeyEnvelope{pub fn authority(&self)->RetainedKeyAuthority{RetainedKeyAuthority{actor_id:self.actor_id.clone(),membership_id:self.membership_id.clone(),recipient_key_id:self.recipient_key_id.clone(),authorization_digest:self.authorization_digest.clone(),certificate_digest:self.certificate_digest.clone(),expires_at:self.expires_at,authorization_version:self.authorization_version,through_epoch:self.through_epoch}}}
 pub struct VerifiedRetainedAuthority{request:VerifiedAccessRequest,authority:RetainedKeyAuthority,owner:String,workspace:String,audience:String}
 pub struct VerifiedRetainedEpoch{entry:RetainedKeyEntry,authorization_digest:String}
 impl VerifiedRetainedEpoch{pub fn entry(&self)->&RetainedKeyEntry{&self.entry}}
@@ -27,18 +27,21 @@ fn text(v:&WireValue,k:&str)->Result<String,AccessError>{v.get(k).and_then(WireV
 fn integer(v:&WireValue,k:&str)->Result<u64,AccessError>{v.get(k).and_then(WireValue::as_number).filter(|n|n.is_finite()&&n.fract()==0.0&&(0.0..=9_007_199_254_740_991.0).contains(n)).map(|n|n as u64).ok_or(AccessError::Invalid)}
 fn token(v:&str)->bool{v.len()==43&&decode_base64url(v).is_ok_and(|b|b.len()==32)}
 fn valid_authority(r:&RetainedKeyAuthority)->bool{
- [&r.actor_id,&r.membership_id,&r.recipient_key_id].into_iter().all(|v|token(v))&&[&r.authorization_digest,&r.certificate_digest].into_iter().all(|d|d.len()==64&&d.bytes().all(|c|c.is_ascii_hexdigit()&&!c.is_ascii_uppercase()))&&r.expires_at>0&&r.expires_at<=9_007_199_254_740_991&&r.through_epoch>0&&r.through_epoch<=9_007_199_254_740_991
+ [&r.actor_id,&r.membership_id,&r.recipient_key_id].into_iter().all(|v|token(v))&&[&r.authorization_digest,&r.certificate_digest].into_iter().all(|d|d.len()==64&&d.bytes().all(|c|c.is_ascii_hexdigit()&&!c.is_ascii_uppercase()))&&(r.expires_at.is_some_and(|end|end>0&&end<=9_007_199_254_740_991)||r.expires_at.is_none()&&r.authorization_version==Some(2))&&matches!(r.authorization_version,None|Some(2))&&r.through_epoch>0&&r.through_epoch<=9_007_199_254_740_991
 }
 pub fn verify_retained_authority(author:&VerifiedStructureAuthorIntent,owner:&str,workspace:&str,r:RetainedKeyAuthority,audience:&str,service_key:&str,now:u64)->Result<VerifiedRetainedAuthority,AccessError>{
- if !valid_authority(&r)||author.actor_id()!=owner||author.workspace_id()!=Some(workspace)||author.action_id()!="structure.access.authorize"||author.intent_digest()!=r.authorization_digest||r.expires_at<=now{return Err(AccessError::Invalid);}
+ if !valid_authority(&r)||author.actor_id()!=owner||author.workspace_id()!=Some(workspace)||author.action_id()!="structure.access.authorize"||author.intent_digest()!=r.authorization_digest||r.expires_at.is_some_and(|end|end<=now){return Err(AccessError::Invalid);}
  let c=author.command();let b=c.get("body").ok_or(AccessError::Invalid)?;
  if integer(b,"retained_key_epoch_ceiling")?!=r.through_epoch||matches!(b.get("content_grant"),None|Some(WireValue::Null)){return Err(AccessError::Invalid);}
  let request=verify_access_request(&text(b,"request_jws")?,workspace,&audience.encode_utf16().collect::<Vec<_>>(),service_key,integer(c,"issued_at")?)?;
  let certificate=serde_json::to_value(&request.request().certificate).map_err(|_|AccessError::Invalid)?;
  let cert_digest=sha256_hex(canonical(&certificate,Path::SecureArtifact).map_err(|_|AccessError::Invalid)?.as_bytes());
  let cert_expiry=certificate["payload"]["expires_at"].as_u64().ok_or(AccessError::Invalid)?;
- if request.request().actor_id!=r.actor_id||request.recipient_key_id()!=r.recipient_key_id||cert_digest!=r.certificate_digest||r.expires_at>cert_expiry||cert_expiry<=now{return Err(AccessError::Invalid);}
- match text(b,"mode")?.as_str(){"SESSION" if r.expires_at<=integer(b,"expires_at")?=>(),"KEYS_ONLY"=>(),_=>return Err(AccessError::Invalid)};
+ if request.request().actor_id!=r.actor_id||request.recipient_key_id()!=r.recipient_key_id||cert_digest!=r.certificate_digest{return Err(AccessError::Invalid);}
+ let policy=crate::structure_access::verify_access_authorization(b,&request)?;
+ if policy.persistent{
+  if r.authorization_version!=Some(2)||r.expires_at!=policy.expires_at{return Err(AccessError::Invalid);}
+ }else if r.authorization_version.is_some()||r.expires_at.is_none_or(|end|end>cert_expiry)||cert_expiry<=now||policy.expires_at.is_some_and(|end|r.expires_at.is_none_or(|actual|actual>end)){return Err(AccessError::Invalid);}
  Ok(VerifiedRetainedAuthority{request,authority:r,owner:owner.into(),workspace:workspace.into(),audience:audience.into()})
 }
 pub fn verify_retained_epoch(author:&VerifiedStructureAuthorIntent,owner:&str,workspace:&str,authority:&VerifiedRetainedAuthority,entry:RetainedKeyEntry)->Result<VerifiedRetainedEpoch,AccessError>{
@@ -48,7 +51,7 @@ pub fn verify_retained_epoch(author:&VerifiedStructureAuthorIntent,owner:&str,wo
 }
 fn context(audience:&str,workspace:&str,owner:&str,job:&str,authority:&RetainedKeyAuthority,entries:&[RetainedKeyEntry])->Value{
  let mut result=serde_json::to_value(authority).expect("metadata serializes");let object=result.as_object_mut().expect("authority object");
- object.insert("domain".into(),json!("peerwork.retained-body-keys.v1"));object.insert("audience".into(),json!(audience));object.insert("workspace_id".into(),json!(workspace));object.insert("owner_id".into(),json!(owner));object.insert("job_id".into(),json!(job));object.insert("keys".into(),json!(entries));result
+ object.insert("domain".into(),json!(if authority.authorization_version==Some(2){"peerwork.retained-body-keys.v2"}else{"peerwork.retained-body-keys.v1"}));object.insert("audience".into(),json!(audience));object.insert("workspace_id".into(),json!(workspace));object.insert("owner_id".into(),json!(owner));object.insert("job_id".into(),json!(job));object.insert("keys".into(),json!(entries));result
 }
 fn valid_entries(entries:&[RetainedKeyEntry],ceiling:u64)->bool{!entries.is_empty()&&entries.len()<=32&&entries.iter().all(|e|e.epoch>0&&e.epoch<=ceiling&&token(&e.key_id))&&entries.windows(2).all(|w|w[0].epoch<w[1].epoch)&&entries.iter().map(|e|&e.key_id).collect::<std::collections::BTreeSet<_>>().len()==entries.len()}
 pub fn seal_retained_keys(verified:&VerifiedRetainedAuthority,epochs:&[VerifiedRetainedEpoch],keys:&[AccessKeyMaterial],audience:&str,workspace:&str,owner:&str,job:&str)->Result<RetainedKeyEnvelope,AccessError>{
@@ -61,7 +64,7 @@ pub fn seal_retained_keys(verified:&VerifiedRetainedAuthority,epochs:&[VerifiedR
  }plain.push_str("]}");
  let wire=serde_json::to_vec(&context(audience,workspace,owner,job,r,&entries)).map_err(|_|AccessError::Invalid)?;
  let boxed=hpke_seal_wire(verified.request.recipient(),plain.as_bytes(),&wire).map_err(|_|AccessError::Invalid)?;
- Ok(RetainedKeyEnvelope{actor_id:r.actor_id.clone(),membership_id:r.membership_id.clone(),recipient_key_id:r.recipient_key_id.clone(),authorization_digest:r.authorization_digest.clone(),certificate_digest:r.certificate_digest.clone(),expires_at:r.expires_at,through_epoch:r.through_epoch,keys:entries,r#box:boxed})
+ Ok(RetainedKeyEnvelope{actor_id:r.actor_id.clone(),membership_id:r.membership_id.clone(),recipient_key_id:r.recipient_key_id.clone(),authorization_digest:r.authorization_digest.clone(),certificate_digest:r.certificate_digest.clone(),expires_at:r.expires_at,authorization_version:r.authorization_version,through_epoch:r.through_epoch,keys:entries,r#box:boxed})
 }
 struct WipingWire(WireValue);
 impl Drop for WipingWire{fn drop(&mut self){fn wipe(v:&mut WireValue){match v{WireValue::String(s)=>s.zeroize(),WireValue::Array(a)=>a.iter_mut().for_each(wipe),WireValue::Object(a)=>a.iter_mut().for_each(|(k,v)|{k.zeroize();wipe(v)}),_=>()}}wipe(&mut self.0)}}
@@ -96,17 +99,33 @@ mod tests{
   let f=fixture();let jws=f["owner_jws"].as_str().unwrap();let mut c:Value=serde_json::from_slice(&decode_base64url(jws.split('.').nth(1).unwrap()).unwrap()).unwrap();
   if let Some(n)=ceiling{c["body"]["retained_key_epoch_ceiling"]=json!(n);}let a=signed(&c);
   let request=verify_access_request(c["body"]["request_jws"].as_str().unwrap(),&base64url(&[3;32]),&"structure-test".encode_utf16().collect::<Vec<_>>(),f["service_key"].as_str().unwrap(),NOW).unwrap();
-  let certificate=serde_json::to_value(&request.request().certificate).unwrap();let r=RetainedKeyAuthority{actor_id:request.request().actor_id.clone(),membership_id:base64url(&[14;32]),recipient_key_id:request.recipient_key_id().into(),authorization_digest:a.intent_digest().into(),certificate_digest:sha256_hex(canonical(&certificate,Path::SecureArtifact).unwrap().as_bytes()),expires_at:c["body"]["expires_at"].as_u64().unwrap(),through_epoch:ceiling.unwrap_or(3)};(c,a,r)
+  let certificate=serde_json::to_value(&request.request().certificate).unwrap();let r=RetainedKeyAuthority{actor_id:request.request().actor_id.clone(),membership_id:base64url(&[14;32]),recipient_key_id:request.recipient_key_id().into(),authorization_digest:a.intent_digest().into(),certificate_digest:sha256_hex(canonical(&certificate,Path::SecureArtifact).unwrap().as_bytes()),expires_at:Some(c["body"]["expires_at"].as_u64().unwrap()),authorization_version:None,through_epoch:ceiling.unwrap_or(3)};(c,a,r)
  }
  fn epoch(c:&Value,n:u64,key:&str)->VerifiedStructureAuthorIntent{let mut c=c.clone();c["action_id"]=json!("structure.content-key.set");c["expected_workspace_revision"]=Value::Null;c["body"]=json!({"profile":"backend-structure-v1","key_id":key,"expected_epoch":n-1,"expected_head_revision":if n==1{Value::Null}else{json!(n-1)}});signed(&c)}
+ #[test]
+ fn persistent_retained_envelopes_preserve_history_scope_after_bootstrap_expiry(){
+  let f=fixture();let owner=f["owner_id"].as_str().unwrap();let ws=base64url(&[3;32]);let(mut c,_,mut r)=approval(Some(3));
+  let csr=c["body"]["request_jws"].as_str().unwrap();let mut payload:Value=serde_json::from_slice(&decode_base64url(csr.split('.').nth(1).unwrap()).unwrap()).unwrap();
+  payload["v"]=json!(2);payload["authorization"]=json!({"mode":"PERSISTENT","absolute_expires_at":null,"key_binding":"PINNED_UNTIL_AUTHORIZATION_END"});
+  let device=SigningKey::from_bytes(&[5;32]);c["body"]["request_jws"]=json!(sign_compact(&json!({"alg":"EdDSA","typ":crate::structure_access::PERSISTENT_ACCESS_REQUEST_TYPE,"kid":key_id(&device.verifying_key().to_bytes())}),&payload,&device).unwrap());
+  c["body"]["mode"]=json!("PERSISTENT");c["body"]["authorization_version"]=json!(2);c["body"]["expires_at"]=Value::Null;
+  let author=signed(&c);r.authorization_digest=author.intent_digest().into();r.authorization_version=Some(2);r.expires_at=None;
+  let authority=verify_retained_authority(&author,owner,&ws,r.clone(),"structure-test",f["service_key"].as_str().unwrap(),NOW+90*86400000).unwrap();
+  let material=AccessKeyMaterial::new(structure_content_key_id(&[99;32]),Zeroizing::new([99;32])).unwrap();
+  let selected=verify_retained_epoch(&epoch(&c,2,material.key_id()),owner,&ws,&authority,RetainedKeyEntry{epoch:2,key_id:material.key_id().into()}).unwrap();
+  let job=base64url(&[22;32]);let envelope=seal_retained_keys(&authority,&[selected],&[material],"structure-test",&ws,owner,&job).unwrap();
+  c["action_id"]=json!("structure.content-key.history.deliver");c["expected_workspace_revision"]=Value::Null;c["body"]=json!({"profile":"backend-structure-v1","job_id":job,"page_token":"Owner-signed bounded history page","envelope":envelope});
+  let recipient=SecretRecipient::from_private(Zeroizing::new([4;32])).unwrap();assert_eq!(open_owner_retained_keys(&signed(&c),owner,&r.actor_id,&recipient,&ws,"structure-test").unwrap().keys[0].secret(),&[99;32]);
+  c["body"]["envelope"].as_object_mut().unwrap().remove("authorization_version");assert!(open_owner_retained_keys(&signed(&c),owner,&r.actor_id,&recipient,&ws,"structure-test").is_err());
+ }
  #[test]
  fn history_authority_is_explicit_and_bounds_actor_device_time_and_epoch(){
   let f=fixture();let owner=f["owner_id"].as_str().unwrap();let ws=base64url(&[3;32]);let (_,no,mut r)=approval(None);
   assert!(verify_retained_authority(&no,owner,&ws,r.clone(),"structure-test",f["service_key"].as_str().unwrap(),NOW).is_err());
   let (c,yes,valid)=approval(Some(3));r=valid.clone();
   assert!(verify_retained_authority(&yes,owner,&ws,r.clone(),"structure-test",f["service_key"].as_str().unwrap(),NOW+1000).is_ok());
-  for change in 0..6{let mut bad=r.clone();match change{0=>bad.through_epoch=4,1=>bad.expires_at+=1,2=>bad.authorization_digest="a".repeat(64),3=>bad.certificate_digest="b".repeat(64),4=>bad.actor_id=base64url(&[20;32]),_=>bad.recipient_key_id=base64url(&[21;32])};assert!(verify_retained_authority(&yes,owner,&ws,bad,"structure-test",f["service_key"].as_str().unwrap(),NOW).is_err());}
-  assert!(verify_retained_authority(&yes,owner,&ws,r.clone(),"structure-test",f["service_key"].as_str().unwrap(),r.expires_at).is_err());
+  for change in 0..6{let mut bad=r.clone();match change{0=>bad.through_epoch=4,1=>bad.expires_at=bad.expires_at.map(|end|end+1),2=>bad.authorization_digest="a".repeat(64),3=>bad.certificate_digest="b".repeat(64),4=>bad.actor_id=base64url(&[20;32]),_=>bad.recipient_key_id=base64url(&[21;32])};assert!(verify_retained_authority(&yes,owner,&ws,bad,"structure-test",f["service_key"].as_str().unwrap(),NOW).is_err());}
+  assert!(verify_retained_authority(&yes,owner,&ws,r.clone(),"structure-test",f["service_key"].as_str().unwrap(),r.expires_at.unwrap()).is_err());
   let authority=verify_retained_authority(&yes,owner,&ws,r,"structure-test",f["service_key"].as_str().unwrap(),NOW).unwrap();let id=structure_content_key_id(&[99;32]);
   assert!(verify_retained_epoch(&epoch(&c,2,&id),owner,&ws,&authority,RetainedKeyEntry{epoch:2,key_id:id.clone()}).is_ok());
   for n in [0,1,4]{assert!(verify_retained_epoch(&epoch(&c,2,&id),owner,&ws,&authority,RetainedKeyEntry{epoch:n,key_id:id.clone()}).is_err());}

@@ -23,6 +23,7 @@ use thiserror::Error;
 use zeroize::{Zeroize, Zeroizing};
 
 pub const ACCESS_REQUEST_TYPE: &str = "peerwork.access-request.v1+jws";
+pub const PERSISTENT_ACCESS_REQUEST_TYPE: &str = "peerwork.access-request.v2+jws";
 const MAX_SAFE_TIME: u64 = 9_007_199_254_740_991;
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum AccessError {
@@ -60,6 +61,13 @@ pub struct AccessWrite {
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct PersistentAccessAuthorization {
+    pub mode: String,
+    pub absolute_expires_at: Option<u64>,
+    pub key_binding: String,
+}
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AccessRequest {
     pub v: u8,
     pub profile: String,
@@ -71,6 +79,8 @@ pub struct AccessRequest {
     pub certificate: RecipientCertificate,
     pub time_context: String,
     pub write: Option<AccessWrite>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authorization: Option<PersistentAccessAuthorization>,
 }
 /// Can only be constructed after signature, audience, platform time, workspace
 /// and self-certificate validation. The label is presentation, never authority.
@@ -141,6 +151,7 @@ pub fn create_access_request(
             .ok_or(AccessError::Invalid)?
             .into(),
         write: options.write,
+        authorization: None,
     };
     let jws=sign_compact(&json!({"alg":"EdDSA","typ":ACCESS_REQUEST_TYPE,"kid":key_id(&key.verifying_key().to_bytes())}),&serde_json::to_value(request).map_err(invalid)?,key).map_err(invalid)?;
     verify_access_request(
@@ -170,7 +181,7 @@ pub fn verify_access_request(
         parse_strict_json(&decode_base64url(parts[0]).map_err(invalid)?).map_err(invalid)?;
     if header.as_object().map(|v| v.len()) != Some(3)
         || header["alg"] != "EdDSA"
-        || header["typ"] != ACCESS_REQUEST_TYPE
+        || !matches!(header["typ"].as_str(), Some(ACCESS_REQUEST_TYPE | PERSISTENT_ACCESS_REQUEST_TYPE))
     {
         return Err(AccessError::Invalid);
     }
@@ -190,7 +201,20 @@ pub fn verify_access_request(
     // Bounded public request; reject duplicate members before typed decoding.
     crate::wire_json::parse_wire_json_bounded(&payload, 12, 9000).map_err(invalid)?;
     let request: AccessRequest = serde_json::from_slice(&payload).map_err(invalid)?;
-    if request.v != 1
+    let raw: Value = serde_json::from_slice(&payload).map_err(invalid)?;
+    let valid_policy = match request.v {
+        1 => header["typ"] == ACCESS_REQUEST_TYPE && !raw.as_object().ok_or(AccessError::Invalid)?.contains_key("authorization"),
+        2 => header["typ"] == PERSISTENT_ACCESS_REQUEST_TYPE
+            && request.kind == AccessKind::Browser
+            && request.authorization.as_ref().is_some_and(|policy| {
+                raw["authorization"].as_object().is_some_and(|v| v.len() == 3 && v.contains_key("absolute_expires_at"))
+                    && policy.mode == "PERSISTENT"
+                    && policy.key_binding == "PINNED_UNTIL_AUTHORIZATION_END"
+                    && policy.absolute_expires_at.is_none_or(|end| end > at && end <= MAX_SAFE_TIME)
+            }),
+        _ => false,
+    };
+    if !valid_policy
         || request.profile != PROFILE
         || request.workspace_id != workspace
         || request.actor_id != actor_id(&signer.to_bytes())
@@ -247,6 +271,34 @@ pub fn verify_access_request(
         deadline: context.expires_at_ms(),
         recipient,
     })
+}
+
+/// Interprets only explicitly signed, versioned authority. A v1 certificate or
+/// absent field can never become an indefinite device authorization.
+pub struct VerifiedAccessPolicy {
+    pub persistent: bool,
+    pub expires_at: Option<u64>,
+}
+pub fn verify_access_authorization(body: &WireValue, request: &VerifiedAccessRequest) -> Result<VerifiedAccessPolicy, AccessError> {
+    let mode = body.get("mode").and_then(WireValue::as_string).ok_or(AccessError::Invalid)?;
+    let expiry = match body.get("expires_at") {
+        Some(WireValue::Null) => None,
+        Some(WireValue::Number(value)) if value.is_finite() && value.fract() == 0.0 && *value > 0.0 && *value <= MAX_SAFE_TIME as f64 => Some(*value as u64),
+        _ => return Err(AccessError::Invalid),
+    };
+    if request.request.v == 2 {
+        let policy = request.request.authorization.as_ref().ok_or(AccessError::Invalid)?;
+        if mode != "PERSISTENT" || body.get("authorization_version").and_then(WireValue::as_number) != Some(2.0)
+            || expiry != policy.absolute_expires_at {
+            return Err(AccessError::Invalid);
+        }
+        Ok(VerifiedAccessPolicy { persistent: true, expires_at: expiry })
+    } else {
+        if body.get("authorization_version").is_some() || !matches!((mode.as_str(), expiry), ("SESSION", Some(_)) | ("KEYS_ONLY", None)) {
+            return Err(AccessError::Invalid);
+        }
+        Ok(VerifiedAccessPolicy { persistent: false, expires_at: expiry })
+    }
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -411,6 +463,7 @@ pub fn open_owner_access_keys(
         service_key,
         at,
     )?;
+    verify_access_authorization(body, &request)?;
     if request.request.actor_id != recipient_actor
         || request.recipient_key_id() != recipient.encryption_key_id()
     {
@@ -541,6 +594,29 @@ mod tests {
     fn material(byte: u8) -> AccessKeyMaterial {
         let secret = Zeroizing::new([byte; 32]);
         AccessKeyMaterial::new(structure_content_key_id(&secret), secret).unwrap()
+    }
+    #[test]
+    fn persistent_requests_require_explicit_version_policy_and_browser_signature() {
+        let key=SigningKey::from_bytes(&[5;32]);let recipient=SecretRecipient::generate().unwrap();
+        let original=request(&key,&recipient,NOW);let mut payload=serde_json::to_value(original.request()).unwrap();
+        payload["v"]=json!(2);payload["authorization"]=json!({"mode":"PERSISTENT","absolute_expires_at":null,"key_binding":"PINNED_UNTIL_AUTHORIZATION_END"});
+        let header=json!({"alg":"EdDSA","typ":PERSISTENT_ACCESS_REQUEST_TYPE,"kid":key_id(&key.verifying_key().to_bytes())});
+        let check=|value:&Value,typ:&str| {
+            let mut h=header.clone();h["typ"]=json!(typ);
+            let jws=sign_compact(&h,value,&key).unwrap();
+            verify_access_request(&jws,&token_byte(3),&"structure-test".encode_utf16().collect::<Vec<_>>(),&service_key(),NOW)
+        };
+        let verified=check(&payload,PERSISTENT_ACCESS_REQUEST_TYPE).unwrap();
+        let policy=crate::wire_json::parse_wire_json_bounded(br#"{"mode":"PERSISTENT","authorization_version":2,"expires_at":null}"#,12,1024).unwrap();
+        assert!(verify_access_authorization(&policy,&verified).unwrap().persistent);
+        assert!(check(&payload,ACCESS_REQUEST_TYPE).is_err());
+        for field in ["authorization","v","kind"] {
+            let mut bad=payload.clone();match field {"authorization"=>{bad["authorization"].as_object_mut().unwrap().remove("absolute_expires_at");},"v"=>bad["v"]=json!(1),_=>bad["kind"]=json!("AGENT")};
+            assert!(check(&bad,PERSISTENT_ACCESS_REQUEST_TYPE).is_err());
+        }
+        let legacy=crate::wire_json::parse_wire_json_bounded(br#"{"mode":"SESSION","expires_at":null}"#,12,1024).unwrap();
+        assert!(verify_access_authorization(&legacy,&original).is_err());
+        assert!(verify_access_authorization(&policy,&original).is_err());
     }
     #[test]
     fn access_request_uses_nonce_bound_platform_time_and_preserves_recipient() {
