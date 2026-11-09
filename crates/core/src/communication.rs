@@ -6,7 +6,7 @@ mod host_report;
 mod events;
 #[path = "communication_conversation.rs"]
 mod conversation;
-pub use conversation::{ConversationRecordContext,ConversationContentContext,NativeMessageContext,VerifiedConversationMessage,space_conversation_id,conversation_thread_id,authored_native_message_content,verify_conversation_message,verify_conversation_message_with_proofs};
+pub use conversation::{ConversationContext,ConversationInstanceContext,ConversationRecordContext,ConversationContentContext,NativeMessageContext,VerifiedConversationMessage,space_conversation_id,conversation_thread_id,authored_native_message_content,verify_conversation_message,verify_conversation_message_with_proofs};
 pub use conversation::{FEATURE as CONVERSATION_FEATURE,FORMAT as CONVERSATION_FORMAT};
 pub use events::FORMAT as WORKSPACE_EVENT_FORMAT;
 pub(crate) use events::verify_event as verify_workspace_event;

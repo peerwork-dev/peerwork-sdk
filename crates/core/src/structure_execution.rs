@@ -100,6 +100,7 @@ pub const STRUCTURE_READS: &[&str] = &[
     "structure.publication.policy.get",
     "structure.publication.prepare.get",
     "structure.record.get",
+    "structure.record.relations.read",
     "structure.records.read",
     "structure.workspace.deletion.get",
     "structure.workspace.deletions.read",
@@ -128,7 +129,7 @@ pub fn is_structure_action(action:&str)->bool{operation_kind(action).is_some()}
 pub fn is_instance_scoped(action:&str)->bool{
     matches!(action,"structure.action"|"structure.instance.get"|"structure.instance.resolve"|
         "structure.protocol.resolve"|"structure.protocol.resource.get"|
-        "structure.record.get"|"structure.record.withdraw"|"structure.records.read"|
+        "structure.record.get"|"structure.record.relations.read"|"structure.record.withdraw"|"structure.records.read"|
         "structure.publication.prepare.get"|"structure.grant.get"|"structure.grant.set"|"structure.grant.revoke"|
         "structure.maintenance.get"|"structure.maintenance.rebuild"|"structure.maintenance.cancel"|
         "structure.events.read"|"structure.instance.records.read")||action.starts_with("structure.delivery.")&&is_structure_action(action)

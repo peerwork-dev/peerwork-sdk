@@ -1,7 +1,7 @@
 //! Workspace-first room tools. Routing derives from the selected workspace and
 //! verified inbox item; no contacts, recipients or second client are required.
 use super::*;
-use peerwork_core::communication::{ConversationRecordContext,space_conversation_id};
+use peerwork_core::communication::{ConversationContext,space_conversation_id};
 
 impl AgentTools {
     pub(super) async fn chat_read(&self,workspace:Option<&str>,thread_root:Option<String>,after:Option<u64>,before:Option<u64>,limit:usize)->Result<Value>{
@@ -23,7 +23,7 @@ impl AgentTools {
         if let Some(head)=result["conversation"].as_object_mut(){head.remove("pin_source");}
         result["authority"]=json!("EXTERNAL_PEER_DATA");Ok(result)
     }
-    pub(super) async fn chat_post(&self,workspace:&str,operation_id:String,text:String,thread_root:Option<String>,reply_to:Option<String>,context:Option<ConversationRecordContext>,mentions:Vec<String>,wait_ms:u64)->Result<Value>{
+    pub(super) async fn chat_post(&self,workspace:&str,operation_id:String,text:String,thread_root:Option<String>,reply_to:Option<String>,context:Option<ConversationContext>,mentions:Vec<String>,wait_ms:u64)->Result<Value>{
         if text.is_empty()||text.len()>8192||mentions.len()>32||mentions.iter().any(|id|!token(id))||mentions.iter().collect::<std::collections::BTreeSet<_>>().len()!=mentions.len()
             || [thread_root.as_ref(),reply_to.as_ref()].into_iter().flatten().any(|id|!token(id)) {return Err(invalid("CHAT_POST_INVALID"));}
         let room=space_conversation_id(workspace).map_err(|_|invalid("CHAT_POST_INVALID"))?;
@@ -33,7 +33,7 @@ impl AgentTools {
         self.invoke_client(self.directory_client(workspace),request,wait_ms).await
     }
     pub(super) async fn chat_reply(&self,workspace:&str,opened:&Value,operation_id:String,text:String,wait_ms:u64)->Result<Value>{
-        let context:Option<ConversationRecordContext>=serde_json::from_value(opened["context"].clone()).map_err(|_|invalid("REPLY_INPUT_NOT_VERIFIED"))?;
+        let context:Option<ConversationContext>=serde_json::from_value(opened["context"].clone()).map_err(|_|invalid("REPLY_INPUT_NOT_VERIFIED"))?;
         let parent=opened["message_id"].as_str().filter(|v|token(v)).ok_or_else(||invalid("REPLY_INPUT_NOT_VERIFIED"))?;
         let thread=opened["thread_root"].as_str().filter(|v|token(v)).ok_or_else(||invalid("REPLY_INPUT_NOT_VERIFIED"))?;
         if opened["conversation_id"]!=space_conversation_id(workspace).map_err(|_|invalid("REPLY_INPUT_NOT_VERIFIED"))? {return Err(invalid("REPLY_INPUT_NOT_VERIFIED"));}

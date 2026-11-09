@@ -97,3 +97,27 @@ The receiver negotiates the group envelope through `conversation_format` on
 stream scopes when the service advertises support. Preserve the original engine,
 journal, pending IDs and receiver state when upgrading. Source support does not
 prove that an existing user runtime or host session has adopted the new binary.
+
+## Development candidate: protocol instance contexts
+
+The unreleased Passkey/workbench branch additionally accepts an explicit
+`INSTANCE` context with `instance_id`, `execution_context_id` and
+`protocol_digest`. Its thread ID follows the stable instance across protocol
+generations. The signed author packet and content AEAD still bind the exact
+execution context and digest used for each message. Record contexts and their
+existing thread IDs retain their original wire format.
+
+Rust uses `ConversationContext::Record(ConversationRecordContext)` or
+`ConversationContext::Instance(ConversationInstanceContext)`; both inner types
+implement `Into<ConversationContext>`. Supply that union to
+`ConversationContentContext.context` and `conversation_thread_id`.
+`peerwork_post` accepts the same explicit context through the shared native
+tools. This source capability is not published SDK or production support.
+
+The same candidate adds the read-only `structure.record.relations.read` action.
+Select the original instance/protocol scope and an exact `record_id`/`revision`,
+with optional `execution_context_id`, `cursor` and `limit` (maximum32). It returns
+service-verified outgoing edges and selected target metadata, not target bodies.
+Continue its opaque `next_cursor` under the same member and exact selector.
+Target links retain their exact revision and current withdrawal state. This is
+not an arbitrary JSON query, reverse graph or complete protocol-state export.

@@ -25,14 +25,48 @@ impl ConversationRecordContext {
         Ok(())
     }
 }
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ConversationInstanceContext {
+    pub kind: String,
+    pub instance_id: String,
+    pub execution_context_id: String,
+    pub protocol_digest: String,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum ConversationContext {
+    Record(ConversationRecordContext),
+    Instance(ConversationInstanceContext),
+}
+impl ConversationContext {
+    fn validate(&self)->Result<()> {
+        match self {
+            Self::Record(value)=>value.validate(),
+            Self::Instance(value)=>{
+                if value.kind!="INSTANCE" || !token(&value.instance_id) || !token(&value.execution_context_id) || !digest(&value.protocol_digest) {return Err(CommunicationError);}
+                Ok(())
+            },
+        }
+    }
+}
+impl From<ConversationRecordContext> for ConversationContext {
+    fn from(value:ConversationRecordContext)->Self {Self::Record(value)}
+}
+impl From<ConversationInstanceContext> for ConversationContext {
+    fn from(value:ConversationInstanceContext)->Self {Self::Instance(value)}
+}
 pub fn space_conversation_id(workspace: &str) -> Result<String> {
     if !token(workspace) {return Err(CommunicationError);}
     id(json!([FORMAT,workspace]))
 }
-pub fn conversation_thread_id(workspace: &str,context: &ConversationRecordContext) -> Result<String> {
+pub fn conversation_thread_id(workspace: &str,context: &ConversationContext) -> Result<String> {
     context.validate()?;
     if !token(workspace) {return Err(CommunicationError);}
-    id(json!(["peerwork.conversation-thread.v1",workspace,context.instance_id,context.entity_id]))
+    match context {
+        ConversationContext::Record(value)=>id(json!(["peerwork.conversation-thread.v1",workspace,value.instance_id,value.entity_id])),
+        ConversationContext::Instance(value)=>id(json!(["peerwork.instance-conversation-thread.v1",workspace,value.instance_id])),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -43,7 +77,7 @@ pub struct ConversationContentContext {
     pub conversation_id: String,
     pub thread_root: Option<String>,
     pub reply_to: Option<String>,
-    pub context: Option<ConversationRecordContext>,
+    pub context: Option<ConversationContext>,
     pub mentions: Vec<String>,
 }
 fn optional_token(v: &WireValue,name: &str) -> Result<Option<String>> {
@@ -332,6 +366,20 @@ mod tests {
         let mut command:serde_json::Value=wire(author.command()).unwrap();command["body"]["audience"]=json!("ONLINE_MEMBERS");assert!(ConversationContentContext::from_command(&as_wire(&command)).is_err());
         command["body"]["audience"]=json!("SPACE_MEMBERS");command["body"]["recipients"]=json!([]);assert!(ConversationContentContext::from_command(&as_wire(&command)).is_err());
         let mut record=ConversationRecordContext{kind:"RECORD".into(),instance_id:"I".repeat(43),execution_context_id:"E".repeat(43),protocol_digest:"f".repeat(64),entity_id:"O".repeat(43),record_id:"R".repeat(43),revision:1};
-        let first=conversation_thread_id(&context.workspace_id,&record).unwrap();record.record_id="V".repeat(43);record.revision=2;assert_eq!(first,conversation_thread_id(&context.workspace_id,&record).unwrap());record.entity_id="Q".repeat(43);assert_ne!(first,conversation_thread_id(&context.workspace_id,&record).unwrap());
+        let first=conversation_thread_id(&context.workspace_id,&record.clone().into()).unwrap();record.record_id="V".repeat(43);record.revision=2;assert_eq!(first,conversation_thread_id(&context.workspace_id,&record.clone().into()).unwrap());record.entity_id="Q".repeat(43);assert_ne!(first,conversation_thread_id(&context.workspace_id,&record.clone().into()).unwrap());
+    }
+    #[test]
+    fn instance_threads_survive_protocol_generations_but_each_ciphertext_authenticates_the_original_context() {
+        let (value,_,audience)=fixture();let author=verify_structure_author_intent(value["author_intent"].as_str().unwrap(),&audience).unwrap();
+        let (NativeMessageContext::Conversation(mut context),_)=authored_native_message_content(&author).unwrap() else{panic!("wrong domain");};
+        let instance=ConversationInstanceContext{kind:"INSTANCE".into(),instance_id:"I".repeat(43),execution_context_id:"I".repeat(43),protocol_digest:"a".repeat(64)};
+        context.context=Some(instance.clone().into());let first=conversation_thread_id(&context.workspace_id,context.context.as_ref().unwrap()).unwrap();
+        let original=context.canonical_aad().unwrap();let sealed=seal_content_with_aad(&[37;32],b"instance discussion",&original).unwrap();
+        let mut changed=instance.clone();changed.execution_context_id="E".repeat(43);changed.protocol_digest="b".repeat(64);context.context=Some(changed.clone().into());
+        assert_eq!(first,conversation_thread_id(&context.workspace_id,context.context.as_ref().unwrap()).unwrap());assert!(open_content_with_aad(&[37;32],&sealed,&context.canonical_aad().unwrap()).is_err());
+        changed.instance_id="J".repeat(43);assert_ne!(first,conversation_thread_id(&context.workspace_id,&changed.into()).unwrap());
+        let record=ConversationRecordContext{kind:"RECORD".into(),instance_id:instance.instance_id.clone(),execution_context_id:instance.execution_context_id.clone(),protocol_digest:instance.protocol_digest.clone(),entity_id:instance.instance_id.clone(),record_id:"R".repeat(43),revision:1};
+        assert_ne!(first,conversation_thread_id(&context.workspace_id,&record.into()).unwrap());
+        let mut invalid=serde_json::to_value(instance).unwrap();invalid["record_id"]=json!("R".repeat(43));assert!(serde_json::from_value::<ConversationContext>(invalid).is_err());
     }
 }

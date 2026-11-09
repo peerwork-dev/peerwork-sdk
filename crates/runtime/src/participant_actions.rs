@@ -36,7 +36,7 @@ pub(crate) fn execution_mutation(action:&str)->bool {
     matches!(action,"structure.action"|"structure.grant.set"|"structure.grant.revoke"|"structure.maintenance.rebuild"|"structure.maintenance.cancel"|"participant.publication.publish")
 }
 pub(crate) fn execution_routed(action:&str)->bool {
-    execution_mutation(action)||matches!(action,"structure.record.get"|"structure.publication.prepare.get"|"structure.instance.get"|"structure.instance.resolve"|"structure.protocol.resolve"|"structure.protocol.resource.get"|"structure.records.read"|"structure.grant.get"|"structure.maintenance.get")
+    execution_mutation(action)||matches!(action,"structure.record.get"|"structure.record.relations.read"|"structure.publication.prepare.get"|"structure.instance.get"|"structure.instance.resolve"|"structure.protocol.resolve"|"structure.protocol.resource.get"|"structure.records.read"|"structure.grant.get"|"structure.maintenance.get")
 }
 pub(crate) fn kind(action: &str) -> Option<StructureOperationKind> {
     match action {

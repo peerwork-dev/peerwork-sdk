@@ -2,7 +2,7 @@
 //! immutable; old namespaces remain available for exact-operation recovery.
 use super::*;
 use crate::agent_tools::{ProtocolView,ProtocolViewScope,MAX_PROTOCOL_VIEWS};
-const READS:&[&str]=&["structure.instance.records.read","structure.instance.get","structure.instance.resolve","structure.protocol.resolve","structure.protocol.resource.get","structure.record.get","structure.records.read"];
+const READS:&[&str]=&["structure.instance.records.read","structure.instance.get","structure.instance.resolve","structure.protocol.resolve","structure.protocol.resource.get","structure.record.get","structure.record.relations.read","structure.records.read"];
 impl Connect {
     pub(crate) async fn refresh_workspace_profile(&mut self,participant:Option<&str>,workspace:&str)->Result<bool>{
         self.require_writer()?;
