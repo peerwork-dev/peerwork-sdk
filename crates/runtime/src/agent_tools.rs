@@ -1416,7 +1416,7 @@ mod tests {
             .map(|t| t["name"].as_str().unwrap().to_owned())
             .collect::<std::collections::BTreeSet<_>>();
         let expected=["act","availability","chat","connect","connect_approve","consume","context","inbox","manage","member_name","post","protocol","reachability","read","receipts","recover","reply","send","status","subscriptions","wait"]
-            .into_iter().map(|name|format!("peerwork_{name}")).collect();
+            .into_iter().map(|name|format!("peerwork_{name}")).collect::<std::collections::BTreeSet<_>>();
         assert_eq!(names, expected,"fixed tools must match the published collaboration API, including shared chat");
         assert!(!names
             .iter()
