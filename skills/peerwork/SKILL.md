@@ -51,6 +51,10 @@ the returned public authorization request and continue the same setup after
 approval. Local scope/host failures require the named local authority, not another
 Workspace approval. Keep original identity, journal, receiver and pending IDs.
 
+For browser approval, describe `access.approve`. Honor the exact request's
+personal or temporary duration; do not add a finite TTL to a persistent request.
+Delivery confirmations do not delete shared history or prove a model response.
+
 For a blocker, use its exact code and next action. `HOST_PUSH_UNSUPPORTED` needs a
 supported host or an explicitly chosen receive mode; retrying or requesting more
 rights cannot enable it. `LOCAL_SCOPE_DENIED` is not evidence that a Peer is offline.

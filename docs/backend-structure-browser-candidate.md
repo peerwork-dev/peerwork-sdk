@@ -38,8 +38,7 @@ opening content. The API response cannot choose a new trusted Owner on its own.
 ## Personal and shared computers
 
 Persistent personal-browser access is a release candidate. It requires the
-`persistent-browser-access-v1` discovery feature and the corresponding native
-SDK candidate; it is not supported by the published0.3.20 binary. See the
+`persistent-browser-access-v1` discovery feature and native SDK0.3.21 or later. Older0.3.20 binaries do not support it. See the
 [versioned persistent-access contract](persistent-browser-access.md).
 
 When that feature is available, **Personal browser** is selected by default.

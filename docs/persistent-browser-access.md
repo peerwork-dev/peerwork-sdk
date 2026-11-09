@@ -1,9 +1,9 @@
 # Persistent browser access contract
 
-Status: implementation candidate, not a published SDK/service capability yet.
-The currently published native SDK0.3.20 does not support this contract. Release
-notes must identify the exact qualified service revision and minimum reader SDK
-before deployment. See [the browser workflow](backend-structure-browser-candidate.md).
+Native SDK support:0.3.21 and later. Require the service feature
+`persistent-browser-access-v1`; an SDK upgrade alone does not deploy that feature.
+Older0.3.20 readers fail closed on these new proof formats. See
+[the browser workflow](backend-structure-browser-candidate.md).
 
 ## One authorization, stable device
 

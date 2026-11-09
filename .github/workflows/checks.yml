@@ -62,6 +62,7 @@ jobs:
           key: checks-v1-${{ runner.os }}-${{ runner.arch }}-rust1.89.0-${{ hashFiles('Cargo.lock', '**/Cargo.toml', '**/build.rs', 'third_party/**') }}-${{ github.sha }}
           restore-keys: |
             checks-v1-${{ runner.os }}-${{ runner.arch }}-rust1.89.0-${{ hashFiles('Cargo.lock', '**/Cargo.toml', '**/build.rs', 'third_party/**') }}-
+            checks-v1-${{ runner.os }}-${{ runner.arch }}-rust1.89.0-
       - name: Validate source and release controls
         run: |
           python tools/release/version.py check --native
