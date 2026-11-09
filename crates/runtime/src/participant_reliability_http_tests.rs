@@ -48,6 +48,47 @@ async fn fault(watch:&mut ProgramWatch)->WatchSnapshot {
         loop {let s=watch.next().await.unwrap();if s.verification_failure.is_some(){return s;}}
     }).await.unwrap()
 }
+#[tokio::test(flavor="multi_thread",worker_threads=4)]
+#[ignore="requires explicit synthetic PostgreSQL and real product HTTP fixture"]
+async fn managed_mcp_and_cli_repair_generated_directory_clients_without_replacing_original_authority(){
+    use crate::{communication_runtime as ipc,participant_connect::{Connect,ConnectRequest,Registration},agent_tools::{AgentTools,AgentRequest}};
+    use tokio::io::AsyncWriteExt;
+    let service=Service::start();let root=crate::test_support::protected_test_dir();let config=configuration(root.path(),&service.origin);
+    let owner=ParticipantClient::open(config.clone()).await.unwrap();
+    let ws=mutate(&owner,"directory-space","structure.workspace.create",&Scope::default(),json!({"name":"Directory recovery"})).await["workspace_id"].as_str().unwrap().to_owned();
+    owner.close().await.unwrap();
+    let runtime=ipc::RuntimeConfig{format:"peerwork.participant-runtime.v1".into(),state_directory:root.path().join("runtime"),hosts:vec![],engines:vec![ipc::EngineConfig{name:"original".into(),origin:config.origin.clone(),expected_actor:config.expected_actor.clone(),identity_path:config.identity_path.clone(),state_directory:config.state_directory.clone(),journal_path:Some(config.journal_path.clone()),authority:config.authority.clone(),allow_loopback_http:true,transport:config.transport.clone(),max_inflight:8,max_pending:64,max_stored_bytes:32*1024*1024,migration_sources:vec![]}],clients:vec![ipc::ClientConfig{name:"owner".into(),engine:"original".into(),capability:Capability::owner()}]};
+    let stop=crate::KernelCancellationToken::new();let(tx,rx)=tokio::sync::oneshot::channel();let daemon=tokio::spawn(ipc::serve(runtime,stop.clone(),tx));let ready=rx.await.unwrap().unwrap();
+    let registry=root.path().join("registry");let mut connect=Connect::open(&registry).unwrap();
+    connect.register("owner",Registration{origin:service.origin.clone(),actor_id:config.expected_actor.clone(),endpoint_path:ready.client_endpoints["owner"].clone()}).await.unwrap();
+    let request:ConnectRequest=serde_json::from_value(json!({"participant":"owner","workspace_id":ws,"send":false,"receive":false})).unwrap();
+    assert_eq!(connect.run(request).await.unwrap()["state"],"LOCAL_CONFIGURED");
+    let mut profile=connect.profile_for_scope(Some("owner"),Some(&ws)).unwrap().unwrap();
+    let original=ipc::RuntimeClient::connect(ready.client_endpoints["owner"].clone(),&service.origin,&config.expected_actor).await.unwrap();
+    let mut narrow=Capability::owner();narrow.allow_root=false;narrow.workspace_ids=Some([ws.clone()].into());narrow.operations.remove("structure.members.read");narrow.instance_ids=Some(["I".repeat(43)].into());narrow.protocol_digests=Some(["a".repeat(64)].into());narrow.mailbox_ids=Some(["M".repeat(43)].into());
+    let derived=original.call(json!({"method":"derive","name":"historical-directory-client","capability":narrow})).await.unwrap();let legacy=PathBuf::from(derived["endpoint_path"].as_str().unwrap());
+    profile.endpoint_path=legacy.clone();profile.directory_endpoints.clear();
+    let restricted=AgentTools::open(profile.clone()).await.unwrap();let baseline=service.counts().await;
+    let error=restricted.call(AgentRequest::parse("reachability",json!({"workspace":ws})).unwrap()).await.unwrap_err();
+    assert_eq!(error.code,"LOCAL_SCOPE_DENIED");assert_eq!(error.details.as_ref().unwrap()["restricted_by"],json!(["operations","instance_ids","protocol_digests","mailbox_ids"]));
+    assert_eq!(service.counts().await["commands"],baseline["commands"],"the original denial must not submit a request");
+    drop(restricted);drop(connect);
+    let store=crate::secure_state::SecureStateStore::open(&registry.join("connect.state")).unwrap();let mut state:Value=serde_json::from_slice(&store.read_exact().unwrap().unwrap()).unwrap();let active=state["active"].as_str().unwrap().to_owned();
+    state["setups"][&active]["profile"]=json!(profile);state["setups"][&active]["sender_capability"]=json!(narrow);state["setups"][&active]["result"].as_object_mut().unwrap().remove("client_authority_model");
+    let historical=serde_json::to_vec(&state).unwrap();store.write_exact(&historical).unwrap();drop(store);
+    let(server,client)=tokio::io::duplex(1024*1024);let(sr,sw)=tokio::io::split(server);let(cr,mut cw)=tokio::io::split(client);let mut cr=tokio::io::BufReader::new(cr);
+    let frontend=tokio::spawn(crate::agent_mcp::serve_local_selected(registry.clone(),Some("owner".into()),Some(ws.clone()),tokio::io::BufReader::new(sr),sw));
+    let found=super::management::mcp(&mut cr,&mut cw,1,"reachability",json!({"workspace":ws})).await;assert_eq!(found["members"].as_array().unwrap().len(),1,"{found}");
+    cw.shutdown().await.unwrap();drop(cw);drop(cr);frontend.await.unwrap().unwrap();
+    let fixed=Connect::inspect(&registry).unwrap().profile_for_scope(Some("owner"),Some(&ws)).unwrap().unwrap();
+    assert_eq!(fixed.expected_actor,config.expected_actor);assert_ne!(fixed.endpoint_path,legacy);assert!(fixed.recovery_views.values().any(|v|v.endpoint_path==legacy));
+    let old=ipc::RuntimeClient::connect(legacy,&service.origin,&config.expected_actor).await.unwrap();assert_eq!(old.call(json!({"method":"capabilities"})).await.unwrap()["capability"],json!(narrow));
+    let store=crate::secure_state::SecureStateStore::open(&registry.join("connect.state")).unwrap();store.write_exact(&historical).unwrap();drop(store);
+    let args=vec!["--local".into(),registry.to_string_lossy().into_owned(),"--participant".into(),"owner".into(),"--workspace".into(),ws.clone(),"reachability".into()];
+    let found=tokio::task::spawn_blocking(move||crate::agent_frontend::cli(&args)).await.unwrap();assert_eq!(found["members"].as_array().unwrap().len(),1,"{found}");
+    assert_eq!(service.counts().await["workspaces"],baseline["workspaces"]);assert_eq!(service.counts().await["actions"]["structure.member.set"],baseline["actions"]["structure.member.set"]);
+    drop(old);drop(original);stop.cancel();daemon.await.unwrap().unwrap();
+}
 #[tokio::test(flavor="multi_thread",worker_threads=2)]
 #[ignore="requires explicit synthetic PostgreSQL and real product HTTP fixture"]
 async fn receiver_capacity_recovers_claim_pulse_ack_and_stream_without_replacing_identity_or_cursor() {

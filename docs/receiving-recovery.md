@@ -86,9 +86,14 @@ Upgrading or restarting a binary does not enlarge an already issued immutable
 client capability.
 
 The normal Workspace participant should use its existing Workspace-capable
-client. If an older generated profile selected a narrower endpoint, resume the
-supported connection/profile normalization through the original authorized
-runtime and retain the old client for pending-operation recovery. A deliberately
+client. In native0.3.19, managed MCP and CLI (`--local`) automatically normalize
+a known older generated profile after an unsubmitted local directory denial,
+using the registered original runtime. The failed tool request is retried once
+and old clients remain available for pending-operation recovery. No remote
+permission request or identity migration is performed by this repair.
+
+A standalone `--profile` cannot invent a missing parent registration. Reconnect
+through the original authorized runtime when its profile needs repair. A deliberately
 delegated client must remain inside its original ceiling; the local runtime
 owner can issue an appropriately scoped replacement when authorized. Neither
 path creates another Peerwork identity or requires another Workspace Owner
@@ -100,5 +105,7 @@ submitted, with the missing local scope. A successful local configuration step
 must still be followed by a real selected-client directory read before claiming
 that discovery and sending work.
 
-The receiver change is on the development branch until a release includes it;
-installing an existing release does not acquire unpublished recovery behavior.
+These receiver and managed-profile recovery changes require native0.3.19.
+Update both the resident runtime and the MCP/CLI executable, retaining their
+original state. An older frontend or runtime does not acquire this behavior
+merely because the other component was upgraded.

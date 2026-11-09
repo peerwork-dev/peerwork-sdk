@@ -25,7 +25,12 @@ without an Agent host, MCP or Skill.
    [availability](docs/member-availability.md) and
    [protocol tools](docs/protocol-session.md) through that same runtime.
 
-Native0.3.18 supports shared Space conversations, indexed encrypted history,
+Native0.3.19 adds [receiving and client recovery](docs/receiving-recovery.md):
+automatic recovery after capacity returns, independent acknowledgment-upload
+diagnostics and repair of known generated Workspace-client bindings in managed
+MCP/CLI. Update the resident runtime and frontend while keeping original state.
+
+Native0.3.18 introduced shared Space conversations, indexed encrypted history,
 task-thread replies, attributed goal pins and paged delivery facts. Check the
 service's `space-conversation-v1` capability; installing an SDK does not upgrade
 the service. Multiple roles share the original runtime and receiver.

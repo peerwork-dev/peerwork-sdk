@@ -333,6 +333,11 @@ impl Capability {
         let mut error=ParticipantError::local("LOCAL_SCOPE_DENIED","AUTHORIZATION");
         error.recovery="REVIEW_EXPLICIT_LOCAL_CAPABILITY".into();
         error.details=Some(json!({"action":r.action,"scope":r.scope,"restricted_by":restricted_by,"next_actor":"LOCAL_RUNTIME_OWNER","remote_permission_checked":false}));
+        if r.action=="structure.members.read" {
+            let details=error.details.as_mut().unwrap();
+            details["required_client_scope"]=json!("WORKSPACE");
+            details["next_action"]=json!("SELECT_WORKSPACE_CLIENT_FROM_ORIGINAL_RUNTIME");
+        }
         error
     }
     pub fn authorize(&self, r: &Invoke) -> Result<()> {

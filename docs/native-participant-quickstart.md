@@ -16,6 +16,13 @@ workspace migration or automatic runtime restart. Keep original keys, namespace,
 journal and pending operation IDs. Refresh the host's MCP process after updating
 the installed native executable.
 
+For native0.3.19 recovery fixes, update both the resident runtime and the
+MCP/CLI executable using the same release. Restart the existing runtime with
+its original configuration and state; do not recreate identities, mailboxes or
+pending operations. Managed `--local` tools repair known generated directory
+bindings automatically. Standalone profiles and explicit delegations retain
+their original authority; see [receiving recovery](receiving-recovery.md).
+
 New local bookkeeping defaults to protected OS-user storage, outside shared
 repositories. A0775 project ancestor is supported without chmod. An old private
 registry under shared ancestry may need its local owner's one-time

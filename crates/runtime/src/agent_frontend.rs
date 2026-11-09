@@ -131,6 +131,12 @@ pub fn cli(args: &[String]) -> Value {
                     let alias=agent_tools::protocol_request_alias(&request).map(str::to_owned);let retry=request.clone();
                     let result=AgentTools::open(profile).await?.call(request).await;
                     let mut value=match result {
+                        Err(error)if agent_tools::refresh_workspace_error(&error).is_some()=>{
+                            let selected=agent_tools::refresh_workspace_error(&error).unwrap();
+                            if !crate::participant_connect::Connect::open(&path)?.refresh_workspace_profile(handle.as_deref(),selected).await? {return Err(error);}
+                            let next=crate::participant_connect::Connect::inspect(&path)?.profile_for_scope(handle.as_deref(),workspace.as_deref())?.ok_or_else(||ParticipantError::local("LOCAL_SELECTION_REQUIRED","CONNECT"))?;
+                            AgentTools::open(next).await?.call(retry).await?
+                        },
                         Err(error)if alias.is_some()&&error.code=="PROTOCOL_OPERATION_ROUTE_EXISTS"=>{
                             let next=crate::participant_connect::Connect::inspect(&path)?.profile_for_scope(handle.as_deref(),workspace.as_deref())?.ok_or_else(||ParticipantError::local("LOCAL_SELECTION_REQUIRED","CONNECT"))?;
                             AgentTools::open(next).await?.call(retry).await?

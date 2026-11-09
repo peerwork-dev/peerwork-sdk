@@ -4,6 +4,15 @@ use super::*;
 use crate::agent_tools::{ProtocolView,ProtocolViewScope,MAX_PROTOCOL_VIEWS};
 const READS:&[&str]=&["structure.instance.records.read","structure.instance.get","structure.instance.resolve","structure.protocol.resolve","structure.protocol.resource.get","structure.record.get","structure.records.read"];
 impl Connect {
+    pub(crate) async fn refresh_workspace_profile(&mut self,participant:Option<&str>,workspace:&str)->Result<bool>{
+        self.require_writer()?;
+        let handle=self.selected_handle(participant)?.ok_or_else(||local("LOCAL_SELECTION_REQUIRED"))?;
+        let active=self.registry.active_by_scope.get(&format!("{handle}:{workspace}")).cloned().ok_or_else(||local("LOCAL_SELECTION_REQUIRED"))?;
+        // Only the registered original parent can replace a known generated
+        // ceiling. Custom and explicit delegations retain the normalizer's
+        // provenance checks and are never enlarged from the denied endpoint.
+        Ok(self.normalize_cached_authority(&active).await?!=active)
+    }
     pub(super) fn inherited_explicit_actions(parent:&Capability,actions:&[String])->bool{actions.is_empty()||parent.business_actions.as_ref()==Some(&actions.iter().cloned().collect())}
     pub(super) fn explicit_setup(setup:&Setup)->bool{setup.profile.is_some()&&setup.result["client_authority_model"]!="SERVICE_CURRENT"&&setup.protocol_intents.values().chain(setup.desired.protocols.iter()).any(|p|!p.actions.is_empty())}
     pub(super) fn check_requested_actions(parent:&Capability,protocols:&[ProtocolSelection])->Result<()>{

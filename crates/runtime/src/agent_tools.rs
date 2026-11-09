@@ -484,6 +484,23 @@ pub enum AgentRequest {
 }
 pub(crate) fn protocol_request_alias(request:&AgentRequest)->Option<&str>{match request{AgentRequest::Protocol{protocol,..}|AgentRequest::Read{protocol,..}|AgentRequest::Act{protocol,..}=>Some(protocol),_=>None}}
 pub(crate) fn refresh_protocol_error(error:&ParticipantError)->bool{matches!(error.code.as_str(),"PROTOCOL_VIEW_REQUIRED"|"PROTOCOL_READ_VIEW_REQUIRED"|"LOCAL_SCOPE_DENIED")}
+pub(crate) fn refresh_workspace_error(error:&ParticipantError)->Option<&str>{
+    if error.code!="LOCAL_SCOPE_DENIED"||error.effect_certainty!="NOT_SUBMITTED" {return None;}
+    let details=error.details.as_ref()?;
+    if details["action"]!="structure.members.read"||details["remote_permission_checked"]!=false {return None;}
+    details["scope"]["workspace_id"].as_str()
+}
+#[test]
+fn workspace_profile_repair_requires_an_unsubmitted_local_directory_denial(){
+    let mut error=ParticipantError::local("LOCAL_SCOPE_DENIED","AUTHORIZATION");
+    error.details=Some(json!({"action":"structure.members.read","remote_permission_checked":false,"scope":{"workspace_id":"W".repeat(43)}}));
+    assert_eq!(refresh_workspace_error(&error),Some("W".repeat(43).as_str()));
+    error.effect_certainty="UNKNOWN".into();assert!(refresh_workspace_error(&error).is_none());
+    error.effect_certainty="NOT_SUBMITTED".into();
+    error.details.as_mut().unwrap()["remote_permission_checked"]=json!(true);assert!(refresh_workspace_error(&error).is_none());
+    error.details.as_mut().unwrap()["remote_permission_checked"]=json!(false);
+    error.details.as_mut().unwrap()["action"]=json!("structure.action");assert!(refresh_workspace_error(&error).is_none());
+}
 pub(crate) fn refresh_nonblocking(error:&ParticipantError,request:&AgentRequest)->bool{
     error.code=="PROTOCOL_TARGET_ROLE_OR_ACTION_GRANT_REQUIRED"&&!matches!(request,AgentRequest::Act{..})
         ||error.code=="PROTOCOL_READ_CAPABILITY_REQUIRED"&&!matches!(request,AgentRequest::Read{view,record_id:None,execution_context_id:None,..}if view=="records")
