@@ -30,6 +30,10 @@ pub fn build_header(input:&Value)->Result<Value>{
  let mut resources=BTreeMap::new();
  for(p,r)in &b.resources{
   if !path(p)||r.text.is_empty()||r.text.len()>8192||!matches!(r.media_type.as_str(),"text/markdown"|"text/plain"|"application/json"){return Err(BundleError)}
+  if p==crate::protocol_presentation::RESOURCE_PATH {
+   if r.media_type!="application/json"{return Err(BundleError)}
+   crate::protocol_presentation::parse_resource(&r.text,&b.manifest).map_err(|_|BundleError)?;
+  }
   resources.insert(p.clone(),json!({"sha256":sha256_hex(r.text.as_bytes()),"bytes":r.text.len(),"media_type":r.media_type}));
  }
  let actions=b.manifest["actions"].as_array().ok_or(BundleError)?;
