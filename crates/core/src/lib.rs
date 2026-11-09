@@ -4,6 +4,7 @@
 pub mod bootstrap_objects;
 pub mod protocol_bundle;
 pub mod protocol_presentation;
+pub mod human_author;
 pub mod member_scopes;
 pub mod canonical;
 pub mod crypto;

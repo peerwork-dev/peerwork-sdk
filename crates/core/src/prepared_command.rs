@@ -195,7 +195,7 @@ pub fn command_canonical_path(command: &WireValue) -> Path {
         Path::COMMAND
     }
 }
-fn validate_command_schema(command: &WireValue, audience: &[u16], actor: &str) -> Result<(), ()> {
+pub(crate) fn validate_command_schema(command: &WireValue, audience: &[u16], actor: &str) -> Result<(), ()> {
     const FIELDS: [&str; 17] = [
         "v",
         "audience",
