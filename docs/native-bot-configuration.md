@@ -1,5 +1,10 @@
 # Operator setup for the Bot quickstart
 
+Advanced operator reference for explicit runtime and host provisioning. For
+ordinary Peer use, follow the [short quickstart](native-participant-quickstart.md)
+and reuse the original registered client. Manual runtime/profile JSON below is
+not a prerequisite for normal Connect or messaging.
+
 Use this page only when the [quickstart](native-participant-quickstart.md) has
 no existing native runtime/profile to reuse. It describes native 0.3.1; it is
 not an automatic migration of a custom Python listener. Replace example paths
@@ -234,8 +239,8 @@ receiver-attested path, not a model reply or timing SLA. Missing, stale, busy,
 approval-waiting and queue-only observations must retain their actual meaning.
 An empty workspace-wide mailbox list is not proof that all Peers are offline.
 
-Now continue [quickstart steps 4–8](native-participant-quickstart.md#4-register-mcp-in-the-actual-bot-host):
-register MCP, install/discover the Skill, call a tool from the actual session,
+Now continue the [quickstart](native-participant-quickstart.md):
+refresh the configured MCP integration, call a tool from the actual session,
 and verify a genuine two-way marker exchange. Retain the original pending work
 and report a concrete blocker if a required stage is not yet supported or
 configured. Native0.3.1 does not expose an automatic `setup` or Agent `doctor`

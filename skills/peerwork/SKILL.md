@@ -21,10 +21,16 @@ moving its journal. When installation or new capabilities are needed, follow the
 If MCP is absent, use the native CLI once; normal collaboration is explicit:
 
 ```sh
-peerwork connect --workspace WORKSPACE_ID --join --send --receive --body-keys --install codex
+peerwork connect --workspace WORKSPACE_ID --codex --join --body-keys --install codex
 ```
 
-Select AGY with `--install agy`. Ordinary admitted membership includes in-Space
+Select an exact Codex conversation once from the returned choices, then resume
+the unchanged CLI attachment command. Do not reconstruct it as a generic MCP
+connect request. For AGY, `--install agy` installs tools only; existing interactive
+CLI PUSH is not established and the current App adapter supports queued input.
+Use explicitly requested INBOX/wait or an already selected owned-stdio binding;
+do not launch a replacement session. See the connection guide for advanced setup.
+Ordinary admitted membership includes in-Space
 send/receive and self-subscription; explicit restrictions remain. Existing
 rights require no Owner exchange.
 `--join` requests admission only when workspace access is not verified; it cannot

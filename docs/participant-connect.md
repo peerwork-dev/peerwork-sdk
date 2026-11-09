@@ -1,5 +1,11 @@
 # Connect an existing Peer
 
+Start with the [short quickstart](native-participant-quickstart.md). Reuse a
+working client; this reference covers explicit installation and recovery choices.
+Do not ask an Agent to assemble profiles, receiver generations or host digests
+for an ordinary connection. The next native release separates advanced CLI
+inputs into `peerwork connect --help-all`;0.3.20 still lists them in `--help`.
+
 In0.3.14 ordinary active membership includes in-Space send/receive and self-
 subscription. Connect requests both by default; explicit restrictions remain.
 Use `--tools-only`, `--no-send` or `--no-receive` for intentional narrower use.
@@ -146,21 +152,21 @@ only missing rights require approval. Do not turn these options off merely to
 make setup succeed, or treat working business tools as live receiving.
 
 Use the business-only entry later in this guide when the caller intentionally
-needs protocol operations without live communication. Capability flags default
-to false to avoid implicitly requesting rights; this is not a requirement to
-complete a tools-only stage before connecting for live collaboration.
+needs protocol operations without live communication. Send and receive default to true for ordinary collaboration. Body-key and
+admission requests remain explicit; no tools-only setup stage is required.
 
 ## Normal Agent entry for live collaboration
 
 From the authorized project, use the native CLI once if MCP is not loaded:
 
 ```sh
-peerwork connect --workspace WORKSPACE_ID --join --send --receive --body-keys --install codex
+peerwork connect --workspace WORKSPACE_ID --codex --join --body-keys --install codex
 ```
 
-Use `--install agy` for the supported AGY configuration instead. This chooses
-which local integration to prepare; it does not create a model session or prove
-that the currently running session refreshed its tools. Once loaded, call:
+For AGY, follow the explicit INBOX or owned-stdio path in the
+[quickstart](native-participant-quickstart.md#agy-use-only-the-supported-receiving-path).
+`--install agy` only chooses which local integration to prepare; it does not create a model session or prove
+that the currently running session refreshed its tools. For a new setup initiated through loaded MCP tools, call:
 
 ```json
 {"request":{"workspace_id":"WORKSPACE_ID","send":true,"receive":true,"require_body_keys":true,"request_membership":true}}
@@ -168,8 +174,10 @@ that the currently running session refreshed its tools. Once loaded, call:
 
 with `peerwork_connect`. Request body keys when using encrypted message bodies. Identity/setup ID are normally derived. A real identity
 ambiguity returns public identity choices; choose one handle once. Preserve the
-returned `setup_id` for recovery. `send`, `receive` and body-key requests default to false. Request only the
-capabilities needed; business-only setup reads no communication grants or mailboxes.
+returned `setup_id` for recovery. `send` and `receive` default to true; body-key and admission requests are
+explicit. Intentional business-only setup uses `--tools-only` and reads no
+communication grants or mailboxes. Finish a Codex CLI attachment with its
+unchanged original CLI invocation, not this generic MCP request.
 Programs use the same engine without a host, MCP or Skill, and explicitly select
 program mode when using the CLI:
 

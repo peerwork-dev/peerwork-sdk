@@ -234,7 +234,7 @@ fn receiving_self_test(receiver:&Value,push:bool)->Value {
     let presence=&receiver["presence"];
     let keys=presence["key_current"]==true&&matches!(presence["body_key"]["state"].as_str(),Some("READY"|"NOT_REQUIRED"));
     let host=presence["host_current"]==true&&presence["host"]["ready"]==true&&presence["host"]["mode"]=="LIVE";
-    let code=if !linked{receiver["code"].as_str().unwrap_or("RECEIVER_NOT_VERIFIED")}else if push&&!keys{"BODY_KEYS_NOT_READY"}else if push&&!host{"HOST_LIVE_DELIVERY_NOT_READY"}else{"READY"};
+    let code=if !linked{receiver["code"].as_str().unwrap_or("RECEIVER_NOT_VERIFIED")}else if push&&presence["host_current"]==true&&presence["host"]["mode"]=="TOOL_ONLY"{"HOST_PUSH_UNSUPPORTED"}else if push&&!keys{"BODY_KEYS_NOT_READY"}else if push&&!host{"HOST_LIVE_DELIVERY_NOT_READY"}else{"READY"};
     json!({"state":if linked&&(!push||(host&&keys)){"READY"}else{"PENDING"},"code":code,"receiver_link_verified":linked,
         "host_required":push,"host_ready":host,"body_keys_ready":keys,"presence":presence,
         "basis":"CURRENT_LOCAL_RUNTIME_OBSERVATION","model_response":"NOT_ATTESTED"})
@@ -350,11 +350,19 @@ impl Connect {
         Ok(self.context())
     }
     pub fn context(&self) -> Value {
-        json!({"state":if self.registry.participants.is_empty(){"NOT_CONFIGURED"}else{"LOCAL_SELECTION_REGISTERED"},
+        let mut value=json!({"state":if self.registry.participants.is_empty(){"NOT_CONFIGURED"}else{"LOCAL_SELECTION_REGISTERED"},
             "discovery":self.discovery_summary(),
             "participants":self.registry.participants.iter().map(|(handle,r)|json!({"handle":handle,"actor_id":r.actor_id,"origin":r.origin})).collect::<Vec<_>>(),
             "active_setup_id":self.registry.active,"setups":self.registry.setups.iter().map(|(id,s)|json!({"setup_id":id,"participant":s.desired.participant,"workspace_id":s.desired.workspace_id,"protocol_roles":s.desired.protocols,"state":s.result["state"],"blocker":s.result["blocker"]})).collect::<Vec<_>>(),
-            "next_tool":"peerwork_connect","remote_or_host_readiness":"NOT_ATTESTED"})
+            "remote_or_host_readiness":"NOT_ATTESTED"});
+        if !self.has_selected_profile(None,None){value["next_tool"]=json!("peerwork_connect");}
+        value
+    }
+    fn has_selected_profile(&self,participant:Option<&str>,workspace:Option<&str>)->bool {
+        let Ok(Some(handle))=self.selected_handle(participant) else{return false;};
+        let mut selected=self.registry.active_by_scope.values().filter_map(|id|self.registry.setups.get(id))
+            .filter(|s|s.desired.participant==handle&&workspace.is_none_or(|ws|s.desired.workspace_id==ws));
+        selected.next().is_some_and(|s|s.profile.is_some())&&selected.next().is_none()
     }
     pub fn context_for(&self, participant: Option<&str>, workspace: Option<&str>) -> Value {
         let mut value = self.context();
@@ -373,6 +381,8 @@ impl Connect {
         {
             value["active_setup_id"] = Value::Null;
         }
+        if self.has_selected_profile(participant,workspace){value.as_object_mut().unwrap().remove("next_tool");}
+        else{value["next_tool"]=json!("peerwork_connect");}
         value
     }
     pub fn profile(&self) -> Result<Option<AgentProfile>> {
@@ -633,6 +643,18 @@ impl Connect {
         if agent && !self.registry.setups[&request.setup_id].agent_host_required {
             self.registry.setups.get_mut(&request.setup_id).unwrap().agent_host_required = true;
             self.save()?;
+        }
+        if agent&&request.receive {
+            let selected_host=request.host.as_ref().or(self.registry.setups[&request.setup_id].effective_host.as_ref())
+                .and_then(|name|self.registry.hosts.get(name)).filter(|host|host.participant==request.participant);
+            if selected_host.is_some_and(|host|host.adapter["kind"]=="agy-app"
+                ||host.adapter["kind"]=="bridge"&&host.adapter["destination"]["host"]=="ANTIGRAVITY_APP") {
+                return self.pending(&request,"HOST_BINDING","HOST_PUSH_UNSUPPORTED","HOST_USER",
+                    "SELECT_SUPPORTED_LIVE_HOST_OR_EXPLICIT_INBOX",json!({"host_mode":"TOOL_ONLY",
+                    "automatic_model_wake":"NOT_SUPPORTED","retryable":false,"owner_exchange_required":false,
+                    "remote_changes_submitted":false,"existing_receiver_preserved":true,
+                    "message":"This AGY App adapter supports queued input, not verified live PUSH. Repeating this setup or requesting more Workspace rights cannot enable live PUSH. Keep existing tools; select a supported live host or explicitly choose INBOX without replacing the existing receiver."}));
+            }
         }
         let client = match self.original_client(&request.participant).await
         {
@@ -1538,6 +1560,18 @@ pub fn cli(args: &[String]) -> Value {
     }
     if args.is_empty() || args == ["--help"] {
         return json!({"state":"HELP","usage":[
+            "peerwork connect --workspace WORKSPACE --codex --join --body-keys --install codex",
+            "peerwork connect --workspace WORKSPACE --codex --codex-chat EXACT_TITLE_OR_THREAD --join --body-keys --install codex",
+            "peerwork connect --workspace WORKSPACE --receive --receive-mode inbox --join --body-keys --install agy",
+            "peerwork connect --workspace WORKSPACE --program --join --body-keys"],
+            "existing_client":"Use peerwork_context and the loaded tools; do not reconnect a working client.",
+            "defaults":{"send":true,"receive":true,"agent_receive_mode":"PUSH"},
+            "resume":"Keep the original connect invocation and returned setup ID. Finish Codex attachment with the same CLI invocation; do not restart it through a generic MCP connect request.",
+            "agy":"INBOX supports explicit inbox/wait consumption. Existing interactive CLI live attachment is not established. Owned managed stdio is an advanced integration; installing MCP alone does not enable PUSH.",
+            "advanced_help_command":"peerwork connect --help-all"});
+    }
+    if args == ["--help-all"] {
+        return json!({"state":"HELP","usage":[
             "peerwork connect --local PRIVATE_REGISTRY --participant HANDLE --client ORIGINAL_ENDPOINT --origin ORIGIN --actor ACTOR --workspace WORKSPACE --attach --protocol tasks:INSTANCE:DIGEST --install codex",
             "peerwork connect --workspace WORKSPACE --role tasks:INSTANCE:CONTRIBUTOR --install codex",
             "peerwork connect --workspace WORKSPACE --trust-project --send --receive",
@@ -1852,6 +1886,58 @@ pub fn cli(args: &[String]) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn queued_only_agy_push_stops_before_runtime_or_permission_work() {
+        for (adapter,receive,mode,expected) in [
+            (json!({"kind":"agy-app"}),true,None,"HOST_PUSH_UNSUPPORTED"),
+            (json!({"kind":"bridge","destination":{"host":"ANTIGRAVITY_APP"}}),true,None,"HOST_PUSH_UNSUPPORTED"),
+            (json!({"kind":"agy-stdio","managed":true}),true,None,"LOCAL_RUNTIME"),
+            (json!({"kind":"agy-app"}),true,Some(ReceiveMode::Inbox),"LOCAL_RUNTIME"),
+            (json!({"kind":"agy-app"}),false,None,"LOCAL_RUNTIME"),
+        ] {
+            let root=crate::test_support::protected_test_dir();
+            let mut connect=Connect::open(root.path()).unwrap();
+            let registration=Registration{origin:"https://example.invalid/".into(),actor_id:"A".repeat(43),endpoint_path:root.path().join("never-opened.json")};
+            connect.registry.participants.insert("peer".into(),registration);
+            connect.registry.hosts.insert("selected".into(),HostSelection{participant:"peer".into(),admin_endpoint:root.path().join("never-opened-admin.json"),adapter});
+            let mut request:ConnectRequest=serde_json::from_value(json!({"setup_id":"same","participant":"peer","workspace_id":"W".repeat(43),"send":false,"receive":receive})).unwrap();
+            request.receive_mode=mode;
+            if receive&&mode.is_none(){request.host=Some("selected".into());}
+            for _ in 0..2 {
+                let result=connect.run_agent(request.clone()).await.unwrap();
+                if expected=="HOST_PUSH_UNSUPPORTED" {
+                    assert_eq!(result["blocker"]["code"],expected,"{result}");
+                    assert_eq!(result["blocker"]["next_actor"],"HOST_USER");
+                    assert_eq!(result["details"]["remote_changes_submitted"],false);
+                    assert_eq!(result["details"]["owner_exchange_required"],false);
+                    assert_eq!(result["details"]["retryable"],false);
+                } else {assert_eq!(result["blocker"]["stage"],expected,"{result}");}
+                assert!(connect.registry.setups["same"].profile.is_none());
+                assert!(connect.registry.setups["same"].key_request.is_none());
+                assert_eq!(connect.registry.setups.len(),1);
+            }
+            assert!(!root.path().join("never-opened.json").exists());
+        }
+    }
+    #[test]
+    fn configured_context_does_not_restart_onboarding_or_write_a_profile() {
+        let root=crate::test_support::protected_test_dir();let mut connect=Connect::open(root.path()).unwrap();
+        let request:ConnectRequest=serde_json::from_value(json!({"setup_id":"ready","participant":"peer","workspace_id":"W".repeat(43),"send":false,"receive":false})).unwrap();
+        let registration=Registration{origin:"https://example.invalid/".into(),actor_id:"A".repeat(43),endpoint_path:root.path().join("client.json")};
+        connect.registry.participants.insert("peer".into(),registration.clone());
+        connect.begin_setup(&request,registration.clone(),false,None).unwrap();
+        let profile:AgentProfile=serde_json::from_value(json!({"format":"peerwork.agent-profile.v1","expected_origin":registration.origin,"expected_actor":registration.actor_id,"endpoint_path":registration.endpoint_path,"workspaces":{"project":request.workspace_id},"scopes":{}})).unwrap();
+        profile.validate().unwrap();
+        connect.registry.setups.get_mut("ready").unwrap().profile=Some(profile);
+        connect.registry.active_by_scope.insert(format!("peer:{}",request.workspace_id),"ready".into());connect.registry.active=Some("ready".into());connect.save().unwrap();
+        let before=std::fs::read(root.path().join("connect.state")).unwrap();
+        assert!(connect.context()["next_tool"].is_null());
+        assert!(connect.context_for(Some("peer"),Some(&request.workspace_id))["next_tool"].is_null());
+        assert_eq!(connect.context_for(Some("peer"),Some(&"X".repeat(43)))["next_tool"],"peerwork_connect");
+        assert_eq!(connect.context_for(Some("other"),Some(&request.workspace_id))["next_tool"],"peerwork_connect");
+        assert_eq!(std::fs::read(root.path().join("connect.state")).unwrap(),before);
+        assert!(!root.path().join("profile-ready.json").exists());
+    }
     #[test]
     fn pending_status_retains_persisted_authority_provenance() {
         let root=crate::test_support::protected_test_dir();let mut connect=Connect::open(root.path()).unwrap();
@@ -1944,6 +2030,11 @@ mod tests {
             assert_eq!(receiving_self_test(&stale,false)["state"],"READY");
         }
         assert_eq!(receiving_self_test(&ready,true)["model_response"],"NOT_ATTESTED");
+        let mut queued=ready.clone();queued["presence"]["host"]["mode"]=json!("TOOL_ONLY");
+        assert_eq!(receiving_self_test(&queued,true)["code"],"HOST_PUSH_UNSUPPORTED");
+        assert_eq!(receiving_self_test(&queued,false)["state"],"READY");
+        queued["presence"]["host_current"]=json!(false);
+        assert_eq!(receiving_self_test(&queued,true)["code"],"HOST_LIVE_DELIVERY_NOT_READY");
     }
 
 }
