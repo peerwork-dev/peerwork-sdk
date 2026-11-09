@@ -498,8 +498,9 @@ mod tests {
         let expected: Vec<_> = agent_tools::catalog().into_iter().filter(|v| v["name"] != "peerwork_connect" && v["name"] != "peerwork_connect_approve").collect();
         assert_eq!(tools, &expected);
         assert!(tools.iter().all(|tool| tool["_meta"]["antigravity/alwaysLoad"] == true));
-        assert!(serde_json::to_vec(tools).unwrap().len() <= 16 * 1024,
-            "fixed eager entry points must not expand into per-protocol action catalogs");
+        let bytes=serde_json::to_vec(tools).unwrap().len();
+        assert!(bytes <= 16 * 1024,
+            "fixed eager entry points must stay within16KiB, not expand into per-protocol action catalogs: {bytes} bytes");
         // Invalid JSON and duplicate object fields cannot become tool inputs.
         cw.write_all(b"{bad json}\n{\"jsonrpc\":\"2.0\",\"id\":3,\"id\":4,\"method\":\"ping\"}\n")
             .await

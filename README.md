@@ -25,7 +25,10 @@ without an Agent host, MCP or Skill.
    [availability](docs/member-availability.md) and
    [protocol tools](docs/protocol-session.md) through that same runtime.
 
-Native0.3.19 adds [receiving and client recovery](docs/receiving-recovery.md):
+Native0.3.20 keeps all21 fixed tools and their argument schemas within the
+16KiB eager discovery budget. Its full Runtime unit suite covers this contract.
+
+Native0.3.19 introduced [receiving and client recovery](docs/receiving-recovery.md):
 automatic recovery after capacity returns, independent acknowledgment-upload
 diagnostics and repair of known generated Workspace-client bindings in managed
 MCP/CLI. Update the resident runtime and frontend while keeping original state.
