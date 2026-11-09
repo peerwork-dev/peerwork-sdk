@@ -1562,6 +1562,7 @@ pub fn cli(args: &[String]) -> Value {
         return json!({"state":"HELP","usage":[
             "peerwork connect --workspace WORKSPACE --codex --join --body-keys --install codex",
             "peerwork connect --workspace WORKSPACE --codex --codex-chat EXACT_TITLE_OR_THREAD --join --body-keys --install codex",
+            "peerwork connect --workspace WORKSPACE --host EXISTING_AGY_HOST --install agy",
             "peerwork connect --workspace WORKSPACE --receive --receive-mode inbox --join --body-keys --install agy",
             "peerwork connect --workspace WORKSPACE --program --join --body-keys"],
             "existing_client":"Start with peerwork_context. Reuse the selected client and loaded tools.",

@@ -393,6 +393,7 @@ fn message(
     let (context, content) = authored_message_content(&author)?;
     if context.workspace_id != workspace
         || context.actor_id != text(value, "sender_actor")?
+        || author.command().get("expected_membership_id").is_some_and(|generation|Some(generation)!=value.get("sender_membership"))
         || context.command_id != text(value, "command_id")?
         || author.intent_digest() != text(value, "intent_digest")?
         || context.message_id()? != text(value, "message_id")?

@@ -182,6 +182,7 @@ pub fn verify_conversation_message(value:&WireValue,audience:&[u16],workspace:&s
     if context.workspace_id!=workspace || context.actor_id!=text(value,"sender_actor")? || context.command_id!=text(value,"command_id")?
         || author.intent_digest()!=text(value,"intent_digest")? || mid!=text(value,"message_id")? {return Err(CommunicationError);}
     token_field(value,"sender_membership")?;
+    if author.command().get("expected_membership_id").is_some_and(|generation|Some(generation)!=value.get("sender_membership")){return Err(CommunicationError);}
     let thread=token_field(meta,"thread_root")?;
     if context.thread_root.as_ref().is_some_and(|s|s!=&thread)
         || context.context.as_ref().is_some_and(|c|conversation_thread_id(workspace,c).ok().as_deref()!=Some(thread.as_str()))

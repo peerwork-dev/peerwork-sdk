@@ -164,6 +164,7 @@ impl KernelClient {
         for field in ["body","workspace_id","instance_id","protocol_digest","expected_workspace_revision","expected_instance_revision","exact_input_refs"] {
             set(&mut intent,field,command.get(field).cloned().ok_or(KernelClientError::InvalidCommand)?);
         }
+        if let Some(generation)=command.get("expected_membership_id"){set(&mut intent,"expected_membership_id",generation.clone());}
         set(&mut intent,"action",string(saved.proof.action_id()));set(&mut intent,"command_id",string(command_id));
         let wire=canonical_wire_value(&intent,peerwork_core::prepared_command::command_canonical_path(&intent)).map_err(|_|KernelClientError::InvalidCommand)?;
         Box::pin(self.execute_structure_intent_prepared(identity,authority,wire.as_bytes(),cancel)).await
@@ -369,7 +370,7 @@ impl KernelClient {
         let request = parse_wire_json_bounded(intent_wire, 38, peerwork_core::structure_content::MAX_BODY_REQUEST_BYTES).map_err(|_| invalid())?;
         let WireValue::Object(fields) = &request else { return Err(invalid()); };
         let allowed = ["action", "body", "command_id", "idempotency_key", "workspace_id", "instance_id", "protocol_digest", "plaintext_contents", "plaintext_message",
-            "expected_workspace_revision", "expected_instance_revision", "exact_input_refs", "record_id", "default_execution"];
+            "expected_workspace_revision", "expected_instance_revision", "exact_input_refs", "expected_membership_id", "record_id", "default_execution"];
         if fields.iter().any(|(key, _)| !allowed.iter().any(|name| key.iter().copied().eq(name.encode_utf16()))) { return Err(invalid()); }
         let action = request.get("action").and_then(WireValue::as_string).ok_or_else(invalid)?;
         if !is_structure_action(&action) { return Err(invalid()); }
@@ -469,6 +470,10 @@ impl KernelClient {
         ] { set(&mut command,key,value); }
         for field in ["workspace_id","instance_id","protocol_digest","expected_workspace_revision","expected_instance_revision"] {
             set(&mut command,field,request.get(field).cloned().unwrap_or(WireValue::Null));
+        }
+        if let Some(generation)=request.get("expected_membership_id"){
+            if generation.as_string().is_none_or(|id|!crate::workspace_urls::token(&id)){return Err(invalid());}
+            set(&mut command,"expected_membership_id",generation.clone());
         }
         set(&mut command,"exact_input_refs",request.get("exact_input_refs").cloned().unwrap_or(WireValue::Array(Vec::new())));
         if already_signed_public{super::validate_public_wire(&command)?;}

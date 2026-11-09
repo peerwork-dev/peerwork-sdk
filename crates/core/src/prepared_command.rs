@@ -218,7 +218,9 @@ fn validate_command_schema(command: &WireValue, audience: &[u16], actor: &str) -
     let WireValue::Object(fields) = command else {
         return Err(());
     };
-    if fields.len() != FIELDS.len() || FIELDS.iter().any(|name| command.get(name).is_none()) {
+    let generation=command.get("expected_membership_id");
+    if fields.len() != FIELDS.len()+usize::from(generation.is_some()) || FIELDS.iter().any(|name| command.get(name).is_none())
+        || generation.is_some_and(|value|value.as_string().is_none_or(|id|!token(&id))) {
         return Err(());
     }
     if command.get("v").and_then(WireValue::as_number) != Some(1.0)
@@ -698,4 +700,32 @@ fn token(value: &str) -> bool {
         && value
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+#[cfg(test)]
+mod membership_generation_tests {
+    use super::*;
+    use crate::crypto::{base64url, decode_base64url, key_id, sign_compact};
+    use ed25519_dalek::SigningKey;
+    use serde_json::{json, Value};
+
+    #[test]
+    fn generation_bound_authors_preserve_legacy_evidence_and_reject_ambiguous_fields() {
+        let fixture: Value = serde_json::from_str(include_str!("../../../tests/fixtures/structure-access-v1.json")).unwrap();
+        let wire = fixture["owner_jws"].as_str().unwrap();
+        let mut command: Value = serde_json::from_slice(&decode_base64url(wire.split('.').nth(1).unwrap()).unwrap()).unwrap();
+        let key = SigningKey::from_bytes(&[9; 32]);
+        let audience: Vec<_> = "structure-test".encode_utf16().collect();
+        let signed = |value: &Value| sign_compact(&json!({"alg":"EdDSA","typ":"peerwork.kernel-command.v1+jws","kid":key_id(&key.verifying_key().to_bytes())}),value,&key).unwrap();
+        assert!(verify_structure_author_intent(wire, &audience).is_ok());
+        command["expected_membership_id"] = json!(base64url(&[14; 32]));
+        let verified = verify_structure_author_intent(&signed(&command), &audience).unwrap();
+        assert_eq!(verified.command().get("expected_membership_id").and_then(WireValue::as_string), Some(base64url(&[14; 32])));
+        for invalid in [Value::Null, json!(0), json!(""), json!("not-a-membership")] {
+            let mut bad = command.clone(); bad["expected_membership_id"] = invalid;
+            assert!(verify_structure_author_intent(&signed(&bad), &audience).is_err());
+        }
+        command["unknown_generation_field"] = json!(true);
+        assert!(verify_structure_author_intent(&signed(&command), &audience).is_err());
+    }
 }

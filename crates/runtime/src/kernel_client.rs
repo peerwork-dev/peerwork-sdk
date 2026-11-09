@@ -202,7 +202,7 @@ impl KernelAcceptedResult {
         let wire=result["author_intent"].as_str()?;
         let payload=wire.split('.').nth(1)?;
         let command:serde_json::Value=serde_json::from_slice(&peerwork_core::crypto::decode_base64url(payload).ok()?).ok()?;
-        if command["action_id"]!="structure.access.authorize"||command["body"]["mode"]!="SESSION"||command["body"]["content_key_epoch"].as_u64().is_none(){return None;}
+        if command["action_id"]!="structure.access.authorize"||!matches!(command["body"]["mode"].as_str(),Some("SESSION"|"PERSISTENT"))||command["body"]["content_key_epoch"].as_u64().is_none(){return None;}
         let csr=command["body"]["request_jws"].as_str()?.split('.').nth(1)?;
         let request:serde_json::Value=serde_json::from_slice(&peerwork_core::crypto::decode_base64url(csr).ok()?).ok()?;
         if request["kind"]!="BROWSER"||request["workspace_id"]!=command["workspace_id"]||request["request_id"]!=result["request_id"]||request["actor_id"]!=result["member_actor_id"]{return None;}
