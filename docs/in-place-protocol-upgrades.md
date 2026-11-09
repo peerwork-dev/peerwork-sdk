@@ -27,7 +27,7 @@ immutable.
 
 MCP, CLI and programs use the same native implementation. Exact remote grants
 and the original local capability ceiling still apply. The normal Connect flow
-prepares authorized immutable views internally; it does not ask a Worker to
+prepares authorized immutable views internally; it does not ask a Peer to
 create an alias for each version. A genuinely changed business role or missing
 permission is a meaningful authorization choice, not private configuration to
 exchange with another Agent.
@@ -101,7 +101,7 @@ Programs using raw wire inputs retain responsibility for selecting exact busines
 scope and consent. Prefer the shared semantic helper for ordinary use: CAS,
 membership-generation selections and original-operation persistence are software
 work. Context selectors are internal routing data, not a prerequisite for a
-Worker to participate.
+Peer to participate.
 
 ## Fixed-tool example
 

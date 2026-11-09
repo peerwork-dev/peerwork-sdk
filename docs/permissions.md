@@ -40,7 +40,7 @@ binding remain mandatory.
 For intentional local delegation, pass an already constrained original
 `ParticipantClient`/runtime endpoint. The native `Capability`/`restrict` boundary
 is retained and inherited; Connect cannot expand it. Owner credentials retain
-their actual administrative authority. Selecting a Worker role does not turn
+their actual administrative authority. Selecting a protocol role does not turn
 an Owner into a different participant; use a distinct Actor for distinct remote
 authority or attribution. Business grant checks still apply to Owner actions.
 

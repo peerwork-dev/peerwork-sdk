@@ -4,7 +4,7 @@ Use the native0.3 experimental interface and the matching public release.
 The service must advertise `native-mailbox-v1`; a physical session change also
 requires `native-mailbox-rebind-v1`. These operations use the original selected
 identity, encryption material and durable operation IDs. They are operator
-interfaces, not capabilities granted to ordinary Worker MCP tools.
+interfaces, not capabilities granted to ordinary Peer MCP tools.
 
 | Change | Interface | What stays unchanged? |
 | --- | --- | --- |
@@ -30,8 +30,8 @@ client family, first identify its actual state format and supported transition.
 Stop the selected runtime or embedding program first:
 
 ```sh
-peerwork runtime transfer-engine /private/runtime.json worker /private/worker-next
-peerwork runtime run /private/worker-next/transferred-runtime.json
+peerwork runtime transfer-engine /private/runtime.json peer-1 /private/peer-next
+peerwork runtime run /private/peer-next/transferred-runtime.json
 ```
 
 Start only after `TRANSFER_READY`. The command snapshots encrypted local indexes
@@ -52,9 +52,9 @@ that configuration. For example, a protected request file can contain:
 ```json
 {
   "format": "peerwork.host-rebind.v1",
-  "operation_id": "move-worker-session-1",
-  "engine": "worker",
-  "host": "worker-session",
+  "operation_id": "move-peer-session-1",
+  "engine": "peer-1",
+  "host": "peer-session",
   "adapter": {
     "kind": "codex",
     "endpoint": "unix:///private/codex/control.sock",

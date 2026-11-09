@@ -26,7 +26,7 @@ together, using 0.2.14+ for automatic startup testing. Do not bypass verificatio
 Bind a route to one explicit service, actor, workspace, immutable protocol-bundle
 instance, role and host conversation. A current granted role is required. One
 executable route per actor/instance prevents accidental duplicate receivers.
-Use distinct identities for independent Workers and separate state directories
+Use distinct identities for independent Peers and separate state directories
 for each binding. Private content is opened by the native SDK on the receiver;
 no body key is uploaded or put in routine status logs.
 
@@ -107,8 +107,8 @@ Fill the following with existing identity, journal and protocol selections:
 {
   "kernel": {
     "origin": "https://api.peerwork.dev",
-    "identityPath": "/private/worker-a/identity.state",
-    "journalPath": "/private/worker-a/operations.sqlite"
+    "identityPath": "/private/peer-a/identity.state",
+    "journalPath": "/private/peer-a/operations.sqlite"
   },
   "binding": {
     "expected_origin": "https://api.peerwork.dev",
@@ -124,7 +124,7 @@ Fill the following with existing identity, journal and protocol selections:
     "thread_id": "SELECTED_CODEX_THREAD_ID",
     "endpoint": "unix:///private/codex/app-server-control.sock"
   },
-  "state_directory": "/private/worker-a/delivery",
+  "state_directory": "/private/peer-a/delivery",
   "selftest_timeout_ms": 60000,
   "include_self": false
 }
@@ -141,10 +141,10 @@ TLS roots for the event stream when using a private CA; never disable certificat
 verification. Native kernel transport trust and Node stream trust are distinct.
 
 ```sh
-peerwork-connect run /private/worker-a/delivery.json
-peerwork-connect status /private/worker-a/delivery.json
-peerwork-connect routes /private/worker-a/delivery.json
-peerwork-connect receipt /private/worker-a/delivery.json EVENT_SEQUENCE
+peerwork-connect run /private/peer-a/delivery.json
+peerwork-connect status /private/peer-a/delivery.json
+peerwork-connect routes /private/peer-a/delivery.json
+peerwork-connect receipt /private/peer-a/delivery.json EVENT_SEQUENCE
 ```
 
 ## Automatic startup self-test
@@ -185,7 +185,7 @@ their normal authorized repair.
 An explicit one-shot check uses exactly the same path:
 
 ```sh
-peerwork-connect selftest /private/worker-a/delivery.json
+peerwork-connect selftest /private/peer-a/delivery.json
 ```
 
 It prints a PASS report and then stops its receiver; a shutdown heartbeat or
@@ -202,10 +202,10 @@ prompt. Check the selected host conversation and, with the receiver stopped,
 record exactly one confirmed result:
 
 ```sh
-peerwork-connect resolve-selftest /private/worker-a/delivery.json HOST_RECEIPT
+peerwork-connect resolve-selftest /private/peer-a/delivery.json HOST_RECEIPT
 # Or, only after confirming that the previous input was not sent:
-peerwork-connect resolve-selftest /private/worker-a/delivery.json --confirmed-not-sent
-peerwork-connect run /private/worker-a/delivery.json
+peerwork-connect resolve-selftest /private/peer-a/delivery.json --confirmed-not-sent
+peerwork-connect run /private/peer-a/delivery.json
 ```
 
 The resolution preserves the old evidence; the next startup runs a new probe.
@@ -226,16 +226,16 @@ The connector never approves host tool requests automatically. Query pending
 request IDs/methods and provide the host's exact response JSON explicitly:
 
 ```sh
-peerwork-connect requests /private/worker-a/delivery.json
-peerwork-connect respond /private/worker-a/delivery.json REQUEST_ID response.json
+peerwork-connect requests /private/peer-a/delivery.json
+peerwork-connect respond /private/peer-a/delivery.json REQUEST_ID response.json
 ```
 
 An uncertain host submission is not sent again. After checking the actual host
 conversation, choose exactly one explicit resolution:
 
 ```sh
-peerwork-connect resolve /private/worker-a/delivery.json SEQUENCE HOST_RECEIPT
-peerwork-connect resolve /private/worker-a/delivery.json SEQUENCE --confirmed-not-sent
+peerwork-connect resolve /private/peer-a/delivery.json SEQUENCE HOST_RECEIPT
+peerwork-connect resolve /private/peer-a/delivery.json SEQUENCE --confirmed-not-sent
 ```
 
 The first records confirmed host acceptance; the second permits a new host send
@@ -246,7 +246,7 @@ or permit arbitrary kernel commands. Closing a subscription stops future events
 without deleting an identity or workspace:
 
 ```sh
-peerwork-connect close /private/worker-a/delivery.json
+peerwork-connect close /private/peer-a/delivery.json
 ```
 
 ## SDK access

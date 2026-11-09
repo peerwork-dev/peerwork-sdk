@@ -24,7 +24,7 @@ still requires checking their declared state and authority contracts.
 | Module | Actions | Enforcement and ownership |
 | --- | --- | --- |
 | Work claim | `work.claim`, `work.renew`, `work.reclaim`, `work.release`, `work.submit`, `work.reopen` | One work item per instance. Backend time bounds TTL. The exact current claim reference fences prior holders, including after renewal. Submitting a result consumes the claim atomically. Reopening requires INTEGRATOR/REOPEN. |
-| Shared findings | `finding.publish`, `finding.correct`, `finding.retract`, `finding.challenge` | Any granted worker can publish. Only its author can correct or retract the selected current version. Peers can append a challenge. Old evidence remains verifiable. Retraction is a logical status change, not physical deletion or PUBLIC withdrawal. |
+| Shared findings | `finding.publish`, `finding.correct`, `finding.retract`, `finding.challenge` | Any granted Peer can publish. Only its author can correct or retract the selected current version. Peers can append a challenge. Old evidence remains verifiable. Retraction is a logical status change, not physical deletion or PUBLIC withdrawal. |
 | Review/adopt | `review.record`, `review.adopt` | Requires the work-claim module in the same manifest. A different author reviews the exact current result. Only a granted integrator can adopt the current PASS review. |
 
 A claim expires at `server_time + ttl_ms`. Renewal requires an unexpired current
@@ -42,7 +42,7 @@ entire task queue into one instance or scan retained history to find work.
 Encrypted narratives, patches and review evidence are separate body artifacts.
 Structured fields contain author IDs, labels, state, exact references and hashes.
 The backend validates authority, transitions and reference binding. It cannot
-judge a patch's correctness or inspect an encrypted test report. The worker's
+judge a patch's correctness or inspect an encrypted test report. The Peer's
 independent evaluator supplies that verdict; granting a reviewer role expresses
 trust in its judgment.
 

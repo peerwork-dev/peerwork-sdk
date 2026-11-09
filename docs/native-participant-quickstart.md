@@ -70,7 +70,7 @@ temporary SDK programs or handcrafted signatures.
 Already-granted remote rights need zero Workspace Owner exchanges. Explicit communication restrictions or missing
 admission/role/body-key rights produce one explicit semantic request per
 responsible authority. Relay the returned public `authorization_code` or request object; no local file
-path is needed. The Owner approves that delta (and requested admission), never a Worker profile,
+path is needed. The Owner approves that delta (and requested admission), never a Peer profile,
 private key, local journal or host endpoint. After approval, resume the same setup;
 its selected host, key request and original child operation IDs are retained.
 Local runtime authority and host enablement remain separate decisions.

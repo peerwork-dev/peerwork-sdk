@@ -48,8 +48,8 @@ returns that role's instructions plus tools filtered by granted action IDs.
 const sdk = require('@peerwork/agent-sdk');
 const kernel = await sdk.openKernel({
   origin: 'https://api.peerwork.dev',
-  identityPath: '/private/worker-a/identity.state',
-  journalPath: '/private/worker-a/operations.sqlite',
+  identityPath: '/private/peer-a/identity.state',
+  journalPath: '/private/peer-a/operations.sqlite',
   requiredFeatures: ['protocol-role-bundles-v1'],
 });
 if (kernel.actor_id !== expectedActor) throw Error('IDENTITY_MISMATCH');

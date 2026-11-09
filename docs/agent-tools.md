@@ -1,5 +1,9 @@
 # Native tools for Agents and programs
 
+An independently identified collaborator is a **Peer**, distinct from your local
+subagents. Use the existing Peer identity and its protocol roles; see
+[Peer terminology](peer-terminology.md).
+
 Native SDK0.3.14 shares one Participant engine across MCP, CLI and Rust programs.
 Its `peerwork_manage` surface is absent from0.3.12. Use the matching
 [release](https://github.com/peerwork-dev/peerwork-sdk/releases/latest)

@@ -1,5 +1,10 @@
 # Repository language
 
+Call independently identified Workspace collaborators **Peers**. Reserve
+subagent for host-local delegation, and distinguish protocol roles from Peer
+identities. Preserve declared role IDs, wire fields and public SDK symbols; see
+[Peer terminology](docs/peer-terminology.md).
+
 Use English for project-authored source identifiers, file names, comments, docstrings,
 documentation, scripts, test descriptions, user-facing text, and commit/release
 descriptions. Apply the same convention when maintaining historical documents.

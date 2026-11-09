@@ -53,7 +53,7 @@ Codex host. Keep existing native journal/key selections when applicable:
   "format": "peerwork.participant-runtime.v1",
   "state_directory": "/private/peerwork/runtime",
   "engines": [{
-    "name": "worker",
+    "name": "peer-1",
     "origin": "https://api.peerwork.dev",
     "expected_actor": "ACTOR_ID",
     "identity_path": "/existing/identity.state",
@@ -61,8 +61,8 @@ Codex host. Keep existing native journal/key selections when applicable:
     "journal_path": "/existing/native-operations.sqlite"
   }],
   "clients": [{
-    "name": "worker",
-    "engine": "worker",
+    "name": "peer-1",
+    "engine": "peer-1",
     "capability": {
       "allow_root": false,
       "workspace_ids": ["WORKSPACE_ID"],
@@ -80,7 +80,7 @@ Codex host. Keep existing native journal/key selections when applicable:
     }
   }],
   "hosts": [{
-    "name": "worker-session",
+    "name": "peer-session",
     "adapter": {
       "kind": "codex",
       "endpoint": "unix:///existing/app-server-control.sock",
@@ -88,12 +88,12 @@ Codex host. Keep existing native journal/key selections when applicable:
       "expected_session_id": "VERIFIED_SESSION_ID"
     },
     "subscriptions": [{
-      "client": "worker",
+      "client": "peer-1",
       "watch": {
         "workspace_id": "WORKSPACE_ID",
         "mailbox_id": "OWN_MAILBOX_ID",
         "membership_id": "OWN_MEMBERSHIP_ID",
-        "consumer_id": "worker-session"
+        "consumer_id": "peer-session"
       }
     }]
   }]
@@ -114,7 +114,7 @@ Create the matching protected Agent profile as `agent.json`:
 ```json
 {
   "format": "peerwork.agent-profile.v1",
-  "endpoint_path": "/private/peerwork/runtime/client-worker.json",
+  "endpoint_path": "/private/peerwork/runtime/client-peer-1.json",
   "expected_origin": "https://api.peerwork.dev",
   "expected_actor": "ACTOR_ID",
   "scopes": {
@@ -125,11 +125,11 @@ Create the matching protected Agent profile as `agent.json`:
     }
   },
   "contacts": {
-    "master": {
+    "coordinator": {
       "scope": "project",
       "recipient": {
-        "mailbox_id": "MASTER_MAILBOX_ID",
-        "membership_id": "MASTER_MEMBERSHIP_ID"
+        "mailbox_id": "COORDINATOR_MAILBOX_ID",
+        "membership_id": "COORDINATOR_MEMBERSHIP_ID"
       }
     }
   },
@@ -169,7 +169,7 @@ host fields and scoped binding; run it under the host OS user:
     "expected_origin": "https://api.peerwork.dev/",
     "expected_actor": "ACTOR_ID",
     "expected_key_id": "SIGNING_KEY_ID",
-    "namespace": "program:worker",
+    "namespace": "program:peer-1",
     "workspace_id": "WORKSPACE_ID",
     "mailbox_id": "OWN_MAILBOX_ID",
     "membership_id": "OWN_MEMBERSHIP_ID"
@@ -225,14 +225,14 @@ For current remote evidence, write this protected request file:
 ```
 
 ```sh
-peerwork runtime call /private/peerwork/runtime/client-worker.json /private/peerwork/mailbox-read.json
+peerwork runtime call /private/peerwork/runtime/client-peer-1.json /private/peerwork/mailbox-read.json
 ```
 
 Inspect the verified selected mailbox's presence: current downlink, key readiness,
 host mode/execution and observation freshness. `PATH_QUALIFIED` is a recent
 receiver-attested path, not a model reply or timing SLA. Missing, stale, busy,
 approval-waiting and queue-only observations must retain their actual meaning.
-An empty workspace-wide mailbox list is not proof that all workers are offline.
+An empty workspace-wide mailbox list is not proof that all Peers are offline.
 
 Now continue [quickstart steps 4–8](native-participant-quickstart.md#4-register-mcp-in-the-actual-bot-host):
 register MCP, install/discover the Skill, call a tool from the actual session,

@@ -169,7 +169,7 @@ An AGY destination contains `host: "ANTIGRAVITY_APP"` and its explicit
 `conversation_id`; use the bridge's reported object. Keep each receiver's
 existing private state directory. Its stored destination digest must match;
 changing destinations requires an explicit new selection, not a silent rebind.
-No change to a Worker identity or workspace grant is implied.
+No change to a Peer identity or workspace grant is implied.
 
 The bridge durably records attempted input hashes and outcomes. A lost HTTP
 response reconciles the original message ID; changed input under the same ID is

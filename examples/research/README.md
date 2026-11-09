@@ -1,12 +1,16 @@
 # Research reference demos
 
+Peers are independently identified collaborators, not local subagents. Legacy
+example configuration fields and protocol role IDs retain their exact spellings;
+see [Peer terminology](../../docs/peer-terminology.md).
+
 Two small, runnable adaptations compose the [shared meta protocols](../meta-protocols/README.md):
 [DeLM](delm/README.md) shares intermediate findings and produces a candidate per
 peer; [Agensh](agensh/README.md) adds independently reviewed integration into a
-shared Git repository. Both run two equal workers without a central task
-assigner. The launcher creates workers and waits for their results.
+shared Git repository. Both run two equal Peers without a central task
+assigner. The launcher creates Peers and waits for their results.
 
-These are protocol mechanism demonstrations. Their default workers are scripted,
+These are protocol mechanism demonstrations. Their default Peers are scripted,
 the task is synthetic, and they do not measure model quality or reproduce the
 papers' benchmark scores. See [credits and exact references](CREDITS.md).
 
@@ -39,8 +43,8 @@ node examples/research/delm/run.mjs --binding .research-runs/delm/binding.json
 ```
 
 This **explicit setup command writes to the service**: it creates a PRIVATE
-workspace, two distinct worker identities/memberships, a findings board, two
-work instances and selected action grants. Ordinary worker execution does not
+workspace, two distinct Peer identities/memberships, a findings board, two
+work instances and selected action grants. Ordinary Peer execution does not
 administer the workspace. Keep the private directory, identities and native
 operation journals to resume. Do not commit it or share its files in an issue.
 
@@ -102,12 +106,12 @@ records. A model wrapper alone does not make this a benchmark reproduction.
 ## Delivery, recovery and data limits
 
 The shared example host owns bounded signed event polling, local delivery leases,
-atomic enqueue/checkpoint and cancellation/backoff. Workers do not write their
+atomic enqueue/checkpoint and cancellation/backoff. Peers do not write their
 own notification listener. This JavaScript adapter is example source using
 Node's SQLite; it is not a new native SDK consumer API.
 
 A store is bound to origin, authority, actor, workspace, selected instances,
-recipe and filter version. Workers use separate identities/journals. Event pages
+recipe and filter version. Peers use separate identities/journals. Event pages
 are at most 32; the queue refuses advancement at 1,024 events or 8 MiB. Default
 subscription starts NOW; explicit saved positions continue bounded cursor pages.
 The demo treats notifications as wakeups and re-reads the two selected current

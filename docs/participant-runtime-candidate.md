@@ -145,7 +145,7 @@ Existing remote rights require zero human Workspace Owner exchanges. A missing
 permission/key delta returns a public `AuthorizationRequest`. An explicitly
 authorized approver uses `Connect::approve` (CLI `--approve-request`, MCP
 `peerwork_connect_approve`) and preserves its own approval ID. The requester
-then resumes the original setup. The request carries no Worker profile, local
+then resumes the original setup. The request carries no Peer profile, local
 path, credential or private key. Multiple responsible authorities remain named
 separately. Finite leases are preserved, expired unrequested directions are not
 revived, and following future body-key rotations is explicit rather than default.
@@ -463,7 +463,7 @@ namespace; callers cannot supply a second native command ID or idempotency key.
 | Offline protocol workbench | `request` with `participant.protocol.offline` | Explicit caller-supplied fixtures, simulation, plan and compatibility inspection. Always non-authoritative; no retired export/apply or file/profile access. |
 
 A workspace-scoped credential may receive explicitly granted management helper
-authority; an instance-scoped Worker cannot approve workspace access or rotate
+authority; an instance-scoped Peer cannot approve workspace access or rotate
 keys. Helpers do not silently expand authority. Service-side Owner checks remain
 authoritative. Runtime client tokens cannot select a different identity or local
 source directory. Successful key import and local initialization are local facts,
@@ -495,7 +495,7 @@ the entire descriptor: changing workspace, path, selected plan or expected file
 hash creates a different ID. Submit `invoke` with `participant.archive.migrate`
 and body `{source_id}`. `name` is optional only for cache preparation; it cannot
 rename an already signed checkpoint. The native operation remains Owner-authorized.
-An instance-scoped Worker cannot acquire this authority.
+An instance-scoped Peer cannot acquire this authority.
 
 New admission requires an exact configured descriptor. A missing handle creates
 no reservation. Once native preparation is persisted, recovery uses its original
@@ -686,7 +686,7 @@ recovery, not transfer of an uncertain external host input to a new session.
 subscriptions per grouped target are admitted. Identical adapter selections
 share one dispatcher, with duplicate subscriptions removed. This grouping is
 within the resident runtime; cross-runtime host ownership is not yet qualified.
-Worker requests cannot change the adapter, create a host call or submit host
+Peer requests cannot change the adapter, create a host call or submit host
 receipts through JSONL.
 
 The Codex adapter selects an existing `thread_id` and `endpoint`, optionally
@@ -800,7 +800,7 @@ the local bridge, edit the protected configuration and run
 bridge refuses the update. Empty grants revoke all clients; prior credentials
 then fail authorization. Regranting access restores the same original call
 lookup, without reinjection. New principals receive separate scoped credentials
-in the derived endpoint descriptor. Worker client RPC has no grant-update API.
+in the derived endpoint descriptor. Peer client RPC has no grant-update API.
 
 Owner-v3 stores a stable journal pin separately from versioned grants. Existing
 owner-v2 metadata retains its exact old AEAD pin when upgraded after validating
@@ -1155,7 +1155,7 @@ it must not be displayed as `CONNECTED` to an Agent.
 Normal send waits for verified service acceptance, not another model's reply.
 The short Agent Skill will teach early dispatch of independent work, useful work
 while results are pending, explicit dependency waits and yielding when no ready
-work remains. Program Masters use their event loops for the same behavior.
+work remains. Program Peers use their event loops for the same behavior.
 Transport does not invent task completion or keep Agents busy with duplicate work.
 
 ## Current qualification evidence
@@ -1311,7 +1311,7 @@ protocol. It keeps the selected actor/Origin, authority, client names and grants
 Runtime directory, host/session pins, mailbox/receiver identities, claim packets,
 cursors, encrypted host frames, uncertain/queued/accepted facts and report state.
 It does not change the selected host or reinterpret an old task report as mail.
-It is absent from Worker MCP tools and client RPC requests.
+It is absent from Peer MCP tools and client RPC requests.
 
 Identity, original native journal and body-key paths stay at their original
 locations. The generated configuration pins the original journal explicitly even
@@ -1365,7 +1365,7 @@ an explicitly selected protected `PEERWORK_LIVE_HOST_CONFIG`, an unused absolute
 `PEERWORK_LIVE_HOST_REPORT` **inside that state directory**. The configuration
 uses the existing Codex/AGY adapter schema; no model process/thread is created.
 The test sends one E2EE Ping through the native tool surface. The actual existing
-Agent must reply using its protected generated Worker profile and the native
+Agent must reply using its protected generated Peer profile and the native
 `reply` tool. A matching sender-signed, decrypted PONG with the original
 `reply_to` is required; a host ACK alone cannot pass. A reused state root/result
 is refused. Preserve failed-run state and reconcile its original outcome before
@@ -1794,7 +1794,7 @@ online execution mode or fallback. Three native tests, the retained actual v1
 binary refusal check and existing transfer cases are qualification evidence in
 the work record. The public `rebind-host` job couples this fence, report
 flushing, remote continuation, local commit and selected host configuration
-update. It is an explicit stopped-runtime operation, not a Worker tool or an
+update. It is an explicit stopped-runtime operation, not a Peer tool or an
 automatic side effect of updating a business protocol.
 
 

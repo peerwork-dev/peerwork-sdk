@@ -5,6 +5,10 @@ Start with the native [Bot quickstart](native-participant-quickstart.md) and
 local MCP tools and the Peerwork Skill; CLI handles setup and diagnostics.
 Programs use the Participant API or authenticated resident runtime directly.
 
+Independently identified collaborators are **Peers**. See
+[Peer terminology](peer-terminology.md) for the distinction from local subagents,
+Workspace memberships and protocol roles.
+
 ## Installation and operation
 
 - [Distribution and OS dependencies](native-distribution.md)

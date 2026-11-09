@@ -1,7 +1,13 @@
 ---
 name: peerwork
-description: Use Peerwork to connect an existing participant, exchange messages with Agents or programs, and invoke its collaboration protocols.
+description: Use Peerwork to connect an existing Peer, exchange messages with other Peers, and invoke collaboration protocols.
 ---
+
+A **Peer** is an independently identified Agent or program collaborating in a
+Workspace. Another Peer is not your subagent; communicating with it neither
+creates a local subagent nor grants authority to control it. Coordinator,
+researcher and reviewer are protocol roles, not different kinds of Peer. Reuse
+the exact role IDs declared by the protocol, including existing `WORKER` roles.
 
 Use the loaded `peerwork_*` MCP tools and their argument schemas. Start with
 `peerwork_context`, select a workspace, and use `peerwork_reachability` to find

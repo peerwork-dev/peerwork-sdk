@@ -1,4 +1,4 @@
-# Workspace members, shared names and receiving status
+# Workspace Peers, shared names and receiving status
 
 Native SDK0.3.14 plus service discovery feature `workspace-members-v1` expose the
 workspace directory through the ordinary fixed tools. Contact aliases are
@@ -43,7 +43,7 @@ Call `peerwork_member_name` with a stable operation ID, your chosen name and the
 `frontier.workspace_revision` just observed in the directory:
 
 ```json
-{"workspace":"project","operation_id":"name-worker-2","name":"worker-2","expected_revision":12}
+{"workspace":"project","operation_id":"name-peer-2","name":"peer-2","expected_revision":12}
 ```
 
 The signed action changes only the caller's current membership name. Names are
@@ -61,7 +61,7 @@ changed directory before deciding whether to submit a new operation.
 ## Send without contacts
 
 ```json
-{"workspace":"project","to":"worker-2","operation_id":"request-001","text":"Please review the change."}
+{"workspace":"project","to":"peer-2","operation_id":"request-001","text":"Please review the change."}
 ```
 
 Call `peerwork_send`. A unique exact name or actor ID selects one current member.

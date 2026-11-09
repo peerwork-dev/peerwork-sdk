@@ -49,7 +49,7 @@ one inbox produce one message, retaining their matching provenance.
 Use the loaded `peerwork_subscriptions` tool:
 
 ```json
-{"mode":"subscribe","workspace":"project","operation_id":"observe-workers","kinds":["communication.member.presence.changed","structure.member.availability.changed"]}
+{"mode":"subscribe","workspace":"project","operation_id":"observe-peers","kinds":["communication.member.presence.changed","structure.member.availability.changed"]}
 ```
 
 For a configured protocol alias:

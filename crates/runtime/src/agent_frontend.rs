@@ -22,7 +22,7 @@ pub fn help() -> Value {
 "peerwork agent --profile PROFILE.json call TOOL ARGUMENTS_JSON",
 "peerwork agent --profile PROFILE.json manage [describe OPERATION]",
 "peerwork agent --local ORIGINAL_REGISTRY call manage - < BUSINESS_REQUEST.json",
-"peerwork agent --profile PROFILE.json mcp"],"tools":agent_tools::catalog(),"identity":"Protected profile pins a scoped client endpoint, actor and Origin. This frontend never starts an engine or a model.","recovery":"Keep the operation_id. Unknown means recover the original intent, not send a replacement.","scheduling":"Service acceptance does not wait for a Worker reply. Continue independent work; use wait only for a real dependency."})
+"peerwork agent --profile PROFILE.json mcp"],"tools":agent_tools::catalog(),"identity":"Protected profile pins a scoped client endpoint, actor and Origin. This frontend never starts an engine or a model.","recovery":"Keep the operation_id. Unknown means recover the original intent, not send a replacement.","terminology":"A Peer is an independently identified Agent or program in a Workspace, not a local subagent.","scheduling":"Service acceptance does not wait for a Peer reply. Continue independent work; use wait only for a real dependency."})
 }
 fn text(args: &[String]) -> Result<String> {
     let mut bytes = Vec::new();

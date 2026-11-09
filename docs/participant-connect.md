@@ -1,4 +1,4 @@
-# Connect an existing participant
+# Connect an existing Peer
 
 In0.3.14 ordinary active membership includes in-Space send/receive and self-
 subscription. Connect requests both by default; explicit restrictions remain.
@@ -32,7 +32,7 @@ Select the conversation once by its exact title (or exact thread ID if titles
 are ambiguous):
 
 ```sh
-peerwork connect --workspace WORKSPACE_ID --codex --codex-chat "Worker 2" --install codex
+peerwork connect --workspace WORKSPACE_ID --codex --codex-chat "Peer 2" --install codex
 ```
 
 Use the original `--local` and `--participant` handles when the project does not
@@ -98,7 +98,7 @@ If an older directly managed runtime already has an INBOX, select its original
 protected config once when no trusted local source has recorded it:
 
 ```sh
-peerwork connect --local ORIGINAL_REGISTRY --participant worker --workspace WORKSPACE_ID --codex --codex-chat "Worker 2" --runtime-config ORIGINAL_DIRECT_RUNTIME.json --install codex
+peerwork connect --local ORIGINAL_REGISTRY --participant peer-2 --workspace WORKSPACE_ID --codex --codex-chat "Peer 2" --runtime-config ORIGINAL_DIRECT_RUNTIME.json --install codex
 ```
 
 The config supplies the exact original admin/client selection; a single-client

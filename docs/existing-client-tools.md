@@ -28,7 +28,7 @@ the normal request/approval path; MCP itself confers no remote permission.
 A locally working native endpoint can generate the protected profile directly:
 
 ```sh
-peerwork connect --local PRIVATE_REGISTRY --participant worker \
+peerwork connect --local PRIVATE_REGISTRY --participant peer-1 \
   --client ORIGINAL_ENDPOINT.json --origin https://api.peerwork.dev \
   --actor ORIGINAL_ACTOR_ID --workspace WORKSPACE_ID --attach \
   --protocol tasks:INSTANCE_ID:PROTOCOL_DIGEST --install codex
@@ -119,7 +119,7 @@ async fn expose_existing_client(original: ParticipantClient,
 }
 ```
 
-Integrate this once in the owning program's MCP mode. Workers then use the fixed
+Integrate this once in the owning program's MCP mode. Peers then use the fixed
 `peerwork_*` tools; they do not write an SDK script per message. The program must
 reserve stdout for MCP JSONL. The API also accepts another owned reader/writer;
 it does not create a remote listening socket or install a harness automatically.
