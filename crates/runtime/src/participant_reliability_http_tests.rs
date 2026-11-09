@@ -80,18 +80,20 @@ async fn receiver_capacity_recovers_claim_pulse_ack_and_stream_without_replacing
             service.config(json!({"resource_refusal":{"action":action,"code":code},"close_connections":action=="structure.communication.stream.get"})).await;
         }
         let sent=structure(&client.invoke(native_message("during-capacity",&scope,&mailbox,&mailbox,&"v".repeat(43),"recover-original-delivery"),Duration::from_secs(5)).await.unwrap());
-        let recovering=watch_until(&mut watch,|s|s.code.is_some()).await;
+        let ack=action=="structure.mailbox.ack";
+        let recovering=watch_until(&mut watch,|s|if ack{s.acknowledgment_code.is_some()}else{s.code.is_some()}).await;
         eprintln!("capacity refusal observed: {action}; code={:?}; checkpoint={}",recovering.code,recovering.checkpoint);
         assert!(service.counts().await["resource_refusals"].as_u64().unwrap_or(0)>0,"the configured resource refusal must actually occur");
-        if action!="structure.mailbox.get" { assert_eq!(recovering.code.as_deref(),Some(code)); }
-        assert_eq!(recovering.state,"RECONNECTING","{action} must not require a runtime restart");
+        if ack {assert_eq!(recovering.acknowledgment_code.as_deref(),Some(code));assert!(recovering.receiver_link_verified);}
+        else if action!="structure.mailbox.get" { assert_eq!(recovering.code.as_deref(),Some(code)); }
+        assert_eq!(recovering.state,if ack{"RECEIVER_LINK_VERIFIED"}else{"RECONNECTING"},"{action} must not require a runtime restart");
         assert!(recovering.verification_failure.is_none());
         assert!(recovering.checkpoint>=before.checkpoint);
         let held=service.counts().await["resource_refusals"].as_u64().unwrap();
         tokio::time::sleep(Duration::from_millis(300)).await;
         assert_eq!(service.counts().await["resource_refusals"].as_u64().unwrap(),held,"{action} must back off rather than spin");
         service.config(json!({"resource_refusal":null})).await;
-        let recovered=watch_until(&mut watch,|s|s.receiver_link_verified&&s.code.is_none()&&s.presence["key_current"]==true&&s.items.iter().any(|v|v["envelope"]["message"]["message_id"]==sent["message_id"])).await;
+        let recovered=watch_until(&mut watch,|s|s.receiver_link_verified&&s.code.is_none()&&s.acknowledgment_code.is_none()&&s.presence["key_current"]==true&&s.items.iter().any(|v|v["envelope"]["message"]["message_id"]==sent["message_id"])).await;
         eprintln!("capacity recovery verified: {action}; checkpoint={}",recovered.checkpoint);
         assert_eq!(recovered.items.iter().filter(|v|v["envelope"]["message"]["message_id"]==sent["message_id"]).count(),1);
         assert_eq!(client.actor_id(),actor);

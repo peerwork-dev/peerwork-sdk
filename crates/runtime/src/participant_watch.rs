@@ -126,6 +126,8 @@ pub struct DeliveryReference {
 pub struct WatchSnapshot {
     pub reporting_code: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acknowledgment_code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verification_failure: Option<Value>,
     pub presence: Value,
     pub workspace_id: String,
@@ -262,6 +264,7 @@ struct Slot {
     next_keys: Instant,
     report_retry: Instant,
     report_code: Option<String>,
+    ack_code: Option<String>,
     prefer_consumed_ack: bool,
     custody_ack_not_before: Option<Instant>,
 }
@@ -305,6 +308,18 @@ impl Slot {
             },
             Some(e.code),
         );
+    }
+    fn ack_failure(&mut self, e: Failure) {
+        if !e.retryable || scope_refusal(&e.code) {
+            self.fail(e);
+            return;
+        }
+        // Retrying a custody upload does not invalidate an already verified
+        // stream. Retain durable ACK facts and expose this independent failure.
+        self.failures = self.failures.saturating_add(1);
+        self.retry_at = Instant::now() + receiver_retry_delay(self.failures, e.capacity());
+        self.ack_code = Some(e.code);
+        self.notify();
     }
 }
 struct Failure {
@@ -725,7 +740,7 @@ pub(crate) async fn run(
                             if item["opened_message"]["state"]=="KEY_UNAVAILABLE"{if let (Some(id),Some(seq))=(item["opened_message"]["key_id"].as_str(),item["sequence"].as_u64()){store.key_unavailable(&options.workspace_id,&options.mailbox_id,seq,id)?;slot.missing_keys();}}
                         }
                         let next_after=if items.len()==limit{items.last().and_then(|v|v["sequence"].as_u64())}else{None};
-                        Ok(WatchSnapshot{verification_failure:slot.receive_fault.clone(),presence:slot.presence.local(),reporting_code:slot.report_code.clone(),workspace_id:options.workspace_id.clone(),mailbox_id:options.mailbox_id.clone(),generation:slot.generation,state:slot.state.clone(),receiver_link_verified:slot.link_verified,model_response:"NOT_ATTESTED".into(),code:slot.code.clone(),checkpoint:cursor.as_ref().map(|c|c.item).unwrap_or(0),control_checkpoint:cursor.and_then(|c|c.control),items,next_after,
+                        Ok(WatchSnapshot{verification_failure:slot.receive_fault.clone(),presence:slot.presence.local(),reporting_code:slot.report_code.clone(),acknowledgment_code:slot.ack_code.clone(),workspace_id:options.workspace_id.clone(),mailbox_id:options.mailbox_id.clone(),generation:slot.generation,state:slot.state.clone(),receiver_link_verified:slot.link_verified,model_response:"NOT_ATTESTED".into(),code:slot.code.clone(),checkpoint:cursor.as_ref().map(|c|c.item).unwrap_or(0),control_checkpoint:cursor.and_then(|c|c.control),items,next_after,
                             receiver_ack_pending:store.receiver_ack_pending(&options.workspace_id,&options.mailbox_id)?,
                             application_ack_pending:!store.acknowledgements(&options.workspace_id,&options.mailbox_id,true)?.is_empty(),stream_id:slot.stream_id.clone(),disconnects:slot.disconnects})
                     })();let _=reply.send(value);
@@ -879,9 +894,9 @@ pub(crate) async fn run(
                                 if value["stage"]!=stage||value["acknowledged"]!=json!(expected){s.fail(Failure{no_effect:false,code:"ACK_RESULT_INVALID".into(),retryable:false});}
                                 else if let Err(e)=store.acknowledged(&s.binding.options.workspace_id,&s.binding.options.mailbox_id,&items,consumed){s.fail(Failure::code(&e.code));}else{
                                     if store.receiver_ack_pending(&s.binding.options.workspace_id,&s.binding.options.mailbox_id).is_ok_and(|pending|!pending){s.custody_ack_not_before=None;}
-                                    s.failures=0;s.notify();
+                                    s.failures=0;s.ack_code=None;s.notify();
                                 }
-                            },Err(mut e)=>{if e.code=="MAILBOX_LEASE_EXPIRED"{s.lease_until=None;e.retryable=true;}s.fail(e)}}},
+                            },Err(mut e)=>{if e.code=="MAILBOX_LEASE_EXPIRED"{s.lease_until=None;e.retryable=true;}s.ack_failure(e)}}},
                             Work::Keys(workspace,selected,value)=>{
                                 let mut data=match value{Ok(v)=>v,Err(e)=>json!({"state":if matches!(e.code.as_str(),"CONTENT_KEY_STATE"|"VERIFICATION_FAILED"){"INVALID"}else{"UNKNOWN"},"key_id":null,"epoch":null,"code":e.code})};
                                 if let Some(missing)=data["missing_key_ids"].as_array(){
@@ -1333,6 +1348,7 @@ fn slot(binding: Binding) -> Slot {
         next_keys: Instant::now(),
         report_retry: Instant::now(),
         report_code: None,
+        ack_code: None,
         prefer_consumed_ack: true,
         custody_ack_not_before: None,
     }
@@ -1580,5 +1596,25 @@ mod reliability_tests {
         assert_eq!(receiver_retry_delay(1,true),Duration::from_secs(2));
         assert_eq!(receiver_retry_delay(2,true),Duration::from_secs(4));
         assert_eq!(receiver_retry_delay(u8::MAX,true),Duration::from_secs(30));
+    }
+    #[test]
+    fn transient_ack_failure_preserves_link_and_receive_quarantine() {
+        let mut s=selected();
+        s.link_verified=true;
+        s.state("RECEIVER_LINK_VERIFIED",None);
+        s.ack_failure(Failure{no_effect:false,code:"RESOURCE_EXHAUSTED".into(),retryable:false}.for_receiver());
+        assert!(s.link_verified);
+        assert!(!s.blocked);
+        assert_eq!(s.state,"RECEIVER_LINK_VERIFIED");
+        assert_eq!(s.ack_code.as_deref(),Some("RESOURCE_EXHAUSTED"));
+        s.receive_fault=Some(json!({"code":"STREAM_ITEM_EVIDENCE_INVALID"}));
+        s.link_verified=false;
+        s.state("BLOCKED",Some("STREAM_VERIFICATION_FAILED".into()));
+        s.ack_failure(Failure::code("NETWORK_TIMEOUT"));
+        assert!(!s.link_verified);
+        assert!(s.receive_fault.is_some());
+        assert_eq!(s.state,"BLOCKED");
+        s.ack_failure(Failure{no_effect:true,code:"MAILBOX_EPOCH_MISMATCH".into(),retryable:false});
+        assert!(s.blocked);
     }
 }

@@ -29,6 +29,13 @@ is needed to read it. Mailbox addresses/tokens, session information, key state
 and queue internals are not disclosed by this summary. Detailed mailbox APIs
 retain their existing permissions. Explicit local instance/protocol/mailbox
 limits remain enforced; local denial is not evidence that the peer is offline.
+If `restricted_by` includes `operations`, `instance_ids`, `protocol_digests`
+and `mailbox_ids`, the selected client is not a Workspace directory client.
+Adding only `structure.members.read` is insufficient. Resume the supported
+connection through the original authorized runtime to select or derive its
+Workspace client, preserving older endpoints for pending-operation recovery.
+Upgrading the binary alone does not enlarge an existing immutable delegation.
+See [receiving recovery and local capability diagnosis](receiving-recovery.md).
 
 ## Shared display names
 

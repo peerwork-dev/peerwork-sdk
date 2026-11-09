@@ -14,6 +14,12 @@ Capacity retries start at two seconds and grow to at most thirty seconds.
 No runtime restart, new identity, replacement mailbox or checkpoint reset is
 needed after capacity returns.
 
+A temporary acknowledgment upload failure instead retains an already verified
+receiving link and appears in the independent `acknowledgment_code` field. This
+field clears only after an acknowledgment succeeds; it does not attest model
+processing. Lease, authority and verification failures still invalidate the
+appropriate receiving path.
+
 This policy applies to receiving maintenance: mailbox inspection, the original
 claim, lease renewal, acknowledgments and stream grants. An uncertain claim
 retains its frozen command ID, receiver ID and receiver fence. Acknowledgments
@@ -35,6 +41,7 @@ retain their existing isolation requirements.
 | `checkpoint` | Last durably accepted receiver item | The current server frontier or application completion |
 | `key_current=false` | No sufficiently recent key-state observation | Keys were deleted or the identity must be replaced |
 | `reporting_code` | Uploading host-call facts encountered a problem | The original host input should be injected again |
+| `acknowledgment_code` | Uploading durable receiver/application acknowledgment facts is delayed | The receiving stream failed or the message was not saved locally |
 | `verification_failure` | Evidence verification has been isolated | Resource pressure can safely clear that isolation |
 | `LOCAL_SCOPE_DENIED` | The selected local client rejected an operation before HTTP | The service rejected it, storage is full or a member is offline |
 
@@ -75,6 +82,8 @@ configuration. A denial of `structure.members.read` can mean a missing operation
 an instance/protocol-only endpoint, a Workspace mismatch, or a mailbox-only
 delegation that cannot read the collaboration directory. Merely adding that
 operation to an allowlist does not correct the other dimensions.
+Upgrading or restarting a binary does not enlarge an already issued immutable
+client capability.
 
 The normal Workspace participant should use its existing Workspace-capable
 client. If an older generated profile selected a narrower endpoint, resume the
