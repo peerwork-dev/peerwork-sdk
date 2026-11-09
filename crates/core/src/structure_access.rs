@@ -24,6 +24,8 @@ use zeroize::{Zeroize, Zeroizing};
 
 pub const ACCESS_REQUEST_TYPE: &str = "peerwork.access-request.v1+jws";
 pub const PERSISTENT_ACCESS_REQUEST_TYPE: &str = "peerwork.access-request.v2+jws";
+pub const HUMAN_ACCESS_REQUEST_TYPE: &str = "peerwork.access-request.v3+jws";
+pub const HUMAN_ACCESS_FEATURE: &str = "account-bound-space-access-v1";
 const MAX_SAFE_TIME: u64 = 9_007_199_254_740_991;
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum AccessError {
@@ -181,7 +183,7 @@ pub fn verify_access_request(
         parse_strict_json(&decode_base64url(parts[0]).map_err(invalid)?).map_err(invalid)?;
     if header.as_object().map(|v| v.len()) != Some(3)
         || header["alg"] != "EdDSA"
-        || !matches!(header["typ"].as_str(), Some(ACCESS_REQUEST_TYPE | PERSISTENT_ACCESS_REQUEST_TYPE))
+        || !matches!(header["typ"].as_str(), Some(ACCESS_REQUEST_TYPE | PERSISTENT_ACCESS_REQUEST_TYPE | HUMAN_ACCESS_REQUEST_TYPE))
     {
         return Err(AccessError::Invalid);
     }
@@ -204,7 +206,7 @@ pub fn verify_access_request(
     let raw: Value = serde_json::from_slice(&payload).map_err(invalid)?;
     let valid_policy = match request.v {
         1 => header["typ"] == ACCESS_REQUEST_TYPE && !raw.as_object().ok_or(AccessError::Invalid)?.contains_key("authorization"),
-        2 => header["typ"] == PERSISTENT_ACCESS_REQUEST_TYPE
+        2 | 3 => header["typ"] == (if request.v == 3 {HUMAN_ACCESS_REQUEST_TYPE} else {PERSISTENT_ACCESS_REQUEST_TYPE})
             && request.kind == AccessKind::Browser
             && request.authorization.as_ref().is_some_and(|policy| {
                 raw["authorization"].as_object().is_some_and(|v| v.len() == 3 && v.contains_key("absolute_expires_at"))
@@ -217,7 +219,7 @@ pub fn verify_access_request(
     if !valid_policy
         || request.profile != PROFILE
         || request.workspace_id != workspace
-        || request.actor_id != actor_id(&signer.to_bytes())
+        || (request.v != 3 && request.actor_id != actor_id(&signer.to_bytes()))
         || !token(&request.request_id)
         || request.label.is_empty()
         || request.label.encode_utf16().count() > 80
@@ -242,35 +244,54 @@ pub fn verify_access_request(
         return Err(AccessError::Expired);
     }
     let cert = &request.certificate.payload;
-    if cert.as_object().map(|v| v.len()) != Some(7)
-        || cert["v"] != 1
-        || cert["actor_id"] != request.actor_id
+    if cert["actor_id"] != request.actor_id
         || cert["signing_key"] != kid
         || cert["issued_at"].as_u64() != Some(context.server_time_ms())
         || cert["expires_at"]
             .as_u64()
             .is_none_or(|t| t <= at || t > MAX_SAFE_TIME)
-        || !verify_canonical(
-            "peerwork.secure.key-certificate.v1",
-            cert,
-            &request.certificate.signature,
-            kid,
-        )
-        .map_err(invalid)?
     {
         return Err(AccessError::Invalid);
     }
-    let recipient: RecipientPublicJwk =
-        serde_json::from_value(cert["encryption_key"].clone()).map_err(invalid)?;
-    if cert["encryption_key_id"] != encryption_key_id(&recipient).map_err(invalid)? {
-        return Err(AccessError::Invalid);
-    }
+    let recipient = if request.v == 3 {
+        verify_human_recipient_certificate(&request.certificate,&request.actor_id,kid,audience_utf16,at)?
+    } else {
+        if cert.as_object().map(|v|v.len())!=Some(7)||cert["v"]!=1
+            || !verify_canonical("peerwork.secure.key-certificate.v1",cert,&request.certificate.signature,kid).map_err(invalid)? {
+            return Err(AccessError::Invalid);
+        }
+        let recipient:RecipientPublicJwk=serde_json::from_value(cert["encryption_key"].clone()).map_err(invalid)?;
+        if cert["encryption_key_id"]!=encryption_key_id(&recipient).map_err(invalid)?{return Err(AccessError::Invalid)}recipient
+    };
     Ok(VerifiedAccessRequest {
         request,
         jws: jws.into(),
         deadline: context.expires_at_ms(),
         recipient,
     })
+}
+
+/// Fixed-depth historical account recipient evidence. This does not grant
+/// current account/device authority or change Native self-certificate semantics.
+pub fn verify_human_recipient_certificate(certificate:&RecipientCertificate,actor:&str,signer:&str,audience_utf16:&[u16],at:u64)->Result<RecipientPublicJwk,AccessError>{
+    use crate::human_author::{verify_root,verify_device,AccountBinding};
+    let p=&certificate.payload;
+    if p.as_object().map(|v|v.len())!=Some(10)||p["v"]!=2||p["actor_id"]!=actor||p["signing_key"]!=signer
+        || p["audience"].as_str().is_none_or(|s|!s.encode_utf16().eq(audience_utf16.iter().copied()))
+        || at>MAX_SAFE_TIME{return Err(AccessError::Invalid)}
+    let issued=p["issued_at"].as_u64().ok_or(AccessError::Invalid)?;let end=p["expires_at"].as_u64().ok_or(AccessError::Invalid)?;
+    if issued>at||end<=at||end>MAX_SAFE_TIME||end<=issued||end-issued>366*86400000{return Err(AccessError::Invalid)}
+    let root_wire=p["root_certificate"].as_str().filter(|s|s.len()<=4096).ok_or(AccessError::Invalid)?;
+    let parts:Vec<_>=root_wire.split('.').collect();if parts.len()!=3{return Err(AccessError::Invalid)}
+    let raw=parse_strict_json(&decode_base64url(parts[1]).map_err(invalid)?).map_err(invalid)?;
+    let binding=AccountBinding{audience:String::from_utf16(audience_utf16).map_err(invalid)?,account_id:raw["account_id"].as_str().ok_or(AccessError::Invalid)?.into(),peer_id:actor.into(),root_generation:raw["root_generation"].as_u64().ok_or(AccessError::Invalid)?};
+    let root=verify_root(root_wire,&binding).map_err(invalid)?;
+    let device=verify_device(p["device_certificate"].as_str().ok_or(AccessError::Invalid)?,&root).map_err(invalid)?;
+    let recipient:RecipientPublicJwk=serde_json::from_value(p["encryption_key"].clone()).map_err(invalid)?;
+    if device.certificate().device_signing_key!=signer||p["encryption_key_id"]!=root.certificate().recipient_key_id
+        || p["encryption_key"]!=serde_json::to_value(&root.certificate().recipient_public_key).map_err(invalid)?
+        || !verify_canonical("peerwork.account-recipient-certificate.v1",p,&certificate.signature,signer).map_err(invalid)?{return Err(AccessError::Invalid)}
+    Ok(recipient)
 }
 
 /// Interprets only explicitly signed, versioned authority. A v1 certificate or
@@ -286,7 +307,7 @@ pub fn verify_access_authorization(body: &WireValue, request: &VerifiedAccessReq
         Some(WireValue::Number(value)) if value.is_finite() && value.fract() == 0.0 && *value > 0.0 && *value <= MAX_SAFE_TIME as f64 => Some(*value as u64),
         _ => return Err(AccessError::Invalid),
     };
-    if request.request.v == 2 {
+    if matches!(request.request.v,2|3) {
         let policy = request.request.authorization.as_ref().ok_or(AccessError::Invalid)?;
         if mode != "PERSISTENT" || body.get("authorization_version").and_then(WireValue::as_number) != Some(2.0)
             || expiry != policy.absolute_expires_at {
@@ -540,6 +561,47 @@ pub fn open_owner_access_keys(
 mod tests {
     use super::*;
     use crate::{crypto::sign_compact, prepared_command::verify_structure_author_intent};
+    fn human_fixture()->Value{serde_json::from_str(include_str!("../tests/fixtures/human-access-v1.json")).unwrap()}
+    #[test]
+    fn node_http_human_request_and_original_owner_grant_verify_without_private_fixture_material(){
+        let f=human_fixture();let audience=f["audience"].as_str().unwrap();let workspace=f["workspace_id"].as_str().unwrap();let service=f["service_key"].as_str().unwrap();
+        let req=verify_access_request(f["request_jws"].as_str().unwrap(),workspace,&audience.encode_utf16().collect::<Vec<_>>(),service,f["at"].as_u64().unwrap()).unwrap();
+        assert_eq!(req.request().v,3);assert_eq!(req.request().actor_id,f["peer_id"]);assert_ne!(req.request().actor_id,actor_id(&verifying_key(f["device_signing_key"].as_str().unwrap()).unwrap().to_bytes()));
+        let author=verify_structure_author_intent(f["owner_author_intent"].as_str().unwrap(),&audience.encode_utf16().collect::<Vec<_>>()).unwrap();
+        assert_eq!(author.actor_id(),f["owner_actor"].as_str().unwrap());assert_eq!(author.action_id(),"structure.access.authorize");assert!(verify_access_authorization(author.command().get("body").unwrap(),&req).unwrap().persistent);
+        // Emit only a public ciphertext on TEST. The independent Node opener
+        // retains its synthetic recipient private scalar on that same host.
+        let secret=Zeroizing::new([37;32]);let material=AccessKeyMaterial::new(f["content_key_id"].as_str().unwrap().into(),secret).unwrap();let grant=seal_access_keys(&req,audience,f["owner_actor"].as_str().unwrap(),&[material],f["content_key_id"].as_str().unwrap()).unwrap();
+        assert_eq!(grant.key_ids.len(),1);if let Some(path)=std::env::var_os("PEERWORK_HUMAN_ACCESS_SEAL_OUTPUT"){
+            std::fs::write(path,serde_json::to_vec(&json!({"format":"peerwork.synthetic-human-access-seal.v1","public_fixture_sha256":sha256_hex(include_bytes!("../tests/fixtures/human-access-v1.json")),"grant":grant})).unwrap()).unwrap();
+        }
+    }
+    fn owned_human_request()->(Value,SigningKey){
+        let anchor=SigningKey::from_bytes(&[21;32]);let root_key=SigningKey::from_bytes(&[22;32]);let device_key=SigningKey::from_bytes(&[23;32]);let account=token_byte(9);let peer=actor_id(&anchor.verifying_key().to_bytes());let recipient=SecretRecipient::generate().unwrap();let device_recipient=SecretRecipient::generate().unwrap();
+        let root=json!({"v":1,"domain":"peerwork.account-root.v1","audience":"structure-test","account_id":account,"peer_id":peer,"root_generation":1,"operational_signing_key":key_id(&root_key.verifying_key().to_bytes()),"recipient_public_key":recipient.public_jwk(),"recipient_key_id":recipient.encryption_key_id(),"issued_at":NOW});
+        let root_wire=sign_compact(&json!({"alg":"EdDSA","typ":crate::human_author::ROOT_TYPE,"kid":key_id(&anchor.verifying_key().to_bytes())}),&root,&anchor).unwrap();
+        let device=json!({"v":1,"domain":"peerwork.human-device.v1","audience":"structure-test","account_id":account,"peer_id":peer,"root_generation":1,"root_certificate_hash":sha256_hex(root_wire.as_bytes()),"device_id":token_byte(10),"device_signing_key":key_id(&device_key.verifying_key().to_bytes()),"device_recipient_public_key":device_recipient.public_jwk(),"device_recipient_key_id":device_recipient.encryption_key_id(),"issued_at":NOW});
+        let device_wire=sign_compact(&json!({"alg":"EdDSA","typ":crate::human_author::DEVICE_TYPE,"kid":key_id(&root_key.verifying_key().to_bytes())}),&device,&root_key).unwrap();
+        let p=json!({"v":2,"audience":"structure-test","actor_id":peer,"signing_key":key_id(&device_key.verifying_key().to_bytes()),"encryption_key":recipient.public_jwk(),"encryption_key_id":recipient.encryption_key_id(),"issued_at":NOW,"expires_at":NOW+86400000,"root_certificate":root_wire,"device_certificate":device_wire});
+        let certificate=RecipientCertificate{signature:crate::crypto::sign_canonical("peerwork.account-recipient-certificate.v1",&p,&device_key).unwrap(),payload:p};let nonce=token_byte(8);let time:Value=serde_json::from_slice(&context(&SigningKey::from_bytes(&[7;32]),&nonce,NOW)).unwrap();
+        (json!({"v":3,"profile":PROFILE,"workspace_id":token_byte(3),"actor_id":peer,"request_id":nonce,"kind":"BROWSER","label":"Owned Human test","certificate":certificate,"time_context":time["context"],"write":null,"authorization":{"mode":"PERSISTENT","absolute_expires_at":null,"key_binding":"PINNED_UNTIL_AUTHORIZATION_END"}}),device_key)
+    }
+    #[test]
+    fn valid_device_signatures_cannot_substitute_account_recipient_or_downgrade_the_human_request(){
+        let (request,key)=owned_human_request();let sign=|value:&Value,kind:&str|sign_compact(&json!({"alg":"EdDSA","typ":kind,"kid":key_id(&key.verifying_key().to_bytes())}),value,&key).unwrap();let check=|wire:&str|verify_access_request(wire,&token_byte(3),&"structure-test".encode_utf16().collect::<Vec<_>>(),&service_key(),NOW);
+        assert!(check(&sign(&request,HUMAN_ACCESS_REQUEST_TYPE)).is_ok());
+        for case in 0..5{
+            let mut bad=request.clone();match case{
+                0=>bad["certificate"]["payload"]["encryption_key_id"]=json!(token_byte(99)),
+                1=>{bad["actor_id"]=json!(token_byte(99));bad["certificate"]["payload"]["actor_id"]=bad["actor_id"].clone();},
+                2=>bad["certificate"]["payload"]["audience"]=json!("different-service"),
+                3=>bad["certificate"]["payload"]["extra"]=json!(true),
+                _=>{bad.as_object_mut().unwrap().remove("authorization");},
+            }
+            bad["certificate"]["signature"]=json!(crate::crypto::sign_canonical("peerwork.account-recipient-certificate.v1",&bad["certificate"]["payload"],&key).unwrap());assert!(check(&sign(&bad,HUMAN_ACCESS_REQUEST_TYPE)).is_err());
+        }
+        let mut down=request.clone();down["v"]=json!(2);assert!(check(&sign(&down,PERSISTENT_ACCESS_REQUEST_TYPE)).is_err());assert!(check(&sign(&request,PERSISTENT_ACCESS_REQUEST_TYPE)).is_err());
+    }
     const NOW: u64 = 1_800_000_000_000;
     fn token_byte(byte: u8) -> String {
         base64url(&[byte; 32])

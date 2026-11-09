@@ -1,11 +1,39 @@
 # Human Peer author evidence
 
 Status: development candidate. The core verifier and selected native
-HTTP/mailbox read paths exist on this work branch. Complete browser accounts,
-public-reading and recipient adapters, CLI/MCP qualification and service
+HTTP/mailbox read paths and account-recipient request verification exist on this
+work branch. Complete browser accounts, public-reading, CLI/MCP qualification and service
 activation are still pending.
 Published SDK 0.3.21 does not support Human Peer command authors. Do not treat
 this document as an announced service endpoint or a released support version.
+
+## Account recipient requests
+
+The development core accepts explicit `peerwork.access-request.v3+jws` Human
+browser requests through `structure_access::verify_access_request`. Their v2
+recipient certificate binds a stable Human principal, the exact root and device
+JWS strings, the actual device signer and the root's account recipient key.
+Its signature domain is `peerwork.account-recipient-certificate.v1`. Native v1
+certificates and v1/v2 requests remain strict direct-key formats.
+
+Existing `StructureAccessApproval` preparation recognizes this request's signed
+persistent policy and requires `account-bound-space-access-v1` service support.
+It uses the ordinary Owner approval operation; it does not replace the Owner
+identity or invent another local operation namespace. Request version3 retains
+the existing persistent authorization version2. A second activated Human device
+can use that account's existing member and recipient-key grant.
+
+The service must still validate current requester account/device/session/credential
+state under its transaction fences. Pure certificate verification never supplies
+that current authority. Historical original Owner grants remain independently
+verifiable after requester revocation and are not re-applied during recovery.
+
+`crates/core/tests/fixtures/human-access-v1.json` is a synthetic public fixture
+produced by an independent actual HTTP/PostgreSQL Node implementation. It contains
+no private scalar or signing seed. Core verifies that original request and Owner
+grant, then seals a new opaque body-key box. The independent Node opener verifies
+that ciphertext on local TEST while retaining its private recipient there.
+This is not a full released CLI/MCP or multiple-browser receiving claim.
 
 ## Identity and signatures
 

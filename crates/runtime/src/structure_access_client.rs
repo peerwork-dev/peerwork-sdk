@@ -201,7 +201,8 @@ impl KernelClient {
         let request_parts:Vec<_>=selection.request_jws.split('.').collect();
         if request_parts.len()==3 {
             if let Some(header)=peerwork_core::crypto::decode_base64url(request_parts[0]).ok().and_then(|wire|peerwork_core::strict_json::parse_strict_json(&wire).ok()) {
-                if header["typ"]==peerwork_core::structure_access::PERSISTENT_ACCESS_REQUEST_TYPE {
+                if matches!(header["typ"].as_str(),Some(peerwork_core::structure_access::PERSISTENT_ACCESS_REQUEST_TYPE|peerwork_core::structure_access::HUMAN_ACCESS_REQUEST_TYPE)) {
+                    if header["typ"]==peerwork_core::structure_access::HUMAN_ACCESS_REQUEST_TYPE&&!self.discovery.protocol_features().contains(&peerwork_core::structure_access::HUMAN_ACCESS_FEATURE.encode_utf16().collect::<Vec<_>>()){return Err(KernelClientError::UnsupportedStructureProfile);}
                     selection.mode=AccessMode::Persistent;
                     if selection.deliver_content_keys{selection.follow_current_key=true;}
                 }
@@ -266,7 +267,7 @@ impl KernelClient {
         )?;
         if matches!(request.request().kind,peerwork_core::structure_access::AccessKind::Browser)
             && !self.discovery.protocol_features().contains(&"owner-pinned-browser-access-v1".encode_utf16().collect::<Vec<_>>()) {return Err(KernelClientError::UnsupportedStructureProfile);}
-        if (request.request().v==2)!=(selection.mode==AccessMode::Persistent){return Err(KernelClientError::InvalidCommand);}
+        if matches!(request.request().v,2|3)!=(selection.mode==AccessMode::Persistent){return Err(KernelClientError::InvalidCommand);}
         let mut upgrade_from=None;
         if selection.mode==AccessMode::Persistent {
             let observed=self.execute_structure_intent(identity,authority,json!({"action":"structure.access.approval.get","workspace_id":selection.workspace_id,"body":{"owner_id":identity.actor_id(),"actor_id":request.request().actor_id}}).to_string().as_bytes(),cancel).await?;

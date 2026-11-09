@@ -127,6 +127,7 @@ impl KernelClient {
 mod tests{
     use super::*;
     use serde_json::json;
+    use super::super::structure_access_client::AccessMode;
     fn fixture(origin:&str)->(crate::test_support::ProtectedTestDir,KernelIdentity,KernelClient){
         let dir=crate::test_support::protected_test_dir();let identity=KernelIdentity::create(&dir.path().join("identity")).unwrap();
         let wire=serde_json::to_vec(&json!({"semantics":"peerwork.kernel.v1","audience":"parent-tests","protocol_features":["canonical-content-key-epochs-v1","owner-approved-key-floor-v1","owner-selected-publication-v1","selected-publication-snapshot-v1"],"command_type":"peerwork.kernel-command.v1+jws","receipt_type":"peerwork.kernel-receipt.v1+jws","receipt_public_key":peerwork_core::crypto::key_id(&ed25519_dalek::SigningKey::from_bytes(&[22;32]).verifying_key().to_bytes()),"limits":{"max":1}})).unwrap();
@@ -136,6 +137,15 @@ mod tests{
         let client=KernelClient::open_cached(config,&path,&[],&CancellationToken::new()).unwrap();(dir,identity,client)
     }
     fn command(outcome:StructureIntentOutcome)->String{match outcome{StructureIntentOutcome::Pending{command_id,phase,recovery,..}=>{assert_eq!(phase,"PREPARATION");assert_eq!(recovery,"RESUME_SAME_INTENT");command_id},other=>panic!("expected durable preparation, got {other:?}")}}
+    #[test]
+    fn human_request_preparation_requires_support_and_preserves_the_signed_persistent_selection(){
+        let (_dir,identity,mut client)=fixture("https://example.invalid/");let f:serde_json::Value=serde_json::from_str(include_str!("../../core/tests/fixtures/human-access-v1.json")).unwrap();
+        let selection:StructureAccessApproval=serde_json::from_value(json!({"workspace_id":f["workspace_id"],"request_jws":f["request_jws"],"deliver_content_keys":false})).unwrap();
+        assert!(matches!(client.normalize_structure_access(&identity,"authority",selection.clone()),Err(KernelClientError::UnsupportedStructureProfile)));
+        let wire=serde_json::to_vec(&json!({"semantics":"peerwork.kernel.v1","audience":"parent-tests","protocol_features":["canonical-content-key-epochs-v1","owner-approved-key-floor-v1","owner-selected-publication-v1","selected-publication-snapshot-v1","persistent-browser-access-v1",peerwork_core::structure_access::HUMAN_ACCESS_FEATURE],"command_type":"peerwork.kernel-command.v1+jws","receipt_type":"peerwork.kernel-receipt.v1+jws","receipt_public_key":peerwork_core::crypto::key_id(&ed25519_dalek::SigningKey::from_bytes(&[22;32]).verifying_key().to_bytes()),"limits":{"max":1}})).unwrap();
+        client.discovery=peerwork_core::discovery::parse_discovery_wire(&wire,wire.len()).unwrap();let (prepared,id)=client.normalize_structure_access(&identity,"authority",selection.clone()).unwrap();
+        assert!(matches!(prepared.mode,AccessMode::Persistent));assert!(prepared.ttl_ms.is_none());assert_eq!(prepared.request_jws,selection.request_jws);assert_eq!(client.normalize_structure_access(&identity,"authority",selection).unwrap().1,id);
+    }
     #[test]
     fn incomplete_crypto_preparation_keeps_parent_id_and_verified_retryability(){
         let (_dir,identity,mut client)=fixture("https://example.invalid/");
