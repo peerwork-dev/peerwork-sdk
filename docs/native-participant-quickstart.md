@@ -47,24 +47,42 @@ Codex shared-daemon path and scoped cross-user bridge are described in the
 
 ## AGY: use only the supported receiving path
 
-Installing MCP with `--install agy` does not attach PUSH to an existing AGY
-conversation. For an explicitly waiting Agent, choose INBOX:
+If this Peer already received PUSH in AGY, keep the original host binding and
+conversation. Start with `peerwork_context` and use the loaded tools. Do not
+reconnect merely to send, change receiving mode, create another conversation,
+or replace the receiver because a generic installation guide describes a
+first-time setup.
+
+When an actual reconnect is required, resume the unchanged original invocation.
+An already registered managed AGY host can also be explicitly selected by its
+local handle:
+
+```sh
+peerwork connect --workspace WORKSPACE_ID --host EXISTING_AGY_HOST --install agy
+```
+
+Managed AGY stdio PUSH is supported: one persistent process resumes the exact
+selected conversation and queues input while busy. The owning integration uses
+[advanced host setup](native-bot-configuration.md) only when no such binding
+exists. It must not start a substitute for another running session.
+
+Installing MCP with `--install agy` alone does not establish host attachment.
+Generic external-input attachment to an arbitrary existing interactive AGY CLI
+has not been qualified by this integration. This is a qualification limit, not
+proof that AGY has no external control interface. A terminal owning stdin does
+not identify which host integration the Peer previously used. The current AGY
+App adapter reports queued input rather than verified live model wake.
+
+For an intentionally inbox-driven Agent without a selected PUSH host, choose:
 
 ```sh
 peerwork connect --workspace WORKSPACE_ID --receive --receive-mode inbox --join --body-keys --install agy
 ```
 
-Use `peerwork_inbox` or `peerwork_wait` in that session. This does not claim
-unsolicited wake while the Agent is idle. An existing interactive AGY CLI's
-external-input attachment is not established by this integration. AGY App's
-current adapter supports queued input, not verified live PUSH. Repeating Connect
-or asking the Owner for more rights cannot change this host capability.
-
-For explicitly owned persistent AGY stdio, reuse its selected named binding or
-have the owning integration perform the [advanced host setup](native-bot-configuration.md).
-It owns one selected process and conversation; do not start it as a substitute
-for another running session. Do not replace an existing PUSH/INBOX receiver to
-make a different mode appear configured.
+Use `peerwork_inbox` or `peerwork_wait` in that session. INBOX does not provide
+unsolicited wake. Never silently downgrade an existing PUSH binding to make
+installation appear complete; inspect the original host kind, destination and
+current receiving result first.
 
 Programs need no Agent host, MCP or Skill:
 

@@ -163,7 +163,7 @@ From the authorized project, use the native CLI once if MCP is not loaded:
 peerwork connect --workspace WORKSPACE_ID --codex --join --body-keys --install codex
 ```
 
-For AGY, follow the explicit INBOX or owned-stdio path in the
+For AGY, preserve and reuse an existing PUSH binding first; see the receiving paths in the
 [quickstart](native-participant-quickstart.md#agy-use-only-the-supported-receiving-path).
 `--install agy` only chooses which local integration to prepare; it does not create a model session or prove
 that the currently running session refreshed its tools. For a new setup initiated through loaded MCP tools, call:
@@ -391,7 +391,7 @@ There is no automatic binary upgrade or replacement signer.
 | Program already owning a Codex App Server client | Rust `Connect::connect_current` accepts `HostInvocation::CodexDynamicTool` from the actual server callback, checks its exact thread against the selected adapter and retains the host stage across approval. The owning program must integrate this call. |
 | AGY App owning integration | The same API accepts exact App conversation context and the explicitly enabled Sidecar/agentapi adapter. This is not CLI root metadata or a universal installed plugin. |
 | Ordinary Codex MCP/plugin | Tools/connect are available; this review did not establish generic current-thread metadata or automatic attachment to any existing UI/CLI. Report tools-only/context-required instead of guessing. |
-| AGY CLI MCP root metadata | Root context is not an exact child or an external push interface. Existing interactive CLI push is not established; explicitly owned managed stdio remains a separate supported mode. |
+| AGY CLI MCP root metadata | Reuse an existing exact managed-stdio PUSH binding. Root context alone does not establish attachment to an arbitrary interactive CLI; that unqualified path does not invalidate an already working binding. |
 
 `HostInvocation` is a local Rust integration contract, absent from model-facing
 MCP/CLI arguments. Its owner obtains fields from the real authenticated host
