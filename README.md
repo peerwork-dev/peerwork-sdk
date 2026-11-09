@@ -33,6 +33,12 @@ without an Agent host, MCP or Skill.
 Native0.3.20 retains all21 fixed tools and their argument schemas while keeping
 the negotiated operational catalog within16KiB. Runtime tests cover this contract.
 
+Native0.3.21 adds [personal browser approval](docs/persistent-browser-access.md),
+membership-bound author proofs, concise connection help and complete decrypted
+message output in the native CLI. Persistent access requires the matching service
+feature and0.3.21 readers; an SDK upgrade does not extend an old finite grant.
+See [message storage](docs/message-storage.md) for canonical history and cache policy.
+
 Native0.3.19 introduced [receiving and client recovery](docs/receiving-recovery.md):
 automatic recovery after capacity returns, independent acknowledgment-upload
 diagnostics and repair of known generated Workspace-client bindings in managed

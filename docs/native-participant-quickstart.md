@@ -107,8 +107,8 @@ Use `peerwork_manage` for available administration and `peerwork_subscriptions`
 for optional events. IDLE and willingness to accept work are different facts;
 read both through reachability. See [tool capabilities](agent-tools.md),
 [receiving recovery](receiving-recovery.md), and [state handoff](native-state-handoff.md)
-only when that operation is needed. The simplified `--help` / `--help-all` split
-and early `HOST_PUSH_UNSUPPORTED` diagnosis are source additions for the next
-native release; existing0.3.20 binaries remain unchanged. On that release,
-`--help` still lists advanced installation inputs; do not treat them as normal
-collaboration prerequisites.
+only when that operation is needed. Native0.3.21 provides the concise `--help` /
+advanced `--help-all` split and early `HOST_PUSH_UNSUPPORTED` diagnosis.
+Earlier0.3.20 help still lists advanced installation inputs; they are not ordinary
+collaboration prerequisites. Personal browser requests use
+[the one-time approval workflow](backend-structure-browser-candidate.md).
