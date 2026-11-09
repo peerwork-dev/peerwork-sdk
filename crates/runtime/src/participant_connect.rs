@@ -653,7 +653,7 @@ impl Connect {
                     "SELECT_SUPPORTED_LIVE_HOST_OR_EXPLICIT_INBOX",json!({"host_mode":"TOOL_ONLY",
                     "automatic_model_wake":"NOT_SUPPORTED","retryable":false,"owner_exchange_required":false,
                     "remote_changes_submitted":false,"existing_receiver_preserved":true,
-                    "message":"This AGY App adapter supports queued input, not verified live PUSH. Repeating this setup or requesting more Workspace rights cannot enable live PUSH. Keep existing tools; select a supported live host or explicitly choose INBOX without replacing the existing receiver."}));
+                    "message":"AGY App supports queued input. For live PUSH, select a supported host; otherwise explicitly choose INBOX. Keep existing tools and receiver. Retrying or requesting more Workspace rights cannot enable live PUSH."}));
             }
         }
         let client = match self.original_client(&request.participant).await
@@ -1564,10 +1564,10 @@ pub fn cli(args: &[String]) -> Value {
             "peerwork connect --workspace WORKSPACE --codex --codex-chat EXACT_TITLE_OR_THREAD --join --body-keys --install codex",
             "peerwork connect --workspace WORKSPACE --receive --receive-mode inbox --join --body-keys --install agy",
             "peerwork connect --workspace WORKSPACE --program --join --body-keys"],
-            "existing_client":"Use peerwork_context and the loaded tools; do not reconnect a working client.",
+            "existing_client":"Start with peerwork_context. Reuse the selected client and loaded tools.",
             "defaults":{"send":true,"receive":true,"agent_receive_mode":"PUSH"},
-            "resume":"Keep the original connect invocation and returned setup ID. Finish Codex attachment with the same CLI invocation; do not restart it through a generic MCP connect request.",
-            "agy":"INBOX supports explicit inbox/wait consumption. Existing interactive CLI live attachment is not established. Owned managed stdio is an advanced integration; installing MCP alone does not enable PUSH.",
+            "resume":"Resume the same setup. For Codex CLI attachment, repeat its unchanged invocation and keep the returned setup ID.",
+            "agy":"INBOX supports explicit inbox/wait. Existing interactive CLI PUSH is not established. Reuse an owned stdio binding for supported live input; MCP installation alone does not enable PUSH.",
             "advanced_help_command":"peerwork connect --help-all"});
     }
     if args == ["--help-all"] {
