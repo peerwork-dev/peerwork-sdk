@@ -6,15 +6,17 @@ mod host_report;
 mod events;
 #[path = "communication_conversation.rs"]
 mod conversation;
-pub use conversation::{ConversationRecordContext,ConversationContentContext,NativeMessageContext,VerifiedConversationMessage,space_conversation_id,conversation_thread_id,authored_native_message_content,verify_conversation_message};
+pub use conversation::{ConversationRecordContext,ConversationContentContext,NativeMessageContext,VerifiedConversationMessage,space_conversation_id,conversation_thread_id,authored_native_message_content,verify_conversation_message,verify_conversation_message_with_proofs};
 pub use conversation::{FEATURE as CONVERSATION_FEATURE,FORMAT as CONVERSATION_FORMAT};
 pub use events::FORMAT as WORKSPACE_EVENT_FORMAT;
+pub(crate) use events::verify_event as verify_workspace_event;
 
 use crate::{
     canonical::{canonical, Path},
+    human_author::AuthorProofContext,
     crypto::{base64url, decode_base64url, sha256, sha256_hex, verifying_key},
     prepared_command::{
-        verify_structure_author_intent, VerifiedPreparedCommand, VerifiedStructureAuthorIntent,
+        verify_structure_author_intent_with_proofs, VerifiedPreparedCommand, VerifiedStructureAuthorIntent,
     },
     receipt_wire::{
         verify_http_response_with_path, VerifiedCommandResponse, WireReceiptExpectation,
@@ -30,6 +32,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use thiserror::Error;
 use zeroize::Zeroizing;
+#[cfg(test)]use crate::prepared_command::verify_structure_author_intent;
 
 pub const FEATURE: &str = "native-mailbox-v1";
 pub const FRAME_TYPE: &str = "peerwork.mailbox-frame.v1+jws";
@@ -58,6 +61,7 @@ pub enum FrameVerificationError {
     Cursor,
     ItemEvidence,
     ControlEvidence,
+    AuthorProof,
 }
 impl FrameVerificationError {
     pub fn code(self) -> &'static str {
@@ -71,6 +75,7 @@ impl FrameVerificationError {
             Self::Cursor => "STREAM_CURSOR_INVALID",
             Self::ItemEvidence => "STREAM_ITEM_EVIDENCE_INVALID",
             Self::ControlEvidence => "STREAM_CONTROL_EVIDENCE_INVALID",
+            Self::AuthorProof => "STREAM_AUTHOR_PROOF_INVALID",
         }
     }
     pub fn authenticated_scope(self) -> bool {
@@ -375,7 +380,7 @@ fn message(
     audience: &[u16],
     workspace: &str,
     recipient: Option<&MailboxAddress>,
-) -> Result<VerifiedMessage> {
+proofs:Option<&AuthorProofContext>) -> Result<VerifiedMessage> {
     exact(
         value,
         &[
@@ -389,7 +394,7 @@ fn message(
         ],
     )?;
     let jws = text(value, "author_intent")?;
-    let author = verify_structure_author_intent(&jws, audience).map_err(|_| CommunicationError)?;
+    let author = verify_structure_author_intent_with_proofs(&jws, audience,proofs).map_err(|_| CommunicationError)?;
     let (context, content) = authored_message_content(&author)?;
     if context.workspace_id != workspace
         || context.actor_id != text(value, "sender_actor")?
@@ -418,13 +423,13 @@ fn source_proof(
     audience: &[u16],
     workspace: &str,
     key: &str,
-) -> Result<(
+proofs:Option<&AuthorProofContext>) -> Result<(
     VerifiedStructureAuthorIntent,
     VerifiedCommandResponse,
     WireValue,
 )> {
     let jws = text(value, "author_intent")?;
-    let author = verify_structure_author_intent(&jws, audience).map_err(|_| CommunicationError)?;
+    let author = verify_structure_author_intent_with_proofs(&jws, audience,proofs).map_err(|_| CommunicationError)?;
     if author.workspace_id() != Some(workspace)
         || author.intent_digest() != text(value, "intent_digest")?
     {
@@ -538,6 +543,7 @@ pub struct VerifiedMailboxPage {
     audience: Vec<u16>,
     service_key: String,
     frame_wire: Option<String>,
+    author_proofs:Option<AuthorProofContext>,
     items: Vec<VerifiedDelivery>,
     controls: Vec<WireValue>,
     mailbox_frontier: u64,
@@ -547,6 +553,7 @@ pub struct VerifiedMailboxPage {
     controls_more: bool,
 }
 impl VerifiedMailboxPage {
+    pub fn author_proofs(&self)->Option<&AuthorProofContext>{self.author_proofs.as_ref()}
     pub fn mailbox(&self) -> &MailboxPins {
         &self.mailbox
     }
@@ -590,7 +597,7 @@ fn delivery(
     actor: &str,
     pins: &MailboxPins,
     key: &str,
-) -> Result<VerifiedDelivery> {
+proofs:Option<&AuthorProofContext>) -> Result<VerifiedDelivery> {
     token_field(value, "delivery_id")?;
     number(value, "sequence")?;
     if value.get("event_source_sequence").is_some() {
@@ -623,7 +630,7 @@ fn delivery(
     let mut shared = None;
     if kind == "MESSAGE" && !terminal {
         if value.get("message").and_then(|v|v.get("conversation")).is_some() {
-            let msg=verify_conversation_message(value.get("message").ok_or(CommunicationError)?,audience,&pins.workspace_id,key)?;
+            let msg=verify_conversation_message_with_proofs(value.get("message").ok_or(CommunicationError)?,audience,&pins.workspace_id,key,proofs)?;
             if text(value,"delivery_id")?!=id(json!(["peerwork.delivery.v1",pins.workspace_id,pins.mailbox_id,msg.message_id(),null]))?
                 || msg.accepted_at()!=number(value,"created_at")? {return Err(CommunicationError);}
             shared=Some(msg);
@@ -636,7 +643,7 @@ fn delivery(
                 mailbox_id: pins.mailbox_id.clone(),
                 membership_id: pins.membership_id.clone(),
             }),
-        )?;
+        proofs)?;
         let expected = id(json!([
             "peerwork.delivery.v1",
             pins.workspace_id,
@@ -673,7 +680,7 @@ fn delivery(
                 ],
             )?;
             let (author, proof, result) =
-                source_proof(business, audience, &pins.workspace_id, key)?;
+                source_proof(business, audience, &pins.workspace_id, key,proofs)?;
             if author.action_id() != "structure.action"
                 || text(business, "kind")? != "action.accepted"
                 || text(business, "actor_id")? != author.actor_id()
@@ -717,7 +724,7 @@ fn delivery(
         conversation: shared,
     })
 }
-fn control(value: &WireValue, audience: &[u16], pins: &MailboxPins, key: &str) -> Result<()> {
+fn control(value: &WireValue, audience: &[u16], pins: &MailboxPins, key: &str,proofs:Option<&AuthorProofContext>) -> Result<()> {
     exact(
         value,
         &[
@@ -729,7 +736,7 @@ fn control(value: &WireValue, audience: &[u16], pins: &MailboxPins, key: &str) -
             "source_response",
         ],
     )?;
-    let (author, proof, result) = source_proof(value, audience, &pins.workspace_id, key)?;
+    let (author, proof, result) = source_proof(value, audience, &pins.workspace_id, key,proofs)?;
     if proof.event_sequence() != Some(number(value, "sequence")?) {
         return Err(CommunicationError);
     }
@@ -787,8 +794,8 @@ fn control(value: &WireValue, audience: &[u16], pins: &MailboxPins, key: &str) -
     }
     Ok(())
 }
-fn page(value: &WireValue, audience: &[u16], actor: &str, pins: &MailboxPins, key: &str) -> Result<VerifiedMailboxPage> {
-    page_detailed(value, audience, actor, pins, key).map_err(|_| CommunicationError)
+fn page(value: &WireValue, audience: &[u16], actor: &str, pins: &MailboxPins, key: &str,proofs:Option<&AuthorProofContext>) -> Result<VerifiedMailboxPage> {
+    page_detailed(value, audience, actor, pins, key,proofs).map_err(|_| CommunicationError)
 }
 fn page_detailed(
     value: &WireValue,
@@ -796,7 +803,7 @@ fn page_detailed(
     actor: &str,
     pins: &MailboxPins,
     key: &str,
-) -> std::result::Result<VerifiedMailboxPage, FrameVerificationError> {
+proofs:Option<&AuthorProofContext>) -> std::result::Result<VerifiedMailboxPage, FrameVerificationError> {
     pins.validate().map_err(|_| FrameVerificationError::Binding)?;
     let items = array(value, "items", 32).map_err(|_| FrameVerificationError::Format)?;
     let controls = array(value, "controls", 32).map_err(|_| FrameVerificationError::Format)?;
@@ -817,7 +824,7 @@ fn page_detailed(
             return Err(FrameVerificationError::Cursor);
         }
         sequence = next;
-        verified.push(delivery(item, audience, actor, pins, key).map_err(|_| FrameVerificationError::ItemEvidence)?);
+        verified.push(delivery(item, audience, actor, pins, key,proofs).map_err(|_| FrameVerificationError::ItemEvidence)?);
     }
     if checkpoint < sequence
         || more && checkpoint != sequence
@@ -836,7 +843,7 @@ fn page_detailed(
             return Err(FrameVerificationError::Cursor);
         }
         control_sequence = next;
-        control(item, audience, pins, key).map_err(|_| FrameVerificationError::ControlEvidence)?;
+        control(item, audience, pins, key,proofs).map_err(|_| FrameVerificationError::ControlEvidence)?;
     }
     if control_checkpoint < control_sequence {
         return Err(FrameVerificationError::Cursor);
@@ -847,6 +854,7 @@ fn page_detailed(
         audience: audience.to_vec(),
         service_key: key.into(),
         frame_wire: None,
+        author_proofs:proofs.cloned(),
         items: verified,
         controls: controls.to_vec(),
         mailbox_frontier,
@@ -859,22 +867,24 @@ fn page_detailed(
 
 /// Verify the native mailbox sources after the outer command receipt has been
 /// authenticated. Called by receipt_wire; not an alternative trust entry point.
-pub(crate) fn verify_read(
+pub(crate) fn verify_read_with_proofs(
     result: &WireValue,
     command: &WireValue,
     prepared: &VerifiedPreparedCommand,
     key: &str,
+    proofs:Option<&AuthorProofContext>,
 ) -> Result<()> {
-    if prepared.action_id().starts_with("structure.conversation.") {return conversation::verify_read(result,command,prepared,key);}
+    if prepared.action_id().starts_with("structure.conversation.") {return conversation::verify_read_with_proofs(result,command,prepared,key,proofs);}
     let body = command.get("body").ok_or(CommunicationError)?;
     match prepared.action_id() {
         "structure.mailbox.report" => {
             let report = result.get("report").ok_or(CommunicationError)?;
-            host_report::verify(
+            host_report::verify_with_proofs(
                 report,
                 prepared.audience_utf16(),
                 prepared.workspace_id().ok_or(CommunicationError)?,
                 prepared.actor_id(),
+                proofs,
             )?;
             let requested = body.get("report").ok_or(CommunicationError)?;
             if report.get("call_id") != requested.get("call_id")
@@ -909,11 +919,12 @@ pub(crate) fn verify_read(
                     .get("host_report")
                     .filter(|v| !matches!(v, WireValue::Null))
                 {
-                    host_report::verify(
+                    host_report::verify_with_proofs(
                         value,
                         prepared.audience_utf16(),
                         prepared.workspace_id().ok_or(CommunicationError)?,
                         &text(delivery, "recipient_actor")?,
+                        proofs,
                     )?;
                     let scope = value.get("scope").ok_or(CommunicationError)?;
                     if scope.get("mailbox_id") != delivery.get("mailbox_id")
@@ -1007,7 +1018,7 @@ pub(crate) fn verify_read(
                 prepared.audience_utf16(),
                 prepared.workspace_id().ok_or(CommunicationError)?,
                 None,
-            )?;
+            proofs)?;
             if msg.message_id() != text(body, "message_id")? {
                 return Err(CommunicationError);
             }
@@ -1045,7 +1056,7 @@ pub(crate) fn verify_read(
                 prepared.actor_id(),
                 &pins,
                 key,
-            )?;
+            proofs)?;
             let limit = if body.get("limit").is_some() {
                 number(body, "limit")?
             } else {
@@ -1078,9 +1089,9 @@ pub fn verify_mailbox_frame_detailed(wire: &[u8], expected: &FramePins<'_>) -> s
     use FrameVerificationError as E;
     let envelope = parse_wire_json_bounded(wire, 40, MAX_FRAME_BYTES).map_err(|_| E::Format)?;
     bounded_nodes(&envelope).map_err(|_| E::Format)?;
-    exact(&envelope, &["proof", "items", "controls"]).map_err(|_| E::Format)?;
+    let has_proofs=envelope.get("author_proofs").is_some();let mut envelope_fields=vec!["proof","items","controls"];if has_proofs{envelope_fields.push("author_proofs");}exact(&envelope,&envelope_fields).map_err(|_|E::Format)?;
     let proof = verify_typed(&text(&envelope, "proof").map_err(|_| E::Format)?, FRAME_TYPE, expected.service_key).map_err(|_| E::ServiceProof)?;
-    exact(&proof, &["kind", "audience", "stream_id", "actor_id", "workspace_id", "mailbox_id", "receiver_id", "epoch", "destination_digest", "binding_version", "server_time", "mailbox_frontier", "checkpoint", "more", "items_digest", "control_checkpoint", "controls_more", "controls_digest"]).map_err(|_| E::Format)?;
+    let mut proof_fields=vec!["kind", "audience", "stream_id", "actor_id", "workspace_id", "mailbox_id", "receiver_id", "epoch", "destination_digest", "binding_version", "server_time", "mailbox_frontier", "checkpoint", "more", "items_digest", "control_checkpoint", "controls_more", "controls_digest"];if has_proofs{proof_fields.push("author_proofs_digest");}exact(&proof,&proof_fields).map_err(|_|E::Format)?;
     let pins = expected.mailbox;
     let field = |name| text(&proof, name).map_err(|_| E::Scope);
     if field("kind")? != "peerwork.mailbox-frame.v1"
@@ -1101,12 +1112,17 @@ pub fn verify_mailbox_frame_detailed(wire: &[u8], expected: &FramePins<'_>) -> s
         if sha256_hex(canonical_wire_value(value, Path::STRUCTURED).map_err(|_| E::Digest)?.as_bytes())
             != text(&proof, hash).map_err(|_| E::Digest)? { return Err(E::Digest); }
     }
+    let proof_context=AuthorProofContext::from_container(&envelope).map_err(|_|E::AuthorProof)?;
+    let proofs=proof_context.as_ref();
+    if let Some(value)=envelope.get("author_proofs"){
+        if sha256_hex(canonical_wire_value(value,Path::STRUCTURED).map_err(|_|E::AuthorProof)?.as_bytes())!=text(&proof,"author_proofs_digest").map_err(|_|E::AuthorProof)?{return Err(E::AuthorProof)}
+    }
     let mut combined = proof.clone();
     let WireValue::Object(fields) = &mut combined else { return Err(E::Format); };
     for name in ["items", "controls"] {
         fields.push((name.encode_utf16().collect(), envelope.get(name).ok_or(E::Format)?.clone()));
     }
-    let mut verified = page_detailed(&combined, expected.audience, expected.actor_id, pins, expected.service_key)?;
+    let mut verified = page_detailed(&combined, expected.audience, expected.actor_id, pins, expected.service_key,proofs)?;
     verified.frame_wire = Some(canonical_wire_value(&envelope, Path::STRUCTURED).map_err(|_| E::Format)?);
     Ok(verified)
 }

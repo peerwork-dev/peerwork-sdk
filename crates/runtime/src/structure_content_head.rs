@@ -3,7 +3,7 @@
 use super::*;
 use super::structure_access_client::data;
 use crate::kernel_intents::{StructureContentKeys,ContentKeyError};
-use peerwork_core::{crypto::{base64url,sha256},prepared_command::verify_structure_author_intent};
+use peerwork_core::{crypto::{base64url,sha256},prepared_command::verify_structure_author_intent_with_proofs,human_author::AuthorProofContext};
 use serde::{Serialize,Deserialize};
 use serde_json::{json,Value};
 
@@ -27,7 +27,8 @@ impl KernelClient {
         let owner=metadata["owner_id"].as_str().ok_or(KernelClientError::InvalidResult)?;
         let id=head["key_id"].as_str().ok_or(KernelClientError::InvalidResult)?;
         let jws=head["author_intent"].as_str().ok_or(KernelClientError::InvalidResult)?;
-        let proof=verify_structure_author_intent(jws,self.discovery.audience_utf16()).map_err(|_|JournalError::InvalidReceipt)?;
+        let proofs=AuthorProofContext::from_json_container(metadata).map_err(|_|KernelClientError::InvalidResult)?;
+        let proof=verify_structure_author_intent_with_proofs(jws,self.discovery.audience_utf16(),proofs.as_ref()).map_err(|_|JournalError::InvalidReceipt)?;
         let body=proof.command().get("body").ok_or(KernelClientError::InvalidResult)?;
         if proof.actor_id()!=owner||proof.workspace_id()!=Some(workspace)||proof.action_id()!="structure.content-key.set"
             ||body.get("key_id").and_then(WireValue::as_string).as_deref()!=Some(id)

@@ -4,6 +4,7 @@ use crate::{
     canonical::Path,
     crypto::{actor_id, base64url, decode_base64url, key_id, sha256_hex, verifying_key},
     discovery::ParsedDiscovery,
+    human_author::{AuthorProofContext,ResolvedCommandAuthor,verify_account_command},
     wire_json::{canonical_wire_value, parse_wire_json_bounded, WireValue},
 };
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier};
@@ -402,6 +403,7 @@ pub struct VerifiedStructureAuthorIntent {
     digest: String,
     workspace: Option<String>,
     protocol: Option<String>,
+    author: ResolvedCommandAuthor,
 }
 impl VerifiedStructureAuthorIntent {
     pub fn command(&self) -> &WireValue {
@@ -410,6 +412,7 @@ impl VerifiedStructureAuthorIntent {
     pub fn actor_id(&self) -> &str {
         &self.actor
     }
+    pub fn author(&self)->&ResolvedCommandAuthor { &self.author }
     pub fn command_id(&self) -> &str {
         &self.id
     }
@@ -443,14 +446,19 @@ impl VerifiedStructureAuthorIntent {
     }
 }
 pub fn verify_structure_author_intent(jws:&str,audience_utf16:&[u16])->Result<VerifiedStructureAuthorIntent,PreparedCommandError>{
-    verify_authored_structure(jws,audience_utf16,false)
+    verify_structure_author_intent_with_proofs(jws,audience_utf16,None)
+}
+pub fn verify_structure_author_intent_with_proofs(jws:&str,audience_utf16:&[u16],proofs:Option<&AuthorProofContext>)->Result<VerifiedStructureAuthorIntent,PreparedCommandError>{
+    verify_authored_structure(jws,audience_utf16,AuthorIntentUse::Business,proofs)
 }
 /// A separate finite evidence boundary. Host control attestations cannot be
 /// substituted for immutable business author-intent proofs.
-pub(crate) fn verify_host_report_intent(jws:&str,audience_utf16:&[u16])->Result<VerifiedStructureAuthorIntent,PreparedCommandError>{
-    verify_authored_structure(jws,audience_utf16,true)
+pub(crate) fn verify_host_report_intent_with_proofs(jws:&str,audience_utf16:&[u16],proofs:Option<&AuthorProofContext>)->Result<VerifiedStructureAuthorIntent,PreparedCommandError>{
+    verify_authored_structure(jws,audience_utf16,AuthorIntentUse::HostReport,proofs)
 }
-fn verify_authored_structure(jws:&str,audience_utf16:&[u16],host_report:bool)->Result<VerifiedStructureAuthorIntent,PreparedCommandError>{
+pub(crate) fn verify_event_source_intent_with_proofs(jws:&str,audience_utf16:&[u16],proofs:Option<&AuthorProofContext>)->Result<VerifiedStructureAuthorIntent,PreparedCommandError>{verify_authored_structure(jws,audience_utf16,AuthorIntentUse::Event,proofs)}
+enum AuthorIntentUse{Business,HostReport,Event}
+fn verify_authored_structure(jws:&str,audience_utf16:&[u16],intent_use:AuthorIntentUse,proofs:Option<&AuthorProofContext>)->Result<VerifiedStructureAuthorIntent,PreparedCommandError>{
     let invalid = || PreparedCommandError::Invalid;
     if jws.len() > 250_000 || audience_utf16.is_empty() || audience_utf16.len() > 200 {
         return Err(invalid());
@@ -474,17 +482,21 @@ fn verify_authored_structure(jws:&str,audience_utf16:&[u16],host_report:bool)->R
         return Err(invalid());
     }
     let key = verifying_key(&kid).map_err(|_| invalid())?;
-    key.verify(
-        format!("{}.{}", parts[0], parts[1]).as_bytes(),
-        &Signature::from_bytes(&signature),
-    )
-    .map_err(|_| invalid())?;
     let command = parse_wire_json_bounded(&payload, 40, 180_000).map_err(|_| invalid())?;
-    let actor = actor_id(&key.to_bytes());
-    validate_command_schema(&command, audience_utf16, &actor).map_err(|_| invalid())?;
+    let actual=actor_id(&key.to_bytes());
+    let author=if command.get("author").is_some(){
+        verify_account_command(jws,audience_utf16,proofs).map_err(|_|invalid())?.author().clone()
+    }else{
+        // Keep the direct-key wire/UTF16 boundary unchanged. The Human path
+        // performs its three signatures without repeating the command check.
+        key.verify(format!("{}.{}",parts[0],parts[1]).as_bytes(),&Signature::from_bytes(&signature)).map_err(|_|invalid())?;
+        validate_command_schema(&command,audience_utf16,&actual).map_err(|_|invalid())?;
+        ResolvedCommandAuthor{kind:"direct-key-v1",principal_actor_id:actual.clone(),actual_signer_id:actual,account_id:None,root_generation:None,device_id:None,root_certificate_hash:None,device_certificate_hash:None}
+    };
+    let actor=author.principal_actor_id.clone();
     let action = string(&command, "action_id").ok_or_else(invalid)?;
-    if !(if host_report{action=="structure.mailbox.report"}else{crate::structure_execution::is_structure_mutation(&action)
-        || crate::structure_execution::is_owner_checkpoint_evidence(&action)})
+    let business=crate::structure_execution::is_structure_mutation(&action)||crate::structure_execution::is_owner_checkpoint_evidence(&action);
+    if !(match intent_use{AuthorIntentUse::Business=>business,AuthorIntentUse::HostReport=>action=="structure.mailbox.report",AuthorIntentUse::Event=>business||action=="structure.mailbox.pulse"})
         || command
             .get("body")
             .and_then(|b| b.get("profile"))
@@ -502,6 +514,7 @@ fn verify_authored_structure(jws:&str,audience_utf16:&[u16],host_report:bool)->R
         digest: sha256_hex(jws.as_bytes()),
         workspace: nullable_string(&command, "workspace_id").ok_or_else(invalid)?,
         protocol: nullable_string(&command, "protocol_digest").ok_or_else(invalid)?,
+        author,
         command,
     })
 }

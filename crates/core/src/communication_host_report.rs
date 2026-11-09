@@ -1,19 +1,22 @@
 //! Independent receiver-signature verification after the service receipt.
 use super::*;
+#[cfg(test)]
 pub(super) fn verify(
     value: &WireValue,
     audience: &[u16],
     workspace: &str,
     actor: &str,
-) -> Result<()> {
+) -> Result<()> {verify_with_proofs(value,audience,workspace,actor,None)}
+pub(super) fn verify_with_proofs(value:&WireValue,audience:&[u16],workspace:&str,actor:&str,proofs:Option<&AuthorProofContext>)->Result<()> {
     if text(value, "assurance")? != "SERVICE_RECORDED_RECEIVER_ATTESTATION"
         || text(value, "model_response")? != "NOT_ATTESTED"
     {
         return Err(CommunicationError);
     }
-    let author = crate::prepared_command::verify_host_report_intent(
+    let author = crate::prepared_command::verify_host_report_intent_with_proofs(
         &text(value, "author_intent")?,
         audience,
+        proofs,
     )
     .map_err(|_| CommunicationError)?;
     if author.actor_id() != actor || author.workspace_id() != Some(workspace) {

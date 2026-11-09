@@ -25,42 +25,49 @@ pub(super) fn delivery(value: &WireValue, audience: &[u16], pins: &MailboxPins, 
     } else {
         exact(value,&["sequence","delivery_id","kind","created_at","event_source_sequence","event","event_receipt"])?;
         let event=value.get("event").ok_or(CommunicationError)?;
-        exact(event,&["format","event_id","workspace_id","sequence","kind","actor_id","instance_id","execution_context_id","protocol_digest","observed_at","summary","record_refs","source"])?;
-        if text(event,"format")? != FORMAT || text(event,"workspace_id")? != pins.workspace_id
-            || number(event,"sequence")? != sequence
-            || !KINDS.contains(&text(event,"kind")?.as_str())
-            || text(event,"event_id")? != id(json!(["peerwork.event.v1",pins.workspace_id,sequence]))?
-            || number(value,"created_at")? != number(event,"observed_at")? {
-            return Err(CommunicationError);
-        }
-        token_field(event,"actor_id")?;
-        for field in ["instance_id","execution_context_id"] {
-            if event.get(field)!=Some(&WireValue::Null) { token_field(event,field)?; }
-        }
-        if event.get("protocol_digest")!=Some(&WireValue::Null) && !digest(&text(event,"protocol_digest")?) {
-            return Err(CommunicationError);
-        }
-        if !matches!(event.get("summary"),Some(WireValue::Object(_))) { return Err(CommunicationError); }
-        for reference in array(event,"record_refs",8)? {
-            exact(reference,&["record_id","revision","schema"])?;
-            token_field(reference,"record_id")?;
-            if number(reference,"revision")?==0 || text(reference,"schema")?.is_empty() || text(reference,"schema")?.len()>120 { return Err(CommunicationError); }
-        }
-        let source=event.get("source").ok_or(CommunicationError)?;
-        exact(source,&["command_id","intent_digest","origin"])?;
-        token_field(source,"command_id")?;
-        if !digest(&text(source,"intent_digest")?) || !["AUTHOR_COMMAND","SERVICE_OBSERVATION"].contains(&text(source,"origin")?.as_str()) { return Err(CommunicationError); }
-        let proof=verify_typed(&text(value,"event_receipt")?,RECEIPT_TYPE,key)?;
-        exact(&proof,&["v","audience","workspace_id","event_id","event_sequence","event_digest","accepted_at"])?;
-        if number(&proof,"v")?!=1
-            || proof.get("audience").and_then(WireValue::as_utf16)!=Some(audience)
-            || proof.get("workspace_id")!=event.get("workspace_id") || proof.get("event_id")!=event.get("event_id")
-            || number(&proof,"event_sequence")?!=sequence || number(&proof,"accepted_at")?!=number(event,"observed_at")?
-            || text(&proof,"event_digest")?!=sha256_hex(canonical_wire_value(event,Path::STRUCTURED).map_err(|_|CommunicationError)?.as_bytes()) {
-            return Err(CommunicationError);
-        }
+        verify_event(event,&text(value,"event_receipt")?,audience,&pins.workspace_id,key)?;
+        if number(event,"sequence")?!=sequence||number(value,"created_at")?!=number(event,"observed_at")?{return Err(CommunicationError);}
+
     }
     Ok(VerifiedDelivery { envelope:value.clone(), message:None, conversation:None })
+}
+
+pub(crate) fn verify_event(event:&WireValue,receipt:&str,audience:&[u16],workspace:&str,key:&str)->Result<()>{
+    exact(event,&["format","event_id","workspace_id","sequence","kind","actor_id","instance_id","execution_context_id","protocol_digest","observed_at","summary","record_refs","source"])?;
+    let sequence=number(event,"sequence")?;
+    if sequence==0||text(event,"format")? != FORMAT || text(event,"workspace_id")? != workspace
+        || !KINDS.contains(&text(event,"kind")?.as_str())
+        || text(event,"event_id")? != id(json!(["peerwork.event.v1",workspace,sequence]))?
+ {
+        return Err(CommunicationError);
+    }
+    token_field(event,"actor_id")?;
+    for field in ["instance_id","execution_context_id"] {
+        if event.get(field)!=Some(&WireValue::Null) { token_field(event,field)?; }
+    }
+    if event.get("protocol_digest")!=Some(&WireValue::Null) && !digest(&text(event,"protocol_digest")?) {
+        return Err(CommunicationError);
+    }
+    if !matches!(event.get("summary"),Some(WireValue::Object(_))) { return Err(CommunicationError); }
+    for reference in array(event,"record_refs",8)? {
+        exact(reference,&["record_id","revision","schema"])?;
+        token_field(reference,"record_id")?;
+        if number(reference,"revision")?==0 || text(reference,"schema")?.is_empty() || text(reference,"schema")?.len()>120 { return Err(CommunicationError); }
+    }
+    let source=event.get("source").ok_or(CommunicationError)?;
+    exact(source,&["command_id","intent_digest","origin"])?;
+    token_field(source,"command_id")?;
+    if !digest(&text(source,"intent_digest")?) || !["AUTHOR_COMMAND","SERVICE_OBSERVATION"].contains(&text(source,"origin")?.as_str()) { return Err(CommunicationError); }
+    let proof=verify_typed(receipt,RECEIPT_TYPE,key)?;
+    exact(&proof,&["v","audience","workspace_id","event_id","event_sequence","event_digest","accepted_at"])?;
+    if number(&proof,"v")?!=1
+        || proof.get("audience").and_then(WireValue::as_utf16)!=Some(audience)
+        || proof.get("workspace_id")!=event.get("workspace_id") || proof.get("event_id")!=event.get("event_id")
+        || number(&proof,"event_sequence")?!=sequence || number(&proof,"accepted_at")?!=number(event,"observed_at")?
+        || text(&proof,"event_digest")?!=sha256_hex(canonical_wire_value(event,Path::STRUCTURED).map_err(|_|CommunicationError)?.as_bytes()) {
+        return Err(CommunicationError);
+    }
+    Ok(())
 }
 
 #[cfg(test)]

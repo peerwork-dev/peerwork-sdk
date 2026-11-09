@@ -134,3 +134,6 @@ mod participant_client_tools;
 mod agent_client;
 #[cfg(test)]
 mod agent_attached_tests;
+
+#[cfg(test)]
+mod human_source_transport_tests;

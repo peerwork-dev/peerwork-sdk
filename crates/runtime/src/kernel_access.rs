@@ -640,7 +640,8 @@ impl KernelAccess {
         let Some(message)=entry.get("envelope").and_then(|v|v.get("message"))else{return;};
         let opened=(||->Result<serde_json::Value,KernelAccessError>{
             let identity=self.identity()?;
-            let author=peerwork_core::prepared_command::verify_structure_author_intent(message["author_intent"].as_str().ok_or(KernelClientError::InvalidResult)?,audience).map_err(|_|KernelClientError::InvalidResult)?;
+            let proofs=peerwork_core::human_author::AuthorProofContext::from_json_container(entry).map_err(|_|KernelClientError::InvalidResult)?;
+            let author=peerwork_core::prepared_command::verify_structure_author_intent_with_proofs(message["author_intent"].as_str().ok_or(KernelClientError::InvalidResult)?,audience,proofs.as_ref()).map_err(|_|KernelClientError::InvalidResult)?;
             let (context,content)=peerwork_core::communication::authored_native_message_content(&author).map_err(|_|KernelClientError::InvalidResult)?;
             let mut out=match &context {
                 peerwork_core::communication::NativeMessageContext::Directed(v)=>serde_json::json!({"message_id":message["message_id"],"sender":v.actor_id,"workspace_id":v.workspace_id,"conversation_id":v.conversation_id,"reply_to":v.reply_to,"reply_address":v.reply_address,"recipients":v.recipients,"assurance":"AUTHOR_SIGNATURE"}),

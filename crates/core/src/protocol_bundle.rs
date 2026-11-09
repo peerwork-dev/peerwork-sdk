@@ -1,6 +1,6 @@
 //! Immutable protocol role bundles. This verifies authored resources and bindings,
 //! not business-rule execution or a model's obedience to prose.
-use crate::{canonical::{canonical,Path},crypto::sha256_hex,prepared_command::verify_structure_author_intent,wire_json::{canonical_wire_value,WireValue}};
+use crate::{canonical::{canonical,Path},crypto::sha256_hex,prepared_command::verify_structure_author_intent_with_proofs,human_author::AuthorProofContext,wire_json::{canonical_wire_value,WireValue}};
 use serde::{Deserialize,Serialize};
 use serde_json::{json,Value};
 use std::collections::{BTreeMap,BTreeSet};
@@ -47,8 +47,8 @@ pub fn build_header(input:&Value)->Result<Value>{
  Ok(json!({"format":b.format,"metadata":b.metadata,"manifest":b.manifest,"protocol_digest":protocol,"roles":b.roles,"resources":resources,"dependencies":b.dependencies}))
 }
 pub fn inspect(input:&Value)->Result<Value>{let header=build_header(input)?;Ok(json!({"package_digest":sha256_hex(encoded(&header)?.as_bytes()),"protocol_digest":header["protocol_digest"],"bundle_header":header,"submitted":false}))}
-fn authored(source:&Value,audience:&[u16],workspace:&str,header:&Value,digest:&str,binding:Option<&str>)->Result<()>{
- let proof=verify_structure_author_intent(text(source,"author_intent")?,audience).map_err(|_|BundleError)?;
+fn authored(source:&Value,audience:&[u16],workspace:&str,header:&Value,digest:&str,binding:Option<&str>,proofs:Option<&AuthorProofContext>)->Result<()>{
+ let proof=verify_structure_author_intent_with_proofs(text(source,"author_intent")?,audience,proofs).map_err(|_|BundleError)?;
  if proof.actor_id()!=text(source,"actor_id")?||proof.command_id()!=text(source,"command_id")?||proof.intent_digest()!=text(source,"intent_digest")?||proof.workspace_id()!=Some(workspace){return Err(BundleError)}
  let c=canonical_wire_value(proof.command(),crate::prepared_command::command_canonical_path(proof.command())).map_err(|_|BundleError)?;let c:Value=serde_json::from_str(&c).map_err(|_|BundleError)?;let body=&c["body"];
  if let Some(instance)=binding{
@@ -65,6 +65,9 @@ fn authored(source:&Value,audience:&[u16],workspace:&str,header:&Value,digest:&s
  Ok(())
 }
 pub fn verify_result(result:&WireValue,command:&WireValue,audience:&[u16])->Result<()>{
+ let proofs=AuthorProofContext::from_container(result).map_err(|_|BundleError)?;verify_result_with_proofs(result,command,audience,proofs.as_ref())
+}
+pub fn verify_result_with_proofs(result:&WireValue,command:&WireValue,audience:&[u16],proofs:Option<&AuthorProofContext>)->Result<()>{
  let r:Value=serde_json::from_str(&canonical_wire_value(result,Path::STRUCTURED).map_err(|_|BundleError)?).map_err(|_|BundleError)?;
  let c:Value=serde_json::from_str(&canonical_wire_value(command,crate::prepared_command::command_canonical_path(command)).map_err(|_|BundleError)?).map_err(|_|BundleError)?;
  if r["status"].as_str().is_some_and(|s|matches!(s,"REJECTED_NO_EFFECT"|"COMMITTED_RESULT_UNAVAILABLE")){return Ok(())}
@@ -84,12 +87,12 @@ pub fn verify_result(result:&WireValue,command:&WireValue,audience:&[u16])->Resu
   if sha256_hex(encoded(h)?.as_bytes())!=d||r["protocol_digest"]!=h["protocol_digest"]||sha256_hex(encoded(&json!({"semantics":"peerwork.kernel.v1","manifest":h["manifest"]}))?.as_bytes())!=text(h,"protocol_digest")?{return Err(BundleError)}
   if body["package_digest"].as_str().is_some_and(|selected|selected!=d){return Err(BundleError)}
   if body["protocol_digest"].as_str().is_some_and(|selected|r["protocol_digest"].as_str()!=Some(selected)){return Err(BundleError)}
-  let workspace=text(&c,"workspace_id")?;authored(&r["evidence"]["registration"],audience,workspace,h,d,None)?;
-  if let Some(instance)=body["instance_id"].as_str(){let b=&r["evidence"]["binding"];if b["instance_id"].as_str()!=Some(instance){return Err(BundleError)}authored(&b["source"],audience,workspace,h,d,Some(instance))?;
+  let workspace=text(&c,"workspace_id")?;authored(&r["evidence"]["registration"],audience,workspace,h,d,None,proofs)?;
+  if let Some(instance)=body["instance_id"].as_str(){let b=&r["evidence"]["binding"];if b["instance_id"].as_str()!=Some(instance){return Err(BundleError)}authored(&b["source"],audience,workspace,h,d,Some(instance),proofs)?;
    if let Some(context)=r.get("execution_context_id") {
     if b["execution_context_id"]!=*context||b["protocol_digest"]!=r["protocol_digest"]||b["package_digest"]!=r["package_digest"]||b["binding_revision"]!=r["binding_revision"]
      ||body.get("execution_context_id").is_some_and(|v|v!=context){return Err(BundleError)}
-    let proof=verify_structure_author_intent(text(&b["source"],"author_intent")?,audience).map_err(|_|BundleError)?;
+    let proof=verify_structure_author_intent_with_proofs(text(&b["source"],"author_intent")?,audience,proofs).map_err(|_|BundleError)?;
     let source:Value=serde_json::from_str(&canonical_wire_value(proof.command(),crate::prepared_command::command_canonical_path(proof.command())).map_err(|_|BundleError)?).map_err(|_|BundleError)?;
     if proof.action_id()=="structure.protocol.upgrade"&&source["body"].get("execution_context_id").is_some_and(|v|v!=context){return Err(BundleError)}
    }

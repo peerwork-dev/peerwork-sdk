@@ -3,7 +3,7 @@
 use super::*;
 use super::structure_access_client::data;
 use crate::kernel_intents::StructureContentKeys;
-use peerwork_core::{structure_key_delivery::{CurrentKeyRecipient,verify_follow_recipient},prepared_command::verify_structure_author_intent};
+use peerwork_core::{structure_key_delivery::{CurrentKeyRecipient,verify_follow_recipient},prepared_command::verify_structure_author_intent_with_proofs,human_author::AuthorProofContext};
 use serde_json::{json,Value};
 use std::time::Duration;
 
@@ -77,12 +77,13 @@ impl KernelClient {
     let (_,_,time)=self.access_context(cancel).await?;
     let audience=String::from_utf16(self.discovery.audience_utf16()).map_err(|_|KernelClientError::InvalidResult)?;
     let mut keys=StructureContentKeys::open(&self.content_key_store_path(),self.content_config())?;
+    let proofs=AuthorProofContext::from_json_container(&page).map_err(|_|KernelClientError::InvalidResult)?;
     let mut deliveries=Vec::new();
     for row in recipients {
      let source_key=row["source_key"].as_str().ok_or(KernelClientError::InvalidResult)?;
      let source=sources.get(source_key).ok_or(KernelClientError::InvalidResult)?;
      let jws=source["author_intent"].as_str().ok_or(KernelClientError::InvalidResult)?;
-     let author=verify_structure_author_intent(jws,self.discovery.audience_utf16()).map_err(|_|JournalError::InvalidReceipt)?;
+     let author=verify_structure_author_intent_with_proofs(jws,self.discovery.audience_utf16(),proofs.as_ref()).map_err(|_|JournalError::InvalidReceipt)?;
      if source_key!=format!("{}:{}",author.actor_id(),author.command_id())||source["intent_digest"]!=author.intent_digest(){return Err(JournalError::InvalidReceipt.into());}
      let mut row=row.as_object().ok_or(KernelClientError::InvalidResult)?.clone();row.remove("source_key");
      let recipient:CurrentKeyRecipient=serde_json::from_value(Value::Object(row)).map_err(|_|KernelClientError::InvalidResult)?;

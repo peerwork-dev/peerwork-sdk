@@ -3,7 +3,8 @@
 use crate::{
     canonical::Path,
     crypto::{decode_base64url, sha256_hex, verifying_key},
-    prepared_command::{verify_structure_author_intent, VerifiedPreparedCommand, VerifiedStructureAuthorIntent},
+    human_author::AuthorProofContext,
+    prepared_command::{verify_structure_author_intent_with_proofs, VerifiedPreparedCommand, VerifiedStructureAuthorIntent},
     wire_json::{canonical_wire_value, parse_wire_json_bounded, WireValue},
 };
 use ed25519_dalek::{Signature, Verifier};
@@ -35,9 +36,11 @@ pub struct VerifiedCommandResponse {
     result_canonical_json: String,
     event_sequence: Option<u64>,
     instance_revision: Option<u64>,
+    author_proofs: Option<AuthorProofContext>,
 }
 
 impl VerifiedCommandResponse {
+    pub fn author_proofs(&self)->Option<&AuthorProofContext>{self.author_proofs.as_ref()}
     pub fn command_id(&self) -> &str {
         &self.command_id
     }
@@ -196,6 +199,7 @@ fn verify_command_response_with_path(
         result_canonical_json: canonical,
         event_sequence: sequence,
         instance_revision: revision,
+        author_proofs:if ascii_field(&result,"profile").as_deref()==Some(crate::structure_execution::PROFILE){AuthorProofContext::from_container(&result).map_err(|_|VerifyWireReceiptError::Invalid)?}else{None},
     })
 }
 
@@ -256,6 +260,8 @@ pub fn verify_http_response_for_prepared(
         || result.get("assurance").and_then(WireValue::as_string).as_deref() != Some("BACKEND_CURRENT_STATE")) {
         return Err(VerifyWireReceiptError::Mismatch);
     }
+    let proof_context=if structured{AuthorProofContext::from_container(result).map_err(|_|VerifyWireReceiptError::Invalid)?}else{None};
+    let proofs=proof_context.as_ref();
     let workspace = result_string_or_fallback(result, "workspace_id", prepared.workspace_id())?;
     let protocol =
         result_string_or_fallback(result, "protocol_digest", prepared.protocol_digest())?;
@@ -271,7 +277,7 @@ pub fn verify_http_response_for_prepared(
     let original = if structured && crate::structure_execution::is_structure_mutation(prepared.action_id()) {
         result.get("author_intent").map(|value| {
             let jws = value.as_string().ok_or(VerifyWireReceiptError::Invalid)?;
-            verify_original_structure_intent(&jws, prepared)
+            verify_original_structure_intent(&jws, prepared,proofs)
         }).transpose()?
     } else { None };
     let receipt_intent_digest = original.as_ref().map(|author|author.intent_digest()).unwrap_or_else(||prepared.intent_digest());
@@ -290,9 +296,9 @@ pub fn verify_http_response_for_prepared(
     )?;
     let terminal=structured&&verify_structure_terminal(result,prepared)?;
     if structured && !terminal && command.get("action_id").and_then(WireValue::as_string).as_deref() == Some("structure.operation.get") {
-        verify_structure_lookup(result, &command, prepared, receipt_key_id)?;
+        verify_structure_lookup(result, &command, prepared, receipt_key_id,proofs)?;
     }
-    if structured && !terminal { verify_structure_read_authors(result, &command, prepared)?; crate::communication::verify_read(result,&command,prepared,receipt_key_id).map_err(|_| VerifyWireReceiptError::Mismatch)?; }
+    if structured && !terminal { verify_structure_read_authors(result, &command, prepared,receipt_key_id,proofs)?; crate::communication::verify_read_with_proofs(result,&command,prepared,receipt_key_id,proofs).map_err(|_| VerifyWireReceiptError::Mismatch)?; }
     Ok(verified)
 }
 
@@ -349,9 +355,9 @@ fn source_matches(source:&WireValue,author:&VerifiedStructureAuthorIntent)->bool
         && ascii_field(source,"command_id").as_deref()==Some(author.command_id())
         && ascii_field(source,"intent_digest").as_deref()==Some(author.intent_digest())
 }
-fn source_author(source:&WireValue,prepared:&VerifiedPreparedCommand)->Result<VerifiedStructureAuthorIntent,VerifyWireReceiptError>{
+fn source_author(source:&WireValue,prepared:&VerifiedPreparedCommand,proofs:Option<&AuthorProofContext>)->Result<VerifiedStructureAuthorIntent,VerifyWireReceiptError>{
     let jws=ascii_field(source,"author_intent").ok_or(VerifyWireReceiptError::Mismatch)?;
-    let author=verify_structure_author_intent(&jws,prepared.audience_utf16()).map_err(|_|VerifyWireReceiptError::Invalid)?;
+    let author=verify_structure_author_intent_with_proofs(&jws,prepared.audience_utf16(),proofs).map_err(|_|VerifyWireReceiptError::Invalid)?;
     if !source_matches(source,&author)
         || author.workspace_id().is_some_and(|ws|Some(ws)!=prepared.workspace_id())
         || author.workspace_id().is_none()&&author.action_id()!="structure.workspace.create" {return Err(VerifyWireReceiptError::Mismatch);}
@@ -415,7 +421,7 @@ fn same_checkpoint_value(left:Option<&WireValue>,right:Option<&WireValue>)->bool
         (Ok(left),Ok(right))=>left==right,_=>false,
     },_=>false}
 }
-fn verify_workspace_deletion(job:&WireValue,result:&WireValue,command:&WireValue,prepared:&VerifiedPreparedCommand,listing:bool)->Result<(),VerifyWireReceiptError>{
+fn verify_workspace_deletion(job:&WireValue,result:&WireValue,command:&WireValue,prepared:&VerifiedPreparedCommand,listing:bool,proofs:Option<&AuthorProofContext>)->Result<(),VerifyWireReceiptError>{
     let invalid=||VerifyWireReceiptError::Mismatch;
     let workspace=ascii_field(job,"workspace_id").filter(|v|valid_token(v)).ok_or_else(invalid)?;
     let owner=ascii_field(job,"owner_id").ok_or_else(invalid)?;
@@ -431,11 +437,11 @@ fn verify_workspace_deletion(job:&WireValue,result:&WireValue,command:&WireValue
     let initial=prepared.action_id()=="structure.workspace.delete";
     if initial&&id!=prepared.command_id()||!initial&&!listing&&command.get("body").and_then(|b|ascii_field(b,"command_id")).as_deref()!=Some(id.as_str()){return Err(invalid());}
     let author=if initial{
-        verify_original_structure_intent(&ascii_field(result,"author_intent").ok_or_else(invalid)?,prepared)?
+        verify_original_structure_intent(&ascii_field(result,"author_intent").ok_or_else(invalid)?,prepared,proofs)?
     }else{
         let source=job.get("source").ok_or_else(invalid)?;
         if matches!(source,WireValue::Null){return if status=="VERIFICATION_BLOCKED"&&ascii_field(job,"source_verification").as_deref()==Some("BLOCKED"){Ok(())}else{Err(invalid())};}
-        let proof=verify_structure_author_intent(&ascii_field(source,"author_intent").ok_or_else(invalid)?,prepared.audience_utf16()).map_err(|_|VerifyWireReceiptError::Invalid)?;
+        let proof=verify_structure_author_intent_with_proofs(&ascii_field(source,"author_intent").ok_or_else(invalid)?,prepared.audience_utf16(),proofs).map_err(|_|VerifyWireReceiptError::Invalid)?;
         if !source_matches(source,&proof){return Err(invalid());}proof
     };
     let original=author.command();let body=original.get("body").ok_or_else(invalid)?;
@@ -551,13 +557,13 @@ fn verify_member_directory(result:&WireValue,command:&WireValue,prepared:&Verifi
     Ok(())
 }
 
-fn verify_structure_read_authors(result:&WireValue,command:&WireValue,prepared:&VerifiedPreparedCommand)->Result<(),VerifyWireReceiptError>{
+fn verify_structure_read_authors(result:&WireValue,command:&WireValue,prepared:&VerifiedPreparedCommand,key:&str,proofs:Option<&AuthorProofContext>)->Result<(),VerifyWireReceiptError>{
     let invalid=||VerifyWireReceiptError::Mismatch;
     match prepared.action_id(){
         "structure.members.read"|"structure.member.name.set"|"structure.member.availability.set"=>verify_member_directory(result,command,prepared),
         "structure.workspace.delete"|"structure.workspace.deletion.get"=>{
             if ascii_field(result,"status").as_deref()==Some("REJECTED_NO_EFFECT"){return Ok(());}
-            verify_workspace_deletion(result.get("deletion").ok_or_else(invalid)?,result,command,prepared,false)
+            verify_workspace_deletion(result.get("deletion").ok_or_else(invalid)?,result,command,prepared,false,proofs)
         },
         "structure.workspace.deletions.read"=>{
             let WireValue::Array(jobs)=result.get("deletions").ok_or_else(invalid)? else{return Err(invalid());};
@@ -565,30 +571,44 @@ fn verify_structure_read_authors(result:&WireValue,command:&WireValue,prepared:&
             let mut previous:Option<String>=None;for job in jobs{
                 let workspace=ascii_field(job,"workspace_id").ok_or_else(invalid)?;if previous.as_ref().is_some_and(|old|old>=&workspace){return Err(invalid());}previous=Some(workspace);
                 if command.get("body").and_then(|b|ascii_field(b,"view")).as_deref()!=Some("HISTORY")&&ascii_field(job,"status").as_deref()==Some("APPLIED"){return Err(invalid());}
-                verify_workspace_deletion(job,result,command,prepared,true)?;
+                verify_workspace_deletion(job,result,command,prepared,true,proofs)?;
             }Ok(())
         },
-        "structure.operations.read"=>verify_structure_operations(result,command,prepared),
-        "structure.maintenance.rebuild"|"structure.maintenance.get"|"structure.maintenance.cancel"=>verify_structure_maintenance(result,command,prepared),
+        "structure.operations.read"=>verify_structure_operations(result,command,prepared,proofs),
+        "structure.maintenance.rebuild"|"structure.maintenance.get"|"structure.maintenance.cancel"=>verify_structure_maintenance(result,command,prepared,proofs),
         "structure.publication.policy.get"=>{
             let policy=result.get("policy").ok_or_else(invalid)?;if matches!(policy,WireValue::Null){return Ok(());}
-            let author=source_author(policy.get("source").ok_or_else(invalid)?,prepared)?;let body=author.command().get("body").ok_or_else(invalid)?;
+            let author=source_author(policy.get("source").ok_or_else(invalid)?,prepared,proofs)?;let body=author.command().get("body").ok_or_else(invalid)?;
             if author.action_id()!="structure.publication.policy.set"||author.workspace_id()!=prepared.workspace_id()||author.protocol_digest()!=prepared.protocol_digest()||author.command().get("instance_id")!=command.get("instance_id")||number(body,"expected_policy_revision").and_then(|v|v.checked_add(1))!=number(policy,"revision")||body.get("state")!=policy.get("state")||body.get("actions")!=policy.get("actions"){return Err(invalid());}Ok(())
         },
         "structure.record.get"|"structure.publication.prepare.get"=>{
             let metadata=result.get("source").ok_or_else(invalid)?;
             let mut source=Vec::new();for field in ["actor_id","command_id","intent_digest"]{source.push((field.encode_utf16().collect(),metadata.get(field).cloned().ok_or_else(invalid)?));}
             source.push(("author_intent".encode_utf16().collect(),result.get("author_intent").cloned().ok_or_else(invalid)?));
-            record_author(result,&source_author(&WireValue::Object(source),prepared)?,command,prepared)
+            record_author(result,&source_author(&WireValue::Object(source),prepared,proofs)?,command,prepared)
         }
-        "structure.grant.get"=>verify_structure_grant(result,command,prepared),
+        "structure.grant.get"=>verify_structure_grant(result,command,prepared,proofs),
         action @ ("structure.records.read"|"structure.instance.records.read"|"structure.events.read")=>{
             let WireValue::Object(sources)=result.get("sources").ok_or_else(invalid)? else{return Err(invalid());};
             let WireValue::Array(items)=result.get(if action=="structure.events.read"{"events"}else{"records"}).ok_or_else(invalid)? else{return Err(invalid());};
             if sources.len()>32||items.len()>32||prepared.workspace_id().is_none(){return Err(invalid());}
-            let mut authors=std::collections::BTreeMap::new();
+            let mut authors=std::collections::BTreeMap::new();let mut observations=std::collections::BTreeMap::new();
             for (name,source) in sources{
-                let name=String::from_utf16(name).map_err(|_|invalid())?;let author=source_author(source,prepared)?;
+                let name=String::from_utf16(name).map_err(|_|invalid())?;
+                if action=="structure.events.read"&&ascii_field(source,"assurance").as_deref()==Some("SERVICE_ATTESTED_EVENT"){
+                    if source.object_len()!=Some(3){return Err(invalid())}
+                    let event=source.get("event").ok_or_else(invalid)?;let receipt=ascii_field(source,"event_receipt").ok_or_else(invalid)?;
+                    crate::communication::verify_workspace_event(event,&receipt,prepared.audience_utf16(),prepared.workspace_id().ok_or_else(invalid)?,key).map_err(|_|invalid())?;
+                    let event_source=event.get("source").ok_or_else(invalid)?;
+                    if ascii_field(event_source,"origin").as_deref()!=Some("SERVICE_OBSERVATION")||!matches!(ascii_field(event,"kind").as_deref(),Some("communication.member.presence.changed"|"structure.member.availability.changed")){return Err(invalid())}
+                    let expected=crate::crypto::sha256_hex(format!(r#"["{}","{}","{}"]"#,ascii_field(event,"actor_id").ok_or_else(invalid)?,prepared.workspace_id().ok_or_else(invalid)?,ascii_field(event_source,"command_id").ok_or_else(invalid)?).as_bytes());
+                    if name!=expected{return Err(invalid())}observations.insert(name,event);continue;
+                }
+                let author=if action=="structure.events.read"{
+                    let jws=ascii_field(source,"author_intent").ok_or_else(invalid)?;
+                    let author=crate::prepared_command::verify_event_source_intent_with_proofs(&jws,prepared.audience_utf16(),proofs).map_err(|_|invalid())?;
+                    if !source_matches(source,&author)||author.workspace_id().is_some_and(|ws|Some(ws)!=prepared.workspace_id())||author.workspace_id().is_none()&&author.action_id()!="structure.workspace.create"{return Err(invalid())}author
+                }else{source_author(source,prepared,proofs)?};
                 let expected=if action=="structure.events.read" {
                     crate::crypto::sha256_hex(format!(r#"["{}","{}","{}"]"#,author.actor_id(),author.workspace_id().unwrap_or("-"),author.command_id()).as_bytes())
                 }else{format!("{}:{}",author.actor_id(),author.command_id())};
@@ -598,11 +618,22 @@ fn verify_structure_read_authors(result:&WireValue,command:&WireValue,prepared:&
             let mut used=std::collections::BTreeSet::new();
             for item in items{
                 let source_key=ascii_field(item,"source_key").ok_or_else(invalid)?;
-                let author=authors.get(&source_key).ok_or_else(invalid)?;used.insert(source_key);
-                if action!="structure.events.read" {record_author(item,author,command,prepared)?;}
-                else {event_author(item,author,command)?;}
+                used.insert(source_key.clone());
+                if let Some(author)=authors.get(&source_key){
+                    if action!="structure.events.read" {record_author(item,author,command,prepared)?;}else{event_author(item,author,command)?;}
+                }else{
+                    let event=observations.get(&source_key).ok_or_else(invalid)?;
+                    for field in ["actor_id","kind","instance_id","execution_context_id","protocol_digest"]{if item.get(field)!=event.get(field){return Err(invalid())}}
+                    let kind=ascii_field(event,"kind").ok_or_else(invalid)?;
+                    let action=item.get("summary").and_then(|v|ascii_field(v,"action_id")).ok_or_else(invalid)?;
+                    // Presence pulses are service observations, not authored
+                    // business commands. Expiry observations use the event kind.
+                    if number(item,"sequence")!=number(event,"sequence")||number(item,"created_at")!=number(event,"observed_at")
+                        ||item.get("record_id")!=Some(&WireValue::Null)||command.get("instance_id")!=Some(&WireValue::Null)
+                        ||action!=kind&&!(kind=="communication.member.presence.changed"&&action=="structure.mailbox.pulse"){return Err(invalid())}
+                }
             }
-            if used.len()!=authors.len(){return Err(invalid());}
+            if used.len()!=authors.len()+observations.len(){return Err(invalid());}
             Ok(())
         }
         _=>Ok(()),
@@ -634,7 +665,7 @@ fn event_author(item:&WireValue,author:&VerifiedStructureAuthorIntent,command:&W
     Ok(())
 }
 
-fn verify_structure_grant(result:&WireValue,command:&WireValue,prepared:&VerifiedPreparedCommand)->Result<(),VerifyWireReceiptError>{
+fn verify_structure_grant(result:&WireValue,command:&WireValue,prepared:&VerifiedPreparedCommand,proofs:Option<&AuthorProofContext>)->Result<(),VerifyWireReceiptError>{
     let invalid=||VerifyWireReceiptError::Mismatch;
     let query=command.get("body").ok_or_else(invalid)?;
     if let Some(requested)=query.get("actor_ids") {
@@ -651,14 +682,14 @@ fn verify_structure_grant(result:&WireValue,command:&WireValue,prepared:&Verifie
         }
         return Ok(());
     }
-    verify_structure_grant_value(result.get("grant").ok_or_else(invalid)?,result,command,prepared)
+    verify_structure_grant_value(result.get("grant").ok_or_else(invalid)?,result,command,prepared,proofs)
 }
 fn exact_actor_ids(values:&[WireValue])->Result<Vec<String>,VerifyWireReceiptError>{
     let invalid=||VerifyWireReceiptError::Mismatch;if values.is_empty()||values.len()>32{return Err(invalid());}
     let actors=values.iter().map(|value|value.as_string().filter(|id|valid_token(id)).ok_or_else(invalid)).collect::<Result<Vec<_>,_>>()?;
     if actors.iter().collect::<std::collections::BTreeSet<_>>().len()!=actors.len(){return Err(invalid());}Ok(actors)
 }
-fn verify_structure_grant_value(grant:&WireValue,result:&WireValue,command:&WireValue,prepared:&VerifiedPreparedCommand)->Result<(),VerifyWireReceiptError>{
+fn verify_structure_grant_value(grant:&WireValue,result:&WireValue,command:&WireValue,prepared:&VerifiedPreparedCommand,proofs:Option<&AuthorProofContext>)->Result<(),VerifyWireReceiptError>{
     let invalid=||VerifyWireReceiptError::Mismatch;if matches!(grant,WireValue::Null){return Ok(());}
     let instance=command.get("instance_id").ok_or_else(invalid)?;let query=command.get("body").ok_or_else(invalid)?;
     let context=execution_context(query.get("execution_context_id"),instance)?;
@@ -669,7 +700,7 @@ fn verify_structure_grant_value(grant:&WireValue,result:&WireValue,command:&Wire
     // Historical legacy grants were service-authoritative without nested
     // author packets. New contexts must carry the exact granting intent.
     if source.get("author_intent").is_none(){return if context==instance.as_string().ok_or_else(invalid)?{Ok(())}else{Err(invalid())};}
-    let author=source_author(source,prepared)?;let body=author.command().get("body").ok_or_else(invalid)?;
+    let author=source_author(source,prepared,proofs)?;let body=author.command().get("body").ok_or_else(invalid)?;
     if author.workspace_id()!=prepared.workspace_id(){return Err(invalid());}
     if author.action_id()=="structure.grant.revoke" {
         return if author.protocol_digest()==prepared.protocol_digest()&&author.command().get("instance_id")==Some(instance)
@@ -697,7 +728,7 @@ fn verify_structure_grant_value(grant:&WireValue,result:&WireValue,command:&Wire
     }
     if selected.get("expires_at").unwrap_or(&WireValue::Null)!=grant.get("expires_at").unwrap_or(&WireValue::Null){return Err(invalid());}Ok(())
 }
-fn verify_structure_maintenance(result:&WireValue,command:&WireValue,prepared:&VerifiedPreparedCommand)->Result<(),VerifyWireReceiptError>{
+fn verify_structure_maintenance(result:&WireValue,command:&WireValue,prepared:&VerifiedPreparedCommand,proofs:Option<&AuthorProofContext>)->Result<(),VerifyWireReceiptError>{
     let invalid=||VerifyWireReceiptError::Mismatch;
     if ascii_field(result,"status").as_deref()==Some("REJECTED_NO_EFFECT") && result.get("maintenance").is_none(){return Ok(());}
     let job=result.get("maintenance").ok_or_else(invalid)?;
@@ -714,13 +745,13 @@ fn verify_structure_maintenance(result:&WireValue,command:&WireValue,prepared:&V
         ||!listing&&(job.get("instance_id")!=command.get("instance_id")||ascii_field(job,"protocol_digest").as_deref()!=prepared.protocol_digest()){return Err(invalid());}
     let author=if prepared.action_id()=="structure.maintenance.rebuild" {
         let text=ascii_field(result,"author_intent").ok_or_else(invalid)?;
-        verify_original_structure_intent(&text,prepared)?
+        verify_original_structure_intent(&text,prepared,proofs)?
     }else{
         let source=job.get("source").ok_or_else(invalid)?;
         if matches!(source,WireValue::Null){
             return if status=="VERIFICATION_BLOCKED"&&state!="BUILDING"{Ok(())}else{Err(invalid())};
         }
-        source_author(source,prepared)?
+        source_author(source,prepared,proofs)?
     };
     let original=author.command();let body=original.get("body").ok_or_else(invalid)?;
     let instance=original.get("instance_id").ok_or_else(invalid)?;
@@ -739,7 +770,7 @@ fn verify_structure_maintenance(result:&WireValue,command:&WireValue,prepared:&V
     Ok(())
 }
 
-fn verify_structure_operations(result:&WireValue,command:&WireValue,prepared:&VerifiedPreparedCommand)->Result<(),VerifyWireReceiptError>{
+fn verify_structure_operations(result:&WireValue,command:&WireValue,prepared:&VerifiedPreparedCommand,proofs:Option<&AuthorProofContext>)->Result<(),VerifyWireReceiptError>{
     let invalid=||VerifyWireReceiptError::Mismatch;
     let WireValue::Array(items)=result.get("operations").ok_or_else(invalid)? else{return Err(invalid());};
     let WireValue::Object(sources)=result.get("sources").ok_or_else(invalid)? else{return Err(invalid());};
@@ -767,15 +798,15 @@ fn verify_structure_operations(result:&WireValue,command:&WireValue,prepared:&Ve
             if ascii_field(item,"source_verification").as_deref()!=Some("VERIFIED")||matches!(source,WireValue::Null){return Err(invalid());}
             let WireValue::Object(mut fields)=item.clone() else{return Err(invalid());};fields.push(("source".encode_utf16().collect(),source.clone()));
             let wrapper=WireValue::Object(vec![("maintenance".encode_utf16().collect(),WireValue::Object(fields))]);
-            verify_structure_maintenance(&wrapper,command,prepared)?;
+            verify_structure_maintenance(&wrapper,command,prepared,proofs)?;
         }
     }
     if used.len()!=selected.len(){return Err(invalid());}Ok(())
 }
 
-fn verify_original_structure_intent(jws: &str, prepared: &VerifiedPreparedCommand)
+fn verify_original_structure_intent(jws: &str, prepared: &VerifiedPreparedCommand,proofs:Option<&AuthorProofContext>)
     -> Result<VerifiedStructureAuthorIntent, VerifyWireReceiptError> {
-    let original=verify_structure_author_intent(jws,prepared.audience_utf16()).map_err(|_|VerifyWireReceiptError::Invalid)?;
+    let original=verify_structure_author_intent_with_proofs(jws,prepared.audience_utf16(),proofs).map_err(|_|VerifyWireReceiptError::Invalid)?;
     let business = prepared.structure_business_intent().ok_or(VerifyWireReceiptError::Mismatch)?;
     if original.business_intent_digest().as_deref() != Some(business.as_str()) {
         return Err(VerifyWireReceiptError::Mismatch);
@@ -783,7 +814,7 @@ fn verify_original_structure_intent(jws: &str, prepared: &VerifiedPreparedComman
     Ok(original)
 }
 
-fn verify_structure_lookup(result: &WireValue, command: &WireValue, prepared: &VerifiedPreparedCommand, receipt_key: &str)
+fn verify_structure_lookup(result: &WireValue, command: &WireValue, prepared: &VerifiedPreparedCommand, receipt_key: &str,proofs:Option<&AuthorProofContext>)
     -> Result<(), VerifyWireReceiptError> {
     let invalid = || VerifyWireReceiptError::Mismatch;
     let body=command.get("body").ok_or_else(invalid)?;
@@ -801,7 +832,7 @@ fn verify_structure_lookup(result: &WireValue, command: &WireValue, prepared: &V
             let inner = response.get("result").ok_or_else(invalid)?;
             let intent_digest=if let Some(expected)=exact {expected} else {
                 let jws=ascii_field(inner,"author_intent").ok_or_else(invalid)?;
-                let author=verify_structure_author_intent(&jws,prepared.audience_utf16()).map_err(|_|invalid())?;
+                let author=verify_structure_author_intent_with_proofs(&jws,prepared.audience_utf16(),proofs).map_err(|_|invalid())?;
                 if author.actor_id()!=prepared.actor_id()||author.command_id()!=command_id
                     ||author.business_intent_digest()!=business
                     ||prepared.workspace_id().is_some_and(|ws|author.workspace_id()!=Some(ws)){return Err(invalid());}

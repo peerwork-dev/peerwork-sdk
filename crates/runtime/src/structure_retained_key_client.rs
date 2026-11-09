@@ -3,7 +3,7 @@
 use super::*;
 use super::structure_access_client::data;
 use crate::kernel_intents::{StructureContentKeys,ContentKeyError};
-use peerwork_core::{crypto::sha256_hex,prepared_command::verify_structure_author_intent,structure_retained_keys::{RetainedKeyAuthority,RetainedKeyEntry,verify_retained_authority,verify_retained_epoch}};
+use peerwork_core::{crypto::sha256_hex,prepared_command::verify_structure_author_intent_with_proofs,human_author::AuthorProofContext,structure_retained_keys::{RetainedKeyAuthority,RetainedKeyEntry,verify_retained_authority,verify_retained_epoch}};
 use serde::Serialize;
 use serde_json::{json,Value};
 #[derive(Debug,Clone,PartialEq,Eq,Serialize)]
@@ -49,6 +49,7 @@ impl KernelClient{
    let rows=page["keys"].as_array().filter(|a|a.len()<=32).ok_or(KernelClientError::InvalidResult)?;
    let token=page["page_token"].as_str().filter(|s|s.len()<=12000).ok_or(KernelClientError::InvalidResult)?;
    let revision=selected["revision"].as_u64().ok_or(KernelClientError::InvalidResult)?;
+   let proofs=AuthorProofContext::from_json_container(&page).map_err(|_|KernelClientError::InvalidResult)?;
    let envelope=if page["page_state"]=="UNAVAILABLE"||rows.is_empty(){
     if !rows.is_empty(){return Err(KernelClientError::InvalidResult);}Value::Null
    }else{
@@ -56,7 +57,7 @@ impl KernelClient{
     let sources=page["sources"].as_object().filter(|s|s.len()<=33).ok_or(KernelClientError::InvalidResult)?;
     let auth=sources.get("authorization").ok_or(KernelClientError::InvalidResult)?;
     let auth_jws=auth["author_intent"].as_str().ok_or(KernelClientError::InvalidResult)?;
-    let author=verify_structure_author_intent(auth_jws,self.discovery.audience_utf16()).map_err(|_|JournalError::InvalidReceipt)?;
+    let author=verify_structure_author_intent_with_proofs(auth_jws,self.discovery.audience_utf16(),proofs.as_ref()).map_err(|_|JournalError::InvalidReceipt)?;
     if auth["intent_digest"]!=author.intent_digest()||auth["command_id"]!=author.command_id()||auth["actor_id"]!=author.actor_id(){return Err(JournalError::InvalidReceipt.into());}
     let r:RetainedKeyAuthority=serde_json::from_value(page["authority"].clone()).map_err(|_|KernelClientError::InvalidResult)?;
     if r.through_epoch!=ceiling||r.actor_id!=selected["actor_id"]||r.membership_id!=selected["membership_id"]||r.recipient_key_id!=selected["recipient_key_id"]||r.authorization_digest!=selected["authorization_digest"]||serde_json::to_value(r.expires_at).map_err(|_|KernelClientError::InvalidResult)?!=selected["expires_at"]{return Err(KernelClientError::InvalidResult);}
@@ -66,7 +67,7 @@ impl KernelClient{
     for row in rows{
      let source_key=row["source_key"].as_str().ok_or(KernelClientError::InvalidResult)?;
      let source=sources.get(source_key).ok_or(KernelClientError::InvalidResult)?;let jws=source["author_intent"].as_str().ok_or(KernelClientError::InvalidResult)?;
-     let original=verify_structure_author_intent(jws,self.discovery.audience_utf16()).map_err(|_|JournalError::InvalidReceipt)?;
+     let original=verify_structure_author_intent_with_proofs(jws,self.discovery.audience_utf16(),proofs.as_ref()).map_err(|_|JournalError::InvalidReceipt)?;
      if source_key!=format!("{}:{}",original.actor_id(),original.command_id())||source["intent_digest"]!=sha256_hex(jws.as_bytes())||!used.insert(source_key){return Err(JournalError::InvalidReceipt.into());}
      let entry=RetainedKeyEntry{epoch:row["epoch"].as_u64().ok_or(KernelClientError::InvalidResult)?,key_id:row["key_id"].as_str().ok_or(KernelClientError::InvalidResult)?.into()};
      epochs.push(verify_retained_epoch(&original,identity.actor_id(),workspace,&verified,entry)?);

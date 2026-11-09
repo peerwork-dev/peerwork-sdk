@@ -9,7 +9,8 @@ use crate::{
 use peerwork_core::{
     canonical::{canonical, Path as CanonicalPath},
     crypto::{base64url, sha256, sha256_hex},
-    prepared_command::verify_structure_author_intent,
+    prepared_command::verify_structure_author_intent_with_proofs,
+    human_author::AuthorProofContext,
     structure_access::{
         create_access_request, open_owner_access_keys, verify_access_request, AccessKind,
         AccessRequestOptions, AccessWrite, OpenedAccessKeys,
@@ -274,7 +275,8 @@ impl KernelClient {
             if !previous["binding"].is_null(){
                 let binding=&previous["binding"];
                 let source=&previous["approval"];
-                let original=verify_structure_author_intent(source["author_intent"].as_str().ok_or(KernelClientError::InvalidResult)?,self.discovery.audience_utf16()).map_err(|_|JournalError::InvalidReceipt)?;
+                let proofs=AuthorProofContext::from_json_container(&previous).map_err(|_|KernelClientError::InvalidResult)?;
+                let original=verify_structure_author_intent_with_proofs(source["author_intent"].as_str().ok_or(KernelClientError::InvalidResult)?,self.discovery.audience_utf16(),proofs.as_ref()).map_err(|_|JournalError::InvalidReceipt)?;
                 if original.actor_id()!=identity.actor_id()||original.workspace_id()!=Some(selection.workspace_id.as_str())||original.action_id()!="structure.access.authorize"||source["intent_digest"]!=original.intent_digest()||binding["recipient_key_id"]!=request.recipient_key_id(){return Err(KernelClientError::InvalidResult);}
                 let membership=binding["membership_id"].as_str().ok_or(KernelClientError::InvalidResult)?;
                 upgrade_from=Some(json!({"membership_id":membership,"authorization_digest":original.intent_digest()}));
@@ -535,6 +537,7 @@ impl KernelClient {
                 }
                 unavailable.extend(missing.iter().cloned());
             }
+            let proofs=AuthorProofContext::from_json_container(&response).map_err(|_|KernelClientError::InvalidResult)?;
             let mut used = std::collections::BTreeSet::new();
             let mut opened_sources = std::collections::BTreeSet::new();
             for row in rows {
@@ -559,7 +562,7 @@ impl KernelClient {
                 if source["intent_digest"] != sha256_hex(jws.as_bytes()) {
                     return Err(KernelClientError::InvalidResult);
                 }
-                let author = verify_structure_author_intent(jws, self.discovery.audience_utf16())
+                let author = verify_structure_author_intent_with_proofs(jws, self.discovery.audience_utf16(),proofs.as_ref())
                     .map_err(|_| JournalError::InvalidReceipt)?;
                 if source_key != format!("{}:{}", author.actor_id(), author.command_id())
                     || source["actor_id"] != author.actor_id()

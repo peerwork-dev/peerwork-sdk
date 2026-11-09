@@ -2,7 +2,7 @@
 //! body key is isolated from the readable structural result.
 use super::*;
 use crate::kernel_intents::{StructureContentKeys,ContentKeyError};
-use peerwork_core::{prepared_command::verify_structure_author_intent,structure_content::StructureContentError};
+use peerwork_core::{prepared_command::verify_structure_author_intent_with_proofs,human_author::AuthorProofContext,structure_content::StructureContentError};
 
 #[derive(Debug,Clone,PartialEq,Eq,Serialize)]
 pub struct OpenedStructureBody {
@@ -30,6 +30,7 @@ impl KernelClient {
         let data=parse_wire_json_bounded(result.structure_result_json.as_deref().ok_or(KernelClientError::InvalidResult)?.as_bytes(),32,1024*1024)
             .map_err(|_|KernelClientError::InvalidResult)?;
         if data.get("status").and_then(WireValue::as_string).as_deref()==Some("REJECTED_NO_EFFECT"){return Ok(());}
+        let proofs=AuthorProofContext::from_container(&data).map_err(|_|KernelClientError::InvalidResult)?;
         let mut records=Vec::new();
         if matches!(action,"structure.record.get"|"structure.publication.prepare.get"){records.push((&data,required_text(&data,"author_intent")?));}else{
             let Some(WireValue::Array(items))=data.get("records")else{return Err(KernelClientError::InvalidResult);};
@@ -48,7 +49,7 @@ impl KernelClient {
             // The receipt verifier already bound the returned record and its
             // source index to this original signature. Reusing the core
             // proof constructor avoids deriving AAD from mutable read data.
-            let author=verify_structure_author_intent(&jws,self.discovery.audience_utf16()).map_err(|_|KernelClientError::InvalidResult)?;
+            let author=verify_structure_author_intent_with_proofs(&jws,self.discovery.audience_utf16(),proofs.as_ref()).map_err(|_|KernelClientError::InvalidResult)?;
             let index=u8::try_from(required_u64(record.get("source").ok_or(KernelClientError::InvalidResult)?,"record_index")?).map_err(|_|KernelClientError::InvalidResult)?;
             let sealed=record.get("sealed_content").ok_or(KernelClientError::InvalidResult)?;
             let mut body=OpenedStructureBody{record_id:required_text(record,"record_id")?,revision:required_u64(record,"revision")?,
@@ -83,6 +84,7 @@ impl KernelClient {
         if result.opened_messages.is_some(){return Ok(());}
         let data=parse_wire_json_bounded(result.structure_result_json.as_deref().ok_or(KernelClientError::InvalidResult)?.as_bytes(),40,2*1024*1024).map_err(|_|KernelClientError::InvalidResult)?;
         if data.get("status").and_then(WireValue::as_string).as_deref()==Some("REJECTED_NO_EFFECT"){return Ok(());}
+        let proofs=AuthorProofContext::from_container(&data).map_err(|_|KernelClientError::InvalidResult)?;
         let messages=if action=="structure.message.get"{vec![data.get("message").ok_or(KernelClientError::InvalidResult)?]}
             else if action=="structure.conversation.get" {data.get("conversation").and_then(|v|v.get("pin_message")).filter(|v|v.get("state").and_then(WireValue::as_string).as_deref()==Some("ACTIVE")).into_iter().collect()}
             else if action=="structure.conversation.messages.read" {let Some(WireValue::Array(items))=data.get("messages") else{return Err(KernelClientError::InvalidResult);};if items.len()>32{return Err(KernelClientError::InvalidResult);}items.iter().filter(|v|v.get("state").and_then(WireValue::as_string).as_deref()==Some("ACTIVE")).collect()}
@@ -92,7 +94,7 @@ impl KernelClient {
         let mut opened=Vec::new();
         for message in messages {
             // Original source/recipient bindings were checked by receipt_wire.
-            let author=verify_structure_author_intent(&required_text(message,"author_intent")?,self.discovery.audience_utf16()).map_err(|_|KernelClientError::InvalidResult)?;
+            let author=verify_structure_author_intent_with_proofs(&required_text(message,"author_intent")?,self.discovery.audience_utf16(),proofs.as_ref()).map_err(|_|KernelClientError::InvalidResult)?;
             let (context,content)=peerwork_core::communication::authored_native_message_content(&author).map_err(|_|KernelClientError::InvalidResult)?;
             let routing=match context {peerwork_core::communication::NativeMessageContext::Conversation(v)=>Some(serde_json::json!({"message_kind":"SPACE_CONVERSATION","sender":v.actor_id,"workspace_id":v.workspace_id,"conversation_id":v.conversation_id,"reply_to":v.reply_to,"context":v.context,"mentions":v.mentions})),_=>None};
             let mut body=OpenedMessageBody{message_id:required_text(message,"message_id")?,source_command_id:author.command_id().into(),key_id:None,state:"SOURCE_REFERENCE",text:None,assurance:None,routing};

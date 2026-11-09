@@ -826,7 +826,7 @@ impl InboxStore {
         let rows=self.db.prepare("SELECT sequence,delivery_id,kind,frame,item_index,item_digest,status,terminal_reason FROM inbox_items WHERE workspace=?1 AND mailbox=?2 AND consume_requested=0 AND sequence>?3 ORDER BY sequence LIMIT ?4").map_err(db_error)?
             .query_map(params![workspace,mailbox,after,limit],|r|Ok((r.get::<_,u64>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?,r.get::<_,usize>(4)?,r.get::<_,String>(5)?,r.get::<_,String>(6)?,r.get::<_,Option<String>>(7)?))).map_err(db_error)?.collect::<std::result::Result<Vec<_>,_>>().map_err(db_error)?;
         let mut result = Vec::new();
-        let mut cached_frame: Option<(String, WireValue)> = None;
+        let mut cached_frame: Option<(String, WireValue, Option<peerwork_core::human_author::AuthorProofContext>)> = None;
         for (sequence, id, kind, frame, index, hash, mut status, mut terminal) in rows {
             let projected:Option<String>=self.db.query_row("SELECT t.reason FROM inbox_subjects s INDEXED BY inbox_subject_item JOIN inbox_terminal t ON t.workspace=s.workspace AND t.mailbox=s.mailbox AND t.kind=s.kind AND t.subject=s.subject WHERE s.workspace=?1 AND s.mailbox=?2 AND s.sequence=?3 AND (s.kind<>'SUBSCRIPTION' OR s.revision<=t.revision) LIMIT 1",params![workspace,mailbox,sequence],|r|r.get(0)).optional().map_err(db_error)?;
             if let Some(reason) = projected {
@@ -837,7 +837,7 @@ impl InboxStore {
             if status == "PENDING" {
                 if cached_frame
                     .as_ref()
-                    .is_none_or(|(digest, _)| digest != &frame)
+                    .is_none_or(|(digest, _, _)| digest != &frame)
                 {
                     let evidence:Vec<u8>=self.db.query_row("SELECT evidence FROM inbox_frames WHERE digest=?1 AND workspace=?2 AND mailbox=?3",params![frame,workspace,mailbox],|r|r.get(0)).map_err(db_error)?;
                     let wire = open_bounded(
@@ -852,7 +852,8 @@ impl InboxStore {
                     }
                     let parsed = parse_wire_json_bounded(wire.as_bytes(), 40, MAX_FRAME_BYTES)
                         .map_err(|_| invalid())?;
-                    cached_frame = Some((frame.to_string(), parsed));
+                    let proofs=peerwork_core::human_author::AuthorProofContext::from_container(&parsed).map_err(|_|invalid())?;
+                    cached_frame = Some((frame.to_string(), parsed, proofs));
                 }
                 let frame = &cached_frame.as_ref().ok_or_else(invalid)?.1;
                 let Some(WireValue::Array(items)) = frame.get("items") else {
@@ -868,6 +869,12 @@ impl InboxStore {
                     return Err(invalid());
                 }
                 entry["envelope"] = json_value(item)?;
+                if let (Some(proofs),Some(jws))=(&cached_frame.as_ref().ok_or_else(invalid)?.2,item.get("message").and_then(|m|m.get("author_intent")).and_then(WireValue::as_string)){
+                    let payload=jws.split('.').nth(1).ok_or_else(invalid)?;
+                    let bytes=peerwork_core::crypto::decode_base64url(payload).map_err(|_|invalid())?;
+                    let command=parse_wire_json_bounded(&bytes,40,180000).map_err(|_|invalid())?;
+                    if let Some(selected)=proofs.select_for_command(&command).map_err(|_|invalid())?{entry["author_proofs"]=serde_json::to_value(selected).map_err(|_|invalid())?;}
+                }
             }
             result.push(entry);
         }

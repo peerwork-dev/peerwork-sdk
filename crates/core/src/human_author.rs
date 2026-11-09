@@ -45,6 +45,56 @@ pub struct AuthorReference{pub kind:String,pub root_generation:u64,pub root_cert
 #[derive(Debug,Clone,Serialize,Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AuthorProofContext{pub format:String,pub roots:BTreeMap<String,String>,pub devices:BTreeMap<String,String>}
+impl AuthorProofContext {
+    /// Parse only the typed proof section. No arbitrary business field, global
+    /// directory or ambient cache supplies authorship evidence.
+    pub fn from_container(value:&WireValue)->Result<Option<Self>>{
+        value.get("author_proofs").map(Self::from_wire).transpose()
+    }
+    /// The audited runtime DTO path has already authenticated its source
+    /// response. Reuse the same bounded proof contract without serializing or
+    /// copying unrelated business data.
+    pub fn from_json_container(value:&serde_json::Value)->Result<Option<Self>>{
+        let Some(value)=value.get("author_proofs")else{return Ok(None)};
+        let fields=value.as_object().ok_or(HumanAuthorError::Invalid)?;
+        if fields.len()!=3||value["format"].as_str()!=Some("peerwork.human-author-proofs.v1"){return Err(HumanAuthorError::Invalid)}
+        fn entries(value:Option<&serde_json::Value>)->Result<BTreeMap<String,String>>{
+            let fields=value.and_then(serde_json::Value::as_object).ok_or(HumanAuthorError::Invalid)?;
+            if fields.len()>32{return Err(HumanAuthorError::Invalid)}
+            let mut result=BTreeMap::new();
+            for(key,value)in fields{let wire=value.as_str().ok_or(HumanAuthorError::Invalid)?;proof_entry(key,wire)?;result.insert(key.clone(),wire.into());}Ok(result)
+        }
+        Ok(Some(Self{format:"peerwork.human-author-proofs.v1".into(),roots:entries(value.get("roots"))?,devices:entries(value.get("devices"))?}))
+    }
+    pub fn from_wire(value:&WireValue)->Result<Self>{
+        if value.object_len()!=Some(3)||text(value,"format")?!="peerwork.human-author-proofs.v1"{return Err(HumanAuthorError::Invalid)}
+        fn entries(value:Option<&WireValue>)->Result<BTreeMap<String,String>>{
+            let Some(WireValue::Object(fields))=value else{return Err(HumanAuthorError::Invalid)};
+            if fields.len()>32{return Err(HumanAuthorError::Invalid)}
+            let mut result=BTreeMap::new();
+            for(key,value)in fields{
+                let key=String::from_utf16(key).map_err(|_|HumanAuthorError::Invalid)?;
+                let wire=value.as_string().ok_or(HumanAuthorError::Invalid)?;
+                proof_entry(&key,&wire)?;if result.insert(key,wire).is_some(){return Err(HumanAuthorError::Invalid)}
+            }
+            Ok(result)
+        }
+        Ok(Self{format:"peerwork.human-author-proofs.v1".into(),roots:entries(value.get("roots"))?,devices:entries(value.get("devices"))?})
+    }
+    /// Select the two certificates referenced by one command. Selection is not
+    /// signature verification; callers must still verify the command with this
+    /// context. This avoids repeating a complete frame's proofs for each item.
+    pub fn select_for_command(&self,command:&WireValue)->Result<Option<Self>>{
+        let Some(author)=command.get("author")else{return Ok(None)};
+        let reference:AuthorReference=json(author)?;
+        let root=self.roots.get(&reference.root_certificate_hash).ok_or(HumanAuthorError::Missing)?;
+        let device=self.devices.get(&reference.device_certificate_hash).ok_or(HumanAuthorError::Missing)?;
+        Ok(Some(Self{format:self.format.clone(),roots:BTreeMap::from([(reference.root_certificate_hash,root.clone())]),devices:BTreeMap::from([(reference.device_certificate_hash,device.clone())])}))
+    }
+}
+fn proof_entry(key:&str,wire:&str)->Result<()>{
+    if !digest(key)||wire.is_empty()||wire.len()>4096||!wire.bytes().all(|b|b.is_ascii_alphanumeric()||b"_.-".contains(&b))||sha256_hex(wire.as_bytes())!=key{return Err(HumanAuthorError::Invalid)}Ok(())
+}
 #[derive(Debug,Clone,Serialize)]
 pub struct ResolvedCommandAuthor{
     pub kind:&'static str,pub principal_actor_id:String,pub actual_signer_id:String,
