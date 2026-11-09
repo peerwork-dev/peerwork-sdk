@@ -59,6 +59,10 @@ record, mailbox creation or history transfer is needed. See
 
 ## Shared engine
 
+See [receiving recovery and diagnosis](receiving-recovery.md) for resource
+pressure, preserved checkpoints and the distinction between host readiness,
+receiving verification and key-state freshness.
+
 A program participant binds an explicit identity, service Origin and protected
 state namespace. It does not need an Agent profile or existing protocol instance.
 Rust applications embed `participant::ParticipantClient`; other applications

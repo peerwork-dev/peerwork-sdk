@@ -17,8 +17,11 @@ impl Service {
     }
     fn fixture(name: &str) -> Self {
         let node = std::env::var("PEERWORK_TEST_NODE").expect("explicit Node fixture executable");
-        let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../tests")
+        let root = std::env::var_os("PEERWORK_SDK_REFERENCE_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."));
+        let fixture = root
+            .join("tests")
             .join(name);
         let mut child = Command::new(node)
             .arg(fixture)
@@ -1765,7 +1768,7 @@ async fn watch_until(
     watch: &mut ProgramWatch,
     condition: impl Fn(&WatchSnapshot) -> bool,
 ) -> WatchSnapshot {
-    tokio::time::timeout(Duration::from_secs(15), async {
+    let observed = tokio::time::timeout(Duration::from_secs(15), async {
         loop {
             let snapshot = watch.next().await.unwrap();
             assert_ne!(snapshot.state, "BLOCKED", "{snapshot:?}");
@@ -1774,8 +1777,14 @@ async fn watch_until(
             }
         }
     })
-    .await
-    .expect("watch did not reach expected condition")
+    .await;
+    match observed {
+        Ok(value)=>value,
+        Err(_)=>{
+            let last=watch.page(0,1).await.unwrap();
+            panic!("watch did not reach expected condition: state={}, code={:?}, checkpoint={}, link={}, keys={}",last.state,last.code,last.checkpoint,last.receiver_link_verified,last.presence);
+        }
+    }
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires explicit synthetic PostgreSQL and real product HTTP fixture"]

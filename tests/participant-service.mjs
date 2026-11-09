@@ -45,6 +45,7 @@ const app=createPostgresControlApp(f.kernel,{source:()=> '127.0.0.1'});
 let offline=false,dropAction=null,delayName=null,delayAction=null,release=null,streamDurationOnce=0;
 let rejectNextRebindMailbox=null,corruptFrame=null,keyDelayWorkspace=null,delayMailbox=null;
 let keyDelayMs=0,earlyEofCount=0,timeoutAction=null;const timeoutReleases=new Set();
+let resourceRefusal=null;
 const counts={commands:0,discovery:0,context:0,journal_reads:0,dropped:0,native_streams:0,corrupted_frames:0,delayed_keys:0,delayed:0,delayed_completed:0,members_batches:0,grant_batches:0,claim_commands:[],actions:{},ack_batches:{RECEIVER_STORED:{requests:0,items:0,max:0},APPLICATION_CONSUMED:{requests:0,items:0,max:0}},command_request_bytes:0,command_response_bytes:0,sse_bytes:0};
 const commandIds=new Set();
 // Explicit maintainer measurement only. Buffer closed metadata in memory and
@@ -62,6 +63,11 @@ const handle=async request=>{
  const path=new URL(request.url).pathname;
  if(path==='/__test/config'){
   const options=await request.json();
+  if(options.resource_refusal!==undefined){
+   const value=options.resource_refusal;
+   if(value!==null&&(!['structure.mailbox.get','structure.mailbox.claim','structure.mailbox.pulse','structure.mailbox.ack','structure.communication.stream.get'].includes(value.action)||!['RESOURCE_EXHAUSTED','CAPACITY_RESERVATION_EXHAUSTED'].includes(value.code)))throw Error('invalid synthetic resource refusal');
+   resourceRefusal=value;
+  }
   if(options.capture_disclosure!==undefined)captureDisclosure=options.capture_disclosure===true;
   if(options.resident_worker===true)await startResidentWorker();
   if(options.pump_events){for(let i=0;i<256;i++){const step=await stepEventDelivery(f.kernel);if(step.job_id===null)break;}}
@@ -109,6 +115,10 @@ const handle=async request=>{
   if(command.action_id==='structure.members.read'&&Array.isArray(command.body.actor_ids))counts.members_batches++;
   if(command.action_id==='structure.grant.get'&&Array.isArray(command.body.actor_ids))counts.grant_batches++;
   if(command.action_id==='structure.mailbox.claim')counts.claim_commands.push({command_id:command.command_id,receiver_id:command.body.receiver_id,replace:command.body.replace,expected_epoch:command.body.expected_epoch});
+  if(resourceRefusal?.action===command.action_id){
+   counts.resource_refusals=(counts.resource_refusals??0)+1;
+   return Response.json({error:{code:resourceRefusal.code}},{status:429});
+  }
   if(command.action_id==='structure.mailbox.claim'&&command.body.replace===true&&command.body.mailbox_id===rejectNextRebindMailbox){
    rejectNextRebindMailbox=null;
    await f.store.pool.query(`UPDATE "${f.schema}".communication_mailboxes SET epoch=epoch+1,lease_until=0,ready=false WHERE mailbox_id=$1`,[command.body.mailbox_id]);

@@ -50,6 +50,61 @@ async fn fault(watch:&mut ProgramWatch)->WatchSnapshot {
 }
 #[tokio::test(flavor="multi_thread",worker_threads=2)]
 #[ignore="requires explicit synthetic PostgreSQL and real product HTTP fixture"]
+async fn receiver_capacity_recovers_claim_pulse_ack_and_stream_without_replacing_identity_or_cursor() {
+    for (action,code) in [
+        ("structure.mailbox.get","RESOURCE_EXHAUSTED"),
+        ("structure.mailbox.claim","RESOURCE_EXHAUSTED"),
+        ("structure.mailbox.pulse","RESOURCE_EXHAUSTED"),
+        ("structure.mailbox.ack","RESOURCE_EXHAUSTED"),
+        ("structure.communication.stream.get","RESOURCE_EXHAUSTED"),
+        ("structure.communication.stream.get","CAPACITY_RESERVATION_EXHAUSTED"),
+    ] {
+        eprintln!("capacity recovery case: {action} / {code}");
+        let service=Service::start();
+        let temp=crate::test_support::protected_test_dir();
+        let config=configuration(temp.path(),&service.origin);
+        let client=ParticipantClient::open(config.clone()).await.unwrap();
+        let actor=client.actor_id().to_owned();
+        let ws=mutate(&client,"create-capacity","structure.workspace.create",&Scope::default(),json!({"name":"Capacity recovery"})).await["workspace_id"].as_str().unwrap().to_owned();
+        let scope=Scope{workspace_id:Some(ws.clone()),..Default::default()};
+        let meta=selected(&client,"structure.workspace.get",&scope,json!({})).await;
+        let mailbox=mutate(&client,"grant-capacity","structure.communication.grant.set",&scope,json!({"actor_id":actor,"membership_id":meta["membership"]["membership_id"],"expected_revision":null,"send":true,"receive":true})).await["mailbox"].clone();
+        let key=install_synthetic_key(&config,&ws,&[42;32],None);
+        mutate(&client,"key-capacity","structure.content-key.set",&scope,json!({"key_id":key,"expected_epoch":0,"expected_head_revision":null})).await;
+        let options=WatchOptions{workspace_id:ws,mailbox_id:mailbox["mailbox_id"].as_str().unwrap().into(),membership_id:mailbox["membership_id"].as_str().unwrap().into(),consumer_id:"capacity-receiver".into(),host_destination:None};
+        let initial=matches!(action,"structure.mailbox.get"|"structure.mailbox.claim");
+        if initial { service.config(json!({"resource_refusal":{"action":action,"code":code}})).await; }
+        let mut watch=client.watch(options.clone()).await.unwrap();
+        let before=if initial {watch.page(0,32).await.unwrap()} else {watch_until(&mut watch,|s|s.receiver_link_verified).await};
+        if !initial {
+            service.config(json!({"resource_refusal":{"action":action,"code":code},"close_connections":action=="structure.communication.stream.get"})).await;
+        }
+        let sent=structure(&client.invoke(native_message("during-capacity",&scope,&mailbox,&mailbox,&"v".repeat(43),"recover-original-delivery"),Duration::from_secs(5)).await.unwrap());
+        let recovering=watch_until(&mut watch,|s|s.code.is_some()).await;
+        eprintln!("capacity refusal observed: {action}; code={:?}; checkpoint={}",recovering.code,recovering.checkpoint);
+        assert!(service.counts().await["resource_refusals"].as_u64().unwrap_or(0)>0,"the configured resource refusal must actually occur");
+        if action!="structure.mailbox.get" { assert_eq!(recovering.code.as_deref(),Some(code)); }
+        assert_eq!(recovering.state,"RECONNECTING","{action} must not require a runtime restart");
+        assert!(recovering.verification_failure.is_none());
+        assert!(recovering.checkpoint>=before.checkpoint);
+        let held=service.counts().await["resource_refusals"].as_u64().unwrap();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(service.counts().await["resource_refusals"].as_u64().unwrap(),held,"{action} must back off rather than spin");
+        service.config(json!({"resource_refusal":null})).await;
+        let recovered=watch_until(&mut watch,|s|s.receiver_link_verified&&s.code.is_none()&&s.presence["key_current"]==true&&s.items.iter().any(|v|v["envelope"]["message"]["message_id"]==sent["message_id"])).await;
+        eprintln!("capacity recovery verified: {action}; checkpoint={}",recovered.checkpoint);
+        assert_eq!(recovered.items.iter().filter(|v|v["envelope"]["message"]["message_id"]==sent["message_id"]).count(),1);
+        assert_eq!(client.actor_id(),actor);
+        assert!(recovered.checkpoint>=recovering.checkpoint);
+        let current=selected(&client,"structure.mailbox.get",&scope,json!({"mailbox_id":options.mailbox_id})).await;
+        assert_eq!(current["mailbox"]["epoch"],1,"capacity recovery must preserve the original receiver generation");
+        let claims=service.counts().await["claim_commands"].as_array().unwrap().clone();
+        assert!(claims.iter().all(|v|v["command_id"]==claims[0]["command_id"]&&v["receiver_id"]==claims[0]["receiver_id"]&&v["replace"]==false),"unknown claim attempts must retain their frozen command and receiver IDs");
+        client.close().await.unwrap();
+    }
+}
+#[tokio::test(flavor="multi_thread",worker_threads=2)]
+#[ignore="requires explicit synthetic PostgreSQL and real product HTTP fixture"]
 async fn unchanged_host_probes_coalesce_wire_traffic_without_stopping_the_receiver() {
     use crate::participant_inbox::{HostBinding,HostOperation};
     let binding=HostBinding::new(json!({"host":"CODEX_APP_SERVER","conversation_id":"synthetic-control-cost","session_id":"synthetic-probe-session","endpoint":"unix:///synthetic/unused.sock"})).unwrap();

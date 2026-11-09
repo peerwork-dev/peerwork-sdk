@@ -294,8 +294,7 @@ impl Slot {
     fn fail(&mut self, e: Failure) {
         self.link_verified = false;
         self.failures = self.failures.saturating_add(1);
-        self.retry_at =
-            Instant::now() + Duration::from_millis((250u64 << self.failures.min(5)).min(8000));
+        self.retry_at = Instant::now() + receiver_retry_delay(self.failures, e.capacity());
         if !self.blocked && !e.retryable {self.code=Some(e.code.clone());}
         self.blocked |= !e.retryable;
         self.state(
@@ -315,6 +314,17 @@ struct Failure {
     retryable: bool,
 }
 impl Failure {
+    fn capacity(&self) -> bool {
+        !self.no_effect && matches!(self.code.as_str(),
+            "RESOURCE_EXHAUSTED" | "CAPACITY_RESERVATION_EXHAUSTED")
+    }
+    fn for_receiver(mut self) -> Self {
+        // A resource diagnostic is not a terminal signed outcome. Maintenance
+        // may probe again; an uncertain claim still uses its frozen command ID.
+        // Do not change the general business-operation recovery contract.
+        self.retryable |= self.capacity();
+        self
+    }
     fn code(code: &str) -> Self {
         Self {
             no_effect: false,
@@ -323,10 +333,17 @@ impl Failure {
         }
     }
 }
+fn receiver_retry_delay(failures: u8, capacity: bool) -> Duration {
+    Duration::from_millis(if capacity {
+        (2000u64 << failures.saturating_sub(1).min(4)).min(30000)
+    } else {
+        (250u64 << failures.min(5)).min(8000)
+    })
+}
 fn result(
     out: std::result::Result<StructureIntentOutcome, crate::kernel_access::KernelAccessError>,
 ) -> std::result::Result<Value, Failure> {
-    match out {
+    let outcome = match out {
         Ok(StructureIntentOutcome::Accepted(value)) => {
             let data: Value = serde_json::from_str(
                 value
@@ -369,7 +386,8 @@ fn result(
                 ),
             })
         }
-    }
+    };
+    outcome.map_err(Failure::for_receiver)
 }
 fn scope_refusal(code: &str) -> bool {
     matches!(
@@ -851,7 +869,7 @@ pub(crate) async fn run(
                                 let m=&value["mailbox"];let ttl=m["lease_until"].as_u64().unwrap_or(0).saturating_sub(m["server_time"].as_u64().unwrap_or(u64::MAX));
                                 let remaining=Duration::from_millis(ttl.min(15000)).saturating_sub(started.elapsed());
                                 if remaining.is_zero(){s.fail(Failure::code("MAILBOX_LEASE_EXPIRED"));}else{s.lease_until=Some(Instant::now()+remaining);s.presence.keys_uploaded_at=keys_at;s.next_control=s.presence.next_pulse(Instant::now()+if version==s.presence.version{Duration::from_secs(6)}else{Duration::ZERO});s.pulse_failures=0;s.pulse_retry_at=Instant::now();}
-                            },Err(mut e)=>{s.lease_until=None;s.pulse_failures=s.pulse_failures.saturating_add(1);s.pulse_retry_at=Instant::now()+Duration::from_millis((250u64<<s.pulse_failures.min(4)).min(4000));
+                            },Err(mut e)=>{s.lease_until=None;s.pulse_failures=s.pulse_failures.saturating_add(1);s.pulse_retry_at=Instant::now()+if e.capacity(){receiver_retry_delay(s.pulse_failures,true)}else{Duration::from_millis((250u64<<s.pulse_failures.min(4)).min(4000))};
                                 if e.code=="MAILBOX_LEASE_EXPIRED"{e.retryable=true;}
                                 if e.retryable{s.link_verified=false;s.state("RECONNECTING",Some(e.code));}else{s.fail(e);}
                             }}},
@@ -901,7 +919,7 @@ pub(crate) async fn run(
                                 let code=value.as_ref().err().map(|e|e.code.clone());
                                 let fatal=value.as_ref().err().is_some_and(|e|!e.retryable);
                                 if value.is_err(){stream_failures=stream_failures.saturating_add(1);}else{stream_failures=0;}
-                                stream_retry=Instant::now()+Duration::from_millis(if value.is_ok(){50}else{(250u64<<stream_failures.min(5)).min(8000)});
+                                stream_retry=Instant::now()+if value.as_ref().err().is_some_and(Failure::capacity){receiver_retry_delay(stream_failures,true)}else{Duration::from_millis(if value.is_ok(){50}else{(250u64<<stream_failures.min(5)).min(8000)})};
                                 for s in slots.values_mut().filter(|s|!s.blocked&&s.receive_fault.is_none()){s.link_verified=false;s.disconnects=s.disconnects.saturating_add(1);
                                     if fatal{s.fail(Failure{no_effect:false,code:code.clone().unwrap_or_else(||"STREAM_VERIFICATION_FAILED".into()),retryable:false});}
                                     else{s.state("RECONNECTING",code.clone());
@@ -1537,5 +1555,30 @@ mod reliability_tests {
         s.fail(Failure::code("NETWORK_TIMEOUT"));
         assert!(s.blocked);
         assert_eq!(s.code.as_deref(),Some("MAILBOX_EPOCH_MISMATCH"));
+    }
+    #[test]
+    fn capacity_diagnostics_do_not_latch_receiver_or_erase_authority_failures() {
+        for code in ["RESOURCE_EXHAUSTED", "CAPACITY_RESERVATION_EXHAUSTED"] {
+            let mut s=selected();
+            let e=Failure{no_effect:false,code:code.into(),retryable:false}.for_receiver();
+            assert!(e.retryable);
+            s.fail(e);
+            assert!(!s.blocked);
+            assert!(!s.link_verified);
+            assert_eq!(s.state,"RECONNECTING");
+            assert_eq!(s.code.as_deref(),Some(code));
+            assert!(s.retry_at>Instant::now());
+            s.state("RECEIVER_LINK_VERIFIED",None);
+            assert_eq!(s.state,"RECEIVER_LINK_VERIFIED");
+            s.fail(Failure{no_effect:false,code:"MAILBOX_EPOCH_MISMATCH".into(),retryable:false});
+            s.fail(Failure{no_effect:false,code:code.into(),retryable:false}.for_receiver());
+            assert!(s.blocked);
+            assert_eq!(s.code.as_deref(),Some("MAILBOX_EPOCH_MISMATCH"));
+        }
+        let signed_refusal=Failure{no_effect:true,code:"RESOURCE_EXHAUSTED".into(),retryable:false}.for_receiver();
+        assert!(!signed_refusal.retryable,"a signed terminal result cannot become an uncertain retry");
+        assert_eq!(receiver_retry_delay(1,true),Duration::from_secs(2));
+        assert_eq!(receiver_retry_delay(2,true),Duration::from_secs(4));
+        assert_eq!(receiver_retry_delay(u8::MAX,true),Duration::from_secs(30));
     }
 }
