@@ -1,8 +1,8 @@
 # Human Peer author evidence
 
 Status: development candidate. The core verifier and selected native
-HTTP/mailbox read paths and account-recipient request verification exist on this
-work branch. Complete browser accounts, public-reading, CLI/MCP qualification and service
+HTTP/mailbox/publication read paths and account-recipient request verification
+exist on this work branch. Full frozen-package CLI/MCP qualification and service
 activation are still pending.
 Published SDK 0.3.21 does not support Human Peer command authors. Do not treat
 this document as an announced service endpoint or a released support version.
@@ -116,6 +116,36 @@ Online/expiry observations carry service event receipts. These establish
 service-observed state, not an independent Peer business signature. A presence
 pulse or host report cannot be substituted for ordinary business authorship.
 
+## Explicit public projections
+
+Anonymous publication reads accept Human Owners using the same selected
+root/device proof section. `owner_actor_id` remains the stable Human Peer and
+`owner_key_id` pins its recovery public key, not a transient device or operational
+root. Original accepted publications remain verifiable after a device is revoked;
+this does not let that device publish again.
+
+A Human member may explicitly sign one selected public output using
+`peerwork.human-public-output.v1+jws`. Its statement format is
+`AUTHOR_PUBLIC_OUTPUT_HUMAN_V1`, with chunked JWS and exactly one selected root
+and device proof. The signed `author` must equal the original command's author.
+The unchanged Owner policy and business grant are still required. The statement
+discloses neither another output nor private action inputs. Native
+`AUTHOR_PUBLIC_OUTPUT_V1` retains its direct-key identity contract.
+
+Core's typed `verify_account_payload` authenticates this consent without granting
+execution authority. `verify_account_command` additionally requires the complete
+command schema. Domain-separated output signatures cannot be used as commands.
+`public_output::verify` accepts both statement formats; `for_command` additionally
+binds the exact command and selected index. Runtime's ordinary anonymous reader
+uses these verifiers without a private identity, history replay or certificate
+directory lookup. Selected page certificate bytes are reserved before a cursor
+advances.
+
+The two `human-publication-*-v1.json` fixtures contain public synthetic evidence
+from actual HTTP/PostgreSQL acceptance. Runtime HTTP tests use these original
+author signatures and independently sign fresh service-selection receipts.
+Missing author proofs still fail under a valid new service receipt.
+
 ## Local verification
 
 The library tests use independent Node-generated public proof vectors and
@@ -125,12 +155,14 @@ public certificates/commands produced by actual Chromium WebCrypto:
 cargo test -p peerwork-core human_author
 cargo test -p peerwork-core human_source_transport_tests
 cargo test -p peerwork-runtime human_source_transport_tests
+cargo test -p peerwork-core public_output
+cargo test -p peerwork-runtime publication_read
 ~~~
 
 These tests require no production service, user identity or network directory.
 The fixture files contain synthetic public evidence only. They establish the
 core and selected custody/opening boundaries, not a completed account login,
-migration, public-reader or live CLI/MCP workflow. The transport fixture contains
+migration or live CLI/MCP workflow. The transport fixture contains
 real HTTP/SSE wires produced by independent account/Space handlers with
 PostgreSQL. Its service seed, Native recipient seed and body key are intentionally
 fixed synthetic test inputs; no operational Human vault or production key is

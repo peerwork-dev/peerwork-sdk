@@ -1,7 +1,7 @@
 //! Anonymous selected PUBLIC reads. Owner publication signatures bind content;
 //! fresh service receipts attest selection, not full-history business replay.
 use crate::{transport::{HttpTransport,TransportConfig,TransportError,TransportOptions},workspace_urls::{self,WorkspaceUrlInput}};
-use peerwork_core::{crypto::{actor_id,base64url,decode_base64url,sha256_hex,verifying_key},discovery::parse_discovery_wire,prepared_command::verify_structure_author_intent,wire_json::{parse_wire_json_bounded,canonical_wire_value},canonical::Path};
+use peerwork_core::{crypto::{actor_id,base64url,decode_base64url,sha256_hex,verifying_key},discovery::parse_discovery_wire,prepared_command::verify_structure_author_intent_with_proofs,human_author::AuthorProofContext,wire_json::{parse_wire_json_bounded,canonical_wire_value},canonical::Path};
 use ed25519_dalek::{Signature,Verifier};
 use serde::{Deserialize,Serialize};
 use serde_json::{Value,json};
@@ -40,16 +40,16 @@ fn receipt(jws:&str,key:&str)->R<Value>{
  verifying_key(key).map_err(|_|"PUBLIC_RECEIPT_INVALID")?.verify(format!("{}.{}",parts[0],parts[1]).as_bytes(),&Signature::from_bytes(&signature)).map_err(|_|"PUBLIC_RECEIPT_INVALID")?;
  wire(&decode_base64url(parts[1]).map_err(|_|"PUBLIC_RECEIPT_INVALID")?,4096)
 }
-fn authored(source:&Value,scope:&PublicSource,audience:&str)->R<Value>{
- let jws=text(source,"author_intent")?;let verified=verify_structure_author_intent(&jws,&audience.encode_utf16().collect::<Vec<_>>()).map_err(|_|"PUBLIC_SOURCE_INVALID")?;
+fn authored(source:&Value,scope:&PublicSource,audience:&str,proofs:Option<&AuthorProofContext>)->R<Value>{
+ let jws=text(source,"author_intent")?;let verified=verify_structure_author_intent_with_proofs(&jws,&audience.encode_utf16().collect::<Vec<_>>(),proofs).map_err(|_|"PUBLIC_SOURCE_INVALID")?;
  if verified.workspace_id()!=Some(scope.workspace_id.as_str())||source["actor_id"]!=verified.actor_id()||source["command_id"]!=verified.command_id()||source["intent_digest"]!=verified.intent_digest(){return Err("PUBLIC_SOURCE_INVALID")}
  serde_json::from_str(&canonical_wire_value(verified.command(),Path::STRUCTURED).map_err(|_|"PUBLIC_SOURCE_INVALID")?).map_err(|_|"PUBLIC_SOURCE_INVALID")
 }
-fn publisher(source:&Value,owner:&PublicSource,audience:&str)->R<Value>{let command=authored(source,owner,audience)?;if command["actor_id"]!=owner.owner_actor_id{return Err("PUBLIC_SOURCE_INVALID")}Ok(command)}
-fn reference(source:&Value,sources:&Value,used:&mut std::collections::BTreeSet<String>,cache:&mut std::collections::BTreeMap<String,Value>,scope:&PublicSource,audience:&str)->R<Value>{
+fn publisher(source:&Value,owner:&PublicSource,audience:&str,proofs:Option<&AuthorProofContext>)->R<Value>{let command=authored(source,owner,audience,proofs)?;if command["actor_id"]!=owner.owner_actor_id{return Err("PUBLIC_SOURCE_INVALID")}Ok(command)}
+fn reference(source:&Value,sources:&Value,used:&mut std::collections::BTreeSet<String>,cache:&mut std::collections::BTreeMap<String,Value>,scope:&PublicSource,audience:&str,proofs:Option<&AuthorProofContext>)->R<Value>{
  let k=text(source,"source_key")?;let original=sources.get(&k).ok_or("PUBLIC_SOURCE_INVALID")?;
  if ["actor_id","command_id","intent_digest"].iter().any(|field|source[*field]!=original[*field])||k!=sha256_hex(canon(&json!([original["actor_id"],scope.workspace_id,original["command_id"]]))?.as_bytes()){return Err("PUBLIC_SOURCE_INVALID")}
- used.insert(k.clone());if !cache.contains_key(&k){cache.insert(k.clone(),authored(original,scope,audience)?);}Ok(cache[&k].clone())
+ used.insert(k.clone());if !cache.contains_key(&k){cache.insert(k.clone(),authored(original,scope,audience,proofs)?);}Ok(cache[&k].clone())
 }
 
 fn revision(value:&Value)->R<u64>{value.as_u64().filter(|n|*n>0&&*n<=9_007_199_254_740_991).ok_or("PUBLIC_RESPONSE_INVALID")}
@@ -84,21 +84,22 @@ async fn run(r:PublicRequest,cancel:&CancellationToken)->R<Value>{
  let d=parse_discovery_wire(&discovery.wire,262144).map_err(|_|"PUBLIC_DISCOVERY_INVALID")?;if !d.protocol_features().contains(&"owner-selected-publication-v1".encode_utf16().collect::<Vec<_>>()){return Err("CAPABILITY_UNAVAILABLE")}
  let audience=String::from_utf16(d.audience_utf16()).map_err(|_|"PUBLIC_DISCOVERY_INVALID")?;let key=d.receipt_public_key();
  if s.audience.as_ref().is_some_and(|a|a!=&audience)||s.service_key.as_ref().is_some_and(|k|k!=key){return Err("PUBLIC_SERVICE_IDENTITY_CHANGED")}
- let view=page(&transport,s,"WORKSPACE","RECORD_ID_ASC",None,None,20,None,&audience,key,cancel).await?;let c=publisher(&view["publication"],s,&audience)?;let b=&c["body"];let current=revision(&view["revision"])?;
+ let view=page(&transport,s,"WORKSPACE","RECORD_ID_ASC",None,None,20,None,&audience,key,cancel).await?;let view_proofs=AuthorProofContext::from_json_container(&view).map_err(|_|"PUBLIC_SOURCE_INVALID")?;let c=publisher(&view["publication"],s,&audience,view_proofs.as_ref())?;let b=&c["body"];let current=revision(&view["revision"])?;
  if c["action_id"]!="structure.publication.set"||!c["instance_id"].is_null()||b["state"]!="PUBLIC"||b["disclosure"]!="PUBLISH_SELECTED_CONTENT"||b["expected_publication_revision"].as_u64().and_then(|v|v.checked_add(1))!=Some(current)||b["title"]!=view["title"]||b["description"]!=view["description"]{return Err("PUBLIC_SOURCE_INVALID")}
  let checkpoint=Checkpoint{profile:"backend-structure-v1".into(),control_origin:s.control_origin.clone(),workspace_id:s.workspace_id.clone(),owner_actor_id:s.owner_actor_id.clone(),owner_key_id:s.owner_key_id.clone(),audience:audience.clone(),service_key:key.into(),publication_revision:current};
  if let Some(floor)=r.checkpoint{if floor.profile!=checkpoint.profile||floor.control_origin!=checkpoint.control_origin||floor.workspace_id!=checkpoint.workspace_id||floor.owner_actor_id!=checkpoint.owner_actor_id||floor.owner_key_id!=checkpoint.owner_key_id||floor.audience!=checkpoint.audience||floor.service_key!=checkpoint.service_key||floor.publication_revision>current{return Err("PUBLIC_CHECKPOINT_CHANGED")}}
  let workspace_alias=match view.get("workspace_alias"){None|Some(Value::Null)=>None,Some(Value::String(a)) if workspace_urls::alias(a)=>Some(a.clone()),_=>return Err("PUBLIC_SOURCE_INVALID")};
  let mut result=if r.kind=="WORKSPACE"{view}else{page(&transport,s,&r.kind,&r.order,r.instance_id.as_deref(),r.record_id.as_deref(),r.limit,r.cursor.as_deref(),&audience,key,cancel).await?};
  if r.kind!="WORKSPACE"{
+  let proofs=AuthorProofContext::from_json_container(&result).map_err(|_|"PUBLIC_SOURCE_INVALID")?;
   let sources=result.get("sources").cloned().unwrap_or_else(||json!({}));if sources.as_object().is_none_or(|v|v.len()>64){return Err("PUBLIC_SOURCE_INVALID")}
   let mut used=std::collections::BTreeSet::new();let mut cache=std::collections::BTreeMap::new();
   let entries=result["entries"].as_array_mut().ok_or("PUBLIC_RESPONSE_INVALID")?;if entries.len()>r.limit||r.kind=="ENTRY"&&entries.len()!=1{return Err("PUBLIC_RESPONSE_INVALID")}
   for entry in entries{
-   let member=entry["kind"]=="AUTHOR_ACTION";let c=if member{let statement=parse_wire_json_bounded(entry["publication"]["statement"].to_string().as_bytes(),8,140000).map_err(|_|"PUBLIC_SOURCE_INVALID")?;let output=peerwork_core::public_output::verify(&statement,&audience.encode_utf16().collect::<Vec<_>>()).map_err(|_|"PUBLIC_SOURCE_INVALID")?;serde_json::from_str(&canonical_wire_value(&output.payload,Path::STRUCTURED).map_err(|_|"PUBLIC_SOURCE_INVALID")?).map_err(|_|"PUBLIC_SOURCE_INVALID")?}else{publisher(&entry["publication"],s,&audience)?};let b=&c["body"];let rev=revision(&entry["revision"])?;
+   let member=entry["kind"]=="AUTHOR_ACTION";let c=if member{let statement=parse_wire_json_bounded(entry["publication"]["statement"].to_string().as_bytes(),8,140000).map_err(|_|"PUBLIC_SOURCE_INVALID")?;let output=peerwork_core::public_output::verify(&statement,&audience.encode_utf16().collect::<Vec<_>>()).map_err(|_|"PUBLIC_SOURCE_INVALID")?;serde_json::from_str(&canonical_wire_value(&output.payload,Path::STRUCTURED).map_err(|_|"PUBLIC_SOURCE_INVALID")?).map_err(|_|"PUBLIC_SOURCE_INVALID")?}else{publisher(&entry["publication"],s,&audience,proofs.as_ref())?};let b=&c["body"];let rev=revision(&entry["revision"])?;
    if c["instance_id"]!=entry["instance_id"]||c["protocol_digest"]!=entry["protocol_digest"]||entry["workspace_id"]!=s.workspace_id||r.instance_id.as_ref().is_some_and(|i|entry["instance_id"]!=*i)||r.record_id.as_ref().is_some_and(|id|entry["record_id"]!=*id){return Err("PUBLIC_SOURCE_INVALID")}
    let body=if member{
-    let policy=reference(&entry["policy"]["source"],&sources,&mut used,&mut cache,s,&audience)?;let p=&policy["body"];
+    let policy=reference(&entry["policy"]["source"],&sources,&mut used,&mut cache,s,&audience,proofs.as_ref())?;let p=&policy["body"];
     if c["workspace_id"]!=s.workspace_id||c["actor_id"]!=entry["publication"]["actor_id"]||c["command_id"]!=entry["publication"]["command_id"]||c["record_index"]!=entry["record_index"]||policy["actor_id"]!=s.owner_actor_id||policy["action_id"]!="structure.publication.policy.set"||policy["instance_id"]!=c["instance_id"]||policy["protocol_digest"]!=c["protocol_digest"]||p["profile"]!="backend-structure-v1"||p["state"]!="ACTIVE"||p["disclosure"]!="ALLOW_AUTHOR_SIGNED_ACTION_PUBLICATION"||p["expected_policy_revision"].as_u64().and_then(|v|v.checked_add(1))!=entry["policy"]["revision"].as_u64()||entry["policy"]["revision"]!=c["policy_revision"]||entry["policy"]["intent_digest"]!=entry["policy"]["source"]["intent_digest"]||p["actions"].as_array().is_none_or(|actions|!actions.contains(&c["action_id"]))||rev!=1||c["title"]!=entry["title"]||c["body"]!=entry["body"]||entry["source"]["record_id"]!=entry["record_id"]||entry["source"]["actor_id"]!=c["actor_id"]||entry["source"]["intent_digest"]!=entry["publication"]["intent_digest"]||entry["source"].get("document_time")!=c.get("document_time")||entry["source"].get("attribution").is_some()||!workspace_urls::token(&text(entry,"record_id")?)||revision(&entry["source"]["revision"]).is_err()||entry["source"]["created_at"].as_u64().is_none_or(|v|v>9_007_199_254_740_991){return Err("PUBLIC_SOURCE_INVALID")}
     c["body"].clone()
    }else{
@@ -127,4 +128,25 @@ pub fn read_json(input:&str,cancel:&CancellationToken)->String{
  use super::*;
  #[test]fn public_body_is_bounded_utf8_and_explicit(){assert_eq!(public_text(&json!({"format":"PUBLIC_UTF8_BASE64","chunks":[]})).unwrap(),"");assert!(public_text(&json!({"format":"PUBLIC_UTF8_BASE64","chunks":[base64url(&[255])]})).is_err());assert!(public_text(&json!({"format":"PUBLIC_UTF8_BASE64","chunks":["A".repeat(8193)]})).is_err());assert_eq!(public_text(&json!({"format":"PUBLIC_UTF8_BASE64","chunks":[base64url(b"Public text")]})).unwrap(),"Public text");}
  #[test]fn invalid_input_never_needs_identity_or_network(){let v:Value=serde_json::from_str(&read_json("{}",&CancellationToken::new())).unwrap();assert_eq!(v["ok"],false);assert_eq!(v["code"],"PUBLIC_INPUT_INVALID");}
+ fn human_public_fixture(member:bool)->Value{serde_json::from_str(if member{include_str!("../../../tests/fixtures/human-publication-member-v1.json")}else{include_str!("../../../tests/fixtures/human-publication-owner-v1.json")}).unwrap()}
+ fn human_public_http(member:bool,strip_proofs:bool)->Value{
+  use std::{io::{Read,Write},net::TcpListener,time::{Duration,Instant}};
+  use ed25519_dalek::SigningKey;
+  let fixture=human_public_fixture(member);let listener=TcpListener::bind("127.0.0.1:0").unwrap();listener.set_nonblocking(true).unwrap();let origin=format!("http://{}",listener.local_addr().unwrap());let service=SigningKey::from_bytes(&[77;32]);let service_key=base64url(&service.verifying_key().to_bytes());
+  let mut discovery:Value=serde_json::from_str(include_str!("../../../tests/fixtures/human-source-transport-v1.json")).unwrap();discovery=discovery["discovery"].clone();discovery["audience"]=fixture["audience"].clone();discovery["receipt_public_key"]=json!(service_key);discovery["protocol_features"].as_array_mut().unwrap().push(json!("owner-selected-publication-v1"));
+  let served=fixture.clone();let base=origin.clone();let server=std::thread::spawn(move||{
+   let until=Instant::now()+Duration::from_secs(10);let mut count=0;
+   while count<3&&Instant::now()<until{
+    let(mut stream,_)=match listener.accept(){Ok(value)=>value,Err(error)if error.kind()==std::io::ErrorKind::WouldBlock=>{std::thread::sleep(Duration::from_millis(1));continue},Err(error)=>panic!("{error}")};stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();let mut request=Vec::new();let mut buffer=[0;4096];while !request.windows(4).any(|v|v==b"\r\n\r\n"){let n=stream.read(&mut buffer).unwrap();assert!(n>0);request.extend_from_slice(&buffer[..n]);assert!(request.len()<16384)}
+    let text=String::from_utf8(request).unwrap();let path=text.lines().next().unwrap().split_whitespace().nth(1).unwrap();let url=reqwest::Url::parse(&(base.clone()+path)).unwrap();let value=if url.path().ends_with("/discovery"){discovery.clone()}else{
+     assert!(url.path().ends_with("/structure/public"));let query=url.query_pairs().map(|(k,v)|(k.into_owned(),Value::String(v.into_owned()))).collect::<serde_json::Map<_,_>>();let mut result=if query["kind"]=="WORKSPACE"{served["view"]["result"].clone()}else{served["entries"]["result"].clone()};if strip_proofs&&query["kind"]=="ENTRIES"{if member{result["entries"][0]["publication"]["statement"]["author_proofs"]["devices"]=json!({})}else{result.as_object_mut().unwrap().remove("author_proofs");}}
+     let receipt=peerwork_core::crypto::sign_compact(&json!({"alg":"EdDSA","typ":RECEIPT,"kid":base64url(&service.verifying_key().to_bytes())}),&json!({"v":1,"profile":"backend-structure-v1","audience":served["audience"],"nonce":query["nonce"],"query_digest":sha256_hex(canon(&Value::Object(query)).unwrap().as_bytes()),"result_digest":sha256_hex(canon(&result).unwrap().as_bytes()),"accepted_at":1_800_000_000_000u64}),&service).unwrap();json!({"result":result,"receipt":receipt})};
+    let body=value.to_string();write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",body.len(),body).unwrap();count+=1;
+   }assert_eq!(count,3,"the reader must use discovery and selected pages without history requests");
+  });
+  let request=json!({"source":{"control_origin":origin,"browser_origin":origin,"workspace_id":fixture["workspace_id"],"owner_actor_id":fixture["owner_actor_id"],"owner_key_id":fixture["owner_key_id"],"audience":fixture["audience"],"service_key":service_key,"allow_loopback_http":true},"kind":"ENTRIES","limit":32});let result:Value=serde_json::from_str(&read_json(&request.to_string(),&CancellationToken::new())).unwrap();server.join().unwrap();result
+ }
+ #[test]fn human_owner_publication_survives_device_revocation_through_actual_http(){let result=human_public_http(false,false);assert_eq!(result["ok"],true,"{result}");assert_eq!(result["value"]["result"]["entries"][0]["text"],human_public_fixture(false)["text"]);assert_eq!(result["value"]["metrics"]["history_reads"],0);}
+ #[test]fn human_member_selected_public_output_uses_the_unchanged_native_owner_policy(){let result=human_public_http(true,false);assert_eq!(result["ok"],true,"{result}");assert_eq!(result["value"]["result"]["entries"][0]["text"],human_public_fixture(true)["text"]);assert_eq!(result["value"]["metrics"]["public_requests"],2);}
+ #[test]fn fresh_service_receipts_cannot_replace_human_publication_author_proofs(){for member in [false,true]{let result=human_public_http(member,true);assert_eq!(result["ok"],false);assert_eq!(result["code"],"PUBLIC_SOURCE_INVALID");}}
 }

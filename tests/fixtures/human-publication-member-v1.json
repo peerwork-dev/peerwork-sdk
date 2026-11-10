@@ -1,0 +1,102 @@
+{
+  "format": "peerwork.synthetic-human-publication.v1",
+  "audience": "structure-test",
+  "service_key": "6kpsY-KcUgq-9VB7Ey7F-ZVHdq6-vnuSQh7qaRRG0iw",
+  "owner_actor_id": "zSxWNWtU7EoWgkH4g9wNH96twL4_Mc6LjOS1S9UE4hY",
+  "owner_key_id": "ZtNBD1dO66dR_DajerBPH-n4QBugmlYTX5Xp436y2JE",
+  "workspace_id": "nFkvi2l9EkkrFx9mGIULzJvPjgWsKSr5zzaln2Ec8T8",
+  "view": {
+    "result": {
+      "kind": "WORKSPACE",
+      "workspace_id": "nFkvi2l9EkkrFx9mGIULzJvPjgWsKSr5zzaln2Ec8T8",
+      "workspace_alias": "YLXNeUbz3hjD1BUB",
+      "revision": 1,
+      "title": "Human author contributions",
+      "description": "Selected output consent",
+      "updated_at": 1800000000000,
+      "publication": {
+        "actor_id": "zSxWNWtU7EoWgkH4g9wNH96twL4_Mc6LjOS1S9UE4hY",
+        "command_id": "7QnXBf8SFCKPyvLglob73jPUToOQjAnL2iN9rZYp1Qs",
+        "intent_digest": "9e4d011823ad94a16e2cfdbe64c92b401be88d82be4aa2ac1691c79c9ed47ec6",
+        "author_intent": "eyJhbGciOiJFZERTQSIsInR5cCI6InBlZXJ3b3JrLmtlcm5lbC1jb21tYW5kLnYxK2p3cyIsImtpZCI6Ilp0TkJEMWRPNjZkUl9EYWplckJQSC1uNFFCdWdtbFlUWDVYcDQzNnkySkUifQ.eyJ2IjoxLCJhdWRpZW5jZSI6InN0cnVjdHVyZS10ZXN0IiwiY29tbWFuZF9pZCI6IjdRblhCZjhTRkNLUHl2TGdsb2I3M2pQVVRvT1FqQW5MMmlOOXJaWXAxUXMiLCJhY3Rvcl9pZCI6InpTeFdOV3RVN0VvV2drSDRnOXdOSDk2dHdMNF9NYzZMak9TMVM5VUU0aFkiLCJhdXRob3JpdHkiOiIzZmQzM2M5MjQzMWVlZmIwNjM5MDQzMGRhY2ZlOTMzOTk0YTIyOWE2MjYwNGNmMzMwMjI4Yzc4YjRmYTkxYmUyIiwibWV0aG9kIjoiUE9TVCIsInBhdGgiOiIvYXBpL3dvcmtzcGFjZS92MS9jb21tYW5kcyIsIndvcmtzcGFjZV9pZCI6Im5Ga3ZpMmw5RWtrckZ4OW1HSVVMekp2UGpnV3NLU3I1enphbG4yRWM4VDgiLCJpbnN0YW5jZV9pZCI6bnVsbCwicHJvdG9jb2xfZGlnZXN0IjpudWxsLCJhY3Rpb25faWQiOiJzdHJ1Y3R1cmUucHVibGljYXRpb24uc2V0IiwiZXhwZWN0ZWRfd29ya3NwYWNlX3JldmlzaW9uIjozLCJleHBlY3RlZF9pbnN0YW5jZV9yZXZpc2lvbiI6bnVsbCwiZXhhY3RfaW5wdXRfcmVmcyI6W10sImJvZHkiOnsicHJvZmlsZSI6ImJhY2tlbmQtc3RydWN0dXJlLXYxIiwic3RhdGUiOiJQVUJMSUMiLCJleHBlY3RlZF9wdWJsaWNhdGlvbl9yZXZpc2lvbiI6MCwidGl0bGUiOiJIdW1hbiBhdXRob3IgY29udHJpYnV0aW9ucyIsImRlc2NyaXB0aW9uIjoiU2VsZWN0ZWQgb3V0cHV0IGNvbnNlbnQiLCJkaXNjbG9zdXJlIjoiUFVCTElTSF9TRUxFQ1RFRF9DT05URU5UIn0sImlzc3VlZF9hdCI6MTgwMDAwMDAwMDAwMCwiZXhwaXJlc19hdCI6MTgwMDAwMDA2MDAwMH0.cpNauZpHfoKFrMwfh_tmn9GETE6YvkTnp_2WvFyJfqcDSdn27W49q-LhrDMIzDobuzSvBlwrGEQsmRicJBuFDw"
+      }
+    },
+    "receipt": "eyJhbGciOiJFZERTQSIsInR5cCI6InBlZXJ3b3JrLnB1YmxpY2F0aW9uLXJlYWQudjErandzIiwia2lkIjoiNmtwc1ktS2NVZ3EtOVZCN0V5N0YtWlZIZHE2LXZudVNRaDdxYVJSRzBpdyJ9.eyJ2IjoxLCJwcm9maWxlIjoiYmFja2VuZC1zdHJ1Y3R1cmUtdjEiLCJhdWRpZW5jZSI6InN0cnVjdHVyZS10ZXN0IiwicXVlcnlfZGlnZXN0IjoiMzNlYmVmOTVmY2ZjZTc3Mzk5NjBjNDI2YTQxOWQ4ZDM2ODNiOGM4NjhjNDFiYWViMTYyMDc5N2U2MmE1OTUyYiIsIm5vbmNlIjoiNktrQWp5Z1FLWWJBanRHUWtaTmFBdWQzSEhkX3NIbEUyT1h1R3RCMmlDVSIsInJlc3VsdF9kaWdlc3QiOiJjMzQwNzkxYjA0M2FlMDUwZWVlYmU1NjU2NDk0ZmY3Zjk0NjQzNzAyMWNmNzA1NDljYmUzYWU0YzBmZmViNzgxIiwiYWNjZXB0ZWRfYXQiOjE4MDAwMDAwMDAwMDB9.igGSsNyPHtDRtlfeEJ5dv6R8O65O87-wdErJl9R_j_yfEpycbwwiMKGFSoN2-Fro8n8ziTGgxS9RQ-E7TXhPDw"
+  },
+  "entries": {
+    "result": {
+      "kind": "ENTRIES",
+      "workspace_id": "nFkvi2l9EkkrFx9mGIULzJvPjgWsKSr5zzaln2Ec8T8",
+      "entries": [
+        {
+          "workspace_id": "nFkvi2l9EkkrFx9mGIULzJvPjgWsKSr5zzaln2Ec8T8",
+          "record_id": "w-5A6GPNZrNT0AJWdyI7UwB1esbw9QqEbaKUIFglVx8",
+          "instance_id": "5O2wpzYqF5SAvAXHmulz5fTiYtIhd-3ttP3sU20iDVo",
+          "revision": 1,
+          "body": {
+            "chunks": [
+              "QSBkZWxpYmVyYXRlbHkgcHVibGljIEh1bWFuIGNvbnRyaWJ1dGlvbg"
+            ],
+            "format": "PUBLIC_UTF8_BASE64"
+          },
+          "kind": "AUTHOR_ACTION",
+          "policy": {
+            "intent_digest": "1b38e89531ded55ff3588a92bd10e3b6bfa1c1efccb9f5559d8a207e2ab8fae8",
+            "revision": 1,
+            "source": {
+              "actor_id": "zSxWNWtU7EoWgkH4g9wNH96twL4_Mc6LjOS1S9UE4hY",
+              "command_id": "RCMHPoZxGNkPrqY2BvzJOfmoa393OUZvGRHA4HqZ8AU",
+              "intent_digest": "1b38e89531ded55ff3588a92bd10e3b6bfa1c1efccb9f5559d8a207e2ab8fae8",
+              "source_key": "607817b0e7e10492ce05ada95bf18c31ea4c7c448d5d617adb053620c6d817bc"
+            }
+          },
+          "protocol_digest": "552a27c587c86eba7c0160997869f1ada38b4a825c2979fed5fbd7c262bea811",
+          "record_index": 0,
+          "source": {
+            "actor_id": "6Bltq-33H-Ihd4KyAU24iizsZzagkZlKAPwMmYd61Oo",
+            "created_at": 1800000000000,
+            "intent_digest": "7d2c5cdcbb1d67e2fab4b6b31a92b9aaf74533ab1c6d5b0e5860411c22b6d42c",
+            "record_id": "w-5A6GPNZrNT0AJWdyI7UwB1esbw9QqEbaKUIFglVx8",
+            "revision": 1
+          },
+          "structure": {
+            "status": "noted"
+          },
+          "title": "Human output",
+          "updated_at": 1800000000000,
+          "publication": {
+            "actor_id": "6Bltq-33H-Ihd4KyAU24iizsZzagkZlKAPwMmYd61Oo",
+            "command_id": "Pmfo_1VpBTzGonjdSLfo4_cd-V4mqdg1KhOyi7zY1fY",
+            "intent_digest": "7d2c5cdcbb1d67e2fab4b6b31a92b9aaf74533ab1c6d5b0e5860411c22b6d42c",
+            "statement": {
+              "author_proofs": {
+                "devices": {
+                  "15e3db7923ebbd8ecde44c37739d9f6c1cdd72add0cdfa9bfc39db0c0cd86280": "eyJhbGciOiJFZERTQSIsInR5cCI6InBlZXJ3b3JrLmh1bWFuLWRldmljZS52MStqd3MiLCJraWQiOiJjMHI2NHI4Vy1La0w5c1VxZHNxRVMxbzVobk5tTFJPcTRlQzJwMjBrUU9ZIn0.eyJhY2NvdW50X2lkIjoid2RwWXpHQUlNTlZDdFhoeUlsNWFOQXZCRW5SbWduVVN2a1FtNEJrdDRVZyIsImF1ZGllbmNlIjoic3RydWN0dXJlLXRlc3QiLCJkZXZpY2VfaWQiOiJwX1VXUzNFd09vSFZncGNNYi05S2I5U25rcVU0Vm9xT2Mxd3RwVnVELVdjIiwiZGV2aWNlX3JlY2lwaWVudF9rZXlfaWQiOiJTNDVRWWMzSXR3bTN2QUU4VWxQSUg4SkkxaURISk96SEE5SFRlc19fTmxRIiwiZGV2aWNlX3JlY2lwaWVudF9wdWJsaWNfa2V5Ijp7ImNydiI6IlAtMjU2Iiwia3R5IjoiRUMiLCJ4IjoicnVMQzlNQVJpMlQyV0N1M0J1MXoya0M1dFdUVG80LWh2cmxJVE80VC0ydyIsInkiOiJJeFR2MDRGb2dfZlliRmdPNFRLa0FMTmRGb1lraXpRQWowZDlYcW5QMkNjIn0sImRldmljZV9zaWduaW5nX2tleSI6IkttVjFMbjFDcEJBc2E2UmRteU9pN2Z5WGRxZUduazJkTkVtenZkSGZ5cFUiLCJkb21haW4iOiJwZWVyd29yay5odW1hbi1kZXZpY2UudjEiLCJpc3N1ZWRfYXQiOjE4MDAwMDAwMDAwMDAsInBlZXJfaWQiOiI2Qmx0cS0zM0gtSWhkNEt5QVUyNGlpenNaemFna1psS0FQd01tWWQ2MU9vIiwicm9vdF9jZXJ0aWZpY2F0ZV9oYXNoIjoiNmZhNTEwZjJkOTU0M2QzNDdkNWUyYWE3N2VmYzgyYTFmYzA1ODgyN2IwYjA5NjdjZGM3MGQ0OGMyYjA0Y2VhNiIsInJvb3RfZ2VuZXJhdGlvbiI6MSwidiI6MX0.2jyk3lD4i_DL7brqcQGAYR6VGlIr_m8FZ4-TThpWG6bBMIcay0cDqIe1q3q4vlcPGJBzUh9BScCNgrucEXJNBw"
+                },
+                "format": "peerwork.human-author-proofs.v1",
+                "roots": {
+                  "6fa510f2d9543d347d5e2aa77efc82a1fc058827b0b0967cdc70d48c2b04cea6": "eyJhbGciOiJFZERTQSIsInR5cCI6InBlZXJ3b3JrLmFjY291bnQtcm9vdC52MStqd3MiLCJraWQiOiJZODZxNXc4T1drc25tX2xDSlN3V2tpc2xCZnY4MFZmV2pOSUZtSEVXQmJBIn0.eyJhY2NvdW50X2lkIjoid2RwWXpHQUlNTlZDdFhoeUlsNWFOQXZCRW5SbWduVVN2a1FtNEJrdDRVZyIsImF1ZGllbmNlIjoic3RydWN0dXJlLXRlc3QiLCJkb21haW4iOiJwZWVyd29yay5hY2NvdW50LXJvb3QudjEiLCJpc3N1ZWRfYXQiOjE4MDAwMDAwMDAwMDAsIm9wZXJhdGlvbmFsX3NpZ25pbmdfa2V5IjoiYzByNjRyOFctS2tMOXNVcWRzcUVTMW81aG5ObUxST3E0ZUMycDIwa1FPWSIsInBlZXJfaWQiOiI2Qmx0cS0zM0gtSWhkNEt5QVUyNGlpenNaemFna1psS0FQd01tWWQ2MU9vIiwicmVjaXBpZW50X2tleV9pZCI6IjZEakhoVERrNVNsYmxvQzU4dndZNkExTHQwWU1DQ0NQLXBFQ2VzQVllX1UiLCJyZWNpcGllbnRfcHVibGljX2tleSI6eyJjcnYiOiJQLTI1NiIsImt0eSI6IkVDIiwieCI6IjVkclpDN1FCbl9iRXM3eTFNQTBVdTFjX0t2ZVpsSTkxWWNHa0R0ckptQW8iLCJ5IjoiRlVUVEQ5aFZ5TzgxeHIyMnkyUURqd3hKb0xGZFBITU51VHdMUzJJRE9QWSJ9LCJyb290X2dlbmVyYXRpb24iOjEsInYiOjF9.qXLwMQaHecnKmiOnk3YPemPvaodVpnADpAs4tdur1bA8WgV910lBw7GuoyFUYfx_FWSHsC6xtYoUSqpkc-fRAg"
+                }
+              },
+              "chunks": [
+                "eyJhbGciOiJFZERTQSIsInR5cCI6InBlZXJ3b3JrLmh1bWFuLXB1YmxpYy1vdXRwdXQudjErandzIiwia2lkIjoiS21WMUxuMUNwQkFzYTZSZG15T2k3ZnlYZHFlR25rMmRORW16dmRIZnlwVSJ9.eyJhY3Rpb25faWQiOiJhcHBlbmQiLCJhY3Rvcl9pZCI6IjZCbHRxLTMzSC1JaGQ0S3lBVTI0aWl6c1p6YWdrWmxLQVB3TW1ZZDYxT28iLCJhdWRpZW5jZSI6InN0cnVjdHVyZS10ZXN0IiwiYXV0aG9yIjp7ImRldmljZV9jZXJ0aWZpY2F0ZV9oYXNoIjoiMTVlM2RiNzkyM2ViYmQ4ZWNkZTQ0YzM3NzM5ZDlmNmMxY2RkNzJhZGQwY2RmYTliZmMzOWRiMGMwY2Q4NjI4MCIsImRldmljZV9pZCI6InBfVVdTM0V3T29IVmdwY01iLTlLYjlTbmtxVTRWb3FPYzF3dHBWdUQtV2MiLCJraW5kIjoiaHVtYW4tZGV2aWNlLXYxIiwicm9vdF9jZXJ0aWZpY2F0ZV9oYXNoIjoiNmZhNTEwZjJkOTU0M2QzNDdkNWUyYWE3N2VmYzgyYTFmYzA1ODgyN2IwYjA5NjdjZGM3MGQ0OGMyYjA0Y2VhNiIsInJvb3RfZ2VuZXJhdGlvbiI6MX0sImJvZHkiOnsiY2h1bmtzIjpbIlFTQmtaV3hwWW1WeVlYUmxiSGtnY0hWaWJHbGpJRWgxYldGdUlHTnZiblJ5YVdKMWRHbHZiZyJdLCJmb3JtYXQiOiJQVUJMSUNfVVRGOF9CQVNFNjQifSwiY29tbWFuZF9pZCI6IlBtZm9fMVZwQlR6R29uamRTTGZvNF9jZC1WNG1xZGcxS2hPeWk3elkxZlkiLCJkaXNjbG9zdXJlIjoiUFVCTElTSF9TRUxFQ1RFRF9SRUNPUkQiLCJpbnN0YW5jZV9pZCI6IjVPMndwellxRjVTQXZBWEhtdWx6NWZUaVl0SWhkLTN0dFAzc1UyMGlEVm8iLCJwb2xpY3lfcmV2aXNpb24iOjEsInByb2ZpbGUiOiJiYWNrZW5kLXN0cnVjdHVyZS12MSIsInByb3RvY29sX2RpZ2VzdCI6IjU1MmEyN2M1ODdjODZlYmE3YzAxNjA5OTc4NjlmMWFkYTM4YjRhODI1YzI5NzlmZWQ1ZmJkN2MyNjJiZWE4MTEiLCJyZWNvcmRfaW5kZXgiOjAsInRpdGxlIjoiSHVtYW4gb3V0cHV0IiwidiI6MSwid29ya3NwYWNlX2lkIjoibkZrdmkybDlFa2tyRng5bUdJVUx6SnZQamdXc0tTcjV6emFsbjJFYzhUOCJ9.-9bFo-JI3DpZyLZFygzV9oKDqRtux7GnLNjFTGlf_7Z6a0L0OBW4NomtkJx6tmIiw3AG4IBlw5-VwoMgQxUUCQ"
+              ],
+              "format": "AUTHOR_PUBLIC_OUTPUT_HUMAN_V1"
+            }
+          }
+        }
+      ],
+      "sources": {
+        "607817b0e7e10492ce05ada95bf18c31ea4c7c448d5d617adb053620c6d817bc": {
+          "actor_id": "zSxWNWtU7EoWgkH4g9wNH96twL4_Mc6LjOS1S9UE4hY",
+          "command_id": "RCMHPoZxGNkPrqY2BvzJOfmoa393OUZvGRHA4HqZ8AU",
+          "intent_digest": "1b38e89531ded55ff3588a92bd10e3b6bfa1c1efccb9f5559d8a207e2ab8fae8",
+          "author_intent": "eyJhbGciOiJFZERTQSIsInR5cCI6InBlZXJ3b3JrLmtlcm5lbC1jb21tYW5kLnYxK2p3cyIsImtpZCI6Ilp0TkJEMWRPNjZkUl9EYWplckJQSC1uNFFCdWdtbFlUWDVYcDQzNnkySkUifQ.eyJ2IjoxLCJhdWRpZW5jZSI6InN0cnVjdHVyZS10ZXN0IiwiY29tbWFuZF9pZCI6IlJDTUhQb1p4R05rUHJxWTJCdnpKT2Ztb2EzOTNPVVp2R1JIQTRIcVo4QVUiLCJhY3Rvcl9pZCI6InpTeFdOV3RVN0VvV2drSDRnOXdOSDk2dHdMNF9NYzZMak9TMVM5VUU0aFkiLCJhdXRob3JpdHkiOiIzZmQzM2M5MjQzMWVlZmIwNjM5MDQzMGRhY2ZlOTMzOTk0YTIyOWE2MjYwNGNmMzMwMjI4Yzc4YjRmYTkxYmUyIiwibWV0aG9kIjoiUE9TVCIsInBhdGgiOiIvYXBpL3dvcmtzcGFjZS92MS9jb21tYW5kcyIsIndvcmtzcGFjZV9pZCI6Im5Ga3ZpMmw5RWtrckZ4OW1HSVVMekp2UGpnV3NLU3I1enphbG4yRWM4VDgiLCJpbnN0YW5jZV9pZCI6IjVPMndwellxRjVTQXZBWEhtdWx6NWZUaVl0SWhkLTN0dFAzc1UyMGlEVm8iLCJwcm90b2NvbF9kaWdlc3QiOiI1NTJhMjdjNTg3Yzg2ZWJhN2MwMTYwOTk3ODY5ZjFhZGEzOGI0YTgyNWMyOTc5ZmVkNWZiZDdjMjYyYmVhODExIiwiYWN0aW9uX2lkIjoic3RydWN0dXJlLnB1YmxpY2F0aW9uLnBvbGljeS5zZXQiLCJleHBlY3RlZF93b3Jrc3BhY2VfcmV2aXNpb24iOm51bGwsImV4cGVjdGVkX2luc3RhbmNlX3JldmlzaW9uIjpudWxsLCJleGFjdF9pbnB1dF9yZWZzIjpbXSwiYm9keSI6eyJwcm9maWxlIjoiYmFja2VuZC1zdHJ1Y3R1cmUtdjEiLCJzdGF0ZSI6IkFDVElWRSIsImFjdGlvbnMiOlsiYXBwZW5kIl0sImV4cGVjdGVkX3BvbGljeV9yZXZpc2lvbiI6MCwiZGlzY2xvc3VyZSI6IkFMTE9XX0FVVEhPUl9TSUdORURfQUNUSU9OX1BVQkxJQ0FUSU9OIn0sImlzc3VlZF9hdCI6MTgwMDAwMDAwMDAwMCwiZXhwaXJlc19hdCI6MTgwMDAwMDA2MDAwMH0.fZbvvzQpxg_yan_PHpqI3jUj0T_AXqUeJ5H8NEsetyow5ysX9vASdW5IRUGl54BnS_ZU64hXuqw9BPvozMCpAw"
+        }
+      },
+      "next_cursor": null
+    },
+    "receipt": "eyJhbGciOiJFZERTQSIsInR5cCI6InBlZXJ3b3JrLnB1YmxpY2F0aW9uLXJlYWQudjErandzIiwia2lkIjoiNmtwc1ktS2NVZ3EtOVZCN0V5N0YtWlZIZHE2LXZudVNRaDdxYVJSRzBpdyJ9.eyJ2IjoxLCJwcm9maWxlIjoiYmFja2VuZC1zdHJ1Y3R1cmUtdjEiLCJhdWRpZW5jZSI6InN0cnVjdHVyZS10ZXN0IiwicXVlcnlfZGlnZXN0IjoiYTg0NDlkMGZkZGRiMjUyMTdmMjU4YzBjMWM4YzViMGJiMzEyMTdjZmZmNWQ1Zjk2Njc2ZTA5ZGYwZDExODgxNiIsIm5vbmNlIjoiNVlINHJLVEE5ci1yU0VjVnJLSmFtY0lya1B2YWtmWDVIQmRfTnBHRHo1ZyIsInJlc3VsdF9kaWdlc3QiOiJiYzVjNmM4ZDViNzZjYTFiNGMyOTRhZDcxMWZkZjEwODM5ZmMwY2I1MmM3NTU5YjVlYTkzNzA5NzQ4MTg2ZDMxIiwiYWNjZXB0ZWRfYXQiOjE4MDAwMDAwMDAwMDB9.EvTRpy6Co4vbHX0mc2OqQCaAFCrRqT8GUHNMDIDSiEfV8kyZO1UPYAKagdPbOYZH6ZKZrXPQ5AT1LK2QwWb6BQ"
+  },
+  "text": "A deliberately public Human contribution"
+}

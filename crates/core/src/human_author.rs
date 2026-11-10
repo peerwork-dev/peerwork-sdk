@@ -115,6 +115,9 @@ impl VerifiedAccountRoot{
 pub struct VerifiedDevice{certificate:DeviceCertificate,hash:String}
 impl VerifiedDevice{pub fn certificate(&self)->&DeviceCertificate{&self.certificate}pub fn hash(&self)->&str{&self.hash}}
 #[derive(Debug,Clone)]
+pub struct VerifiedAccountPayload{payload:WireValue,author:ResolvedCommandAuthor}
+impl VerifiedAccountPayload{pub fn payload(&self)->&WireValue{&self.payload}pub fn author(&self)->&ResolvedCommandAuthor{&self.author}}
+#[derive(Debug,Clone)]
 pub struct VerifiedAccountCommand{command:WireValue,author:ResolvedCommandAuthor}
 impl VerifiedAccountCommand{pub fn command(&self)->&WireValue{&self.command}pub fn author(&self)->&ResolvedCommandAuthor{&self.author}}
 
@@ -167,17 +170,16 @@ pub fn verify_device(wire:&str,root:&VerifiedAccountRoot)->Result<VerifiedDevice
 }
 /// No network or implicit directory. Resolve two selected hashes at fixed depth;
 /// execution must separately check current account/device state and authority.
-pub fn verify_account_command(wire:&str,expected_audience:&[u16],proofs:Option<&AuthorProofContext>)->Result<VerifiedAccountCommand>{
+pub fn verify_account_payload(wire:&str,typ:&str,expected_audience:&[u16],proofs:Option<&AuthorProofContext>)->Result<VerifiedAccountPayload>{
     let expected=String::from_utf16(expected_audience).map_err(|_|HumanAuthorError::Author)?;
     if !audience(&expected){return Err(HumanAuthorError::Author)}
-    let (kid,command)=signed(wire,COMMAND_TYPE,250000)?;let key=verifying_key(&kid).map_err(|_|HumanAuthorError::Author)?;
+    let (kid,command)=signed(wire,typ,250000)?;let key=verifying_key(&kid).map_err(|_|HumanAuthorError::Author)?;
     let actual=actor_id(&key.to_bytes());let principal=text(&command,"actor_id")?;
-    if command.get("audience").and_then(WireValue::as_utf16)!=Some(expected_audience){return Err(HumanAuthorError::Author)}
+    if command.get("v").and_then(WireValue::as_number)!=Some(1.0)||command.get("audience").and_then(WireValue::as_utf16)!=Some(expected_audience){return Err(HumanAuthorError::Author)}
     let direct=ResolvedCommandAuthor{kind:"direct-key-v1",principal_actor_id:actual.clone(),actual_signer_id:actual.clone(),account_id:None,root_generation:None,device_id:None,root_certificate_hash:None,device_certificate_hash:None};
     let Some(raw_author)=command.get("author")else{
         if principal!=actual{return Err(HumanAuthorError::Author)}
-        validate_command_schema(&command,expected_audience,&actual).map_err(|_|HumanAuthorError::Author)?;
-        return Ok(VerifiedAccountCommand{command,author:direct})
+        return Ok(VerifiedAccountPayload{payload:command,author:direct})
     };
     let a:AuthorReference=json(raw_author)?;
     if a.kind!="human-device-v1"||a.root_generation==0||a.root_generation>MAX_SAFE||!digest(&a.root_certificate_hash)||!digest(&a.device_certificate_hash)||!token(&a.device_id){return Err(HumanAuthorError::Author)}
@@ -188,13 +190,18 @@ pub fn verify_account_command(wire:&str,expected_audience:&[u16],proofs:Option<&
     if sha256_hex(root_wire.as_bytes())!=a.root_certificate_hash||sha256_hex(device_wire.as_bytes())!=a.device_certificate_hash{return Err(HumanAuthorError::Invalid)}
     let root=root_inner(root_wire,&expected,&principal,a.root_generation,None)?;let device=verify_device(device_wire,&root)?;
     if device.certificate.device_id!=a.device_id||device.certificate.device_signing_key!=kid||device.hash!=a.device_certificate_hash{return Err(HumanAuthorError::Author)}
-    // Reuse the ordinary structural schema without altering signed bytes or
-    // weakening its native direct-key verification entry point.
-    let WireValue::Object(mut fields)=command.clone()else{return Err(HumanAuthorError::Author)};
-    fields.retain(|(name,_)|!name.iter().copied().eq("author".encode_utf16()));
-    validate_command_schema(&WireValue::Object(fields),expected_audience,&principal).map_err(|_|HumanAuthorError::Author)?;
     let author=ResolvedCommandAuthor{kind:"human-device-v1",principal_actor_id:principal,actual_signer_id:actual,account_id:Some(root.certificate.account_id),root_generation:Some(a.root_generation),device_id:Some(a.device_id),root_certificate_hash:Some(a.root_certificate_hash),device_certificate_hash:Some(a.device_certificate_hash)};
-    Ok(VerifiedAccountCommand{command,author})
+    Ok(VerifiedAccountPayload{payload:command,author})
+}
+
+/// Only a command-schema-valid payload becomes a verified command. Typed public
+/// output consent reuses the author proof without becoming execution authority.
+pub fn verify_account_command(wire:&str,expected_audience:&[u16],proofs:Option<&AuthorProofContext>)->Result<VerifiedAccountCommand>{
+ let verified=verify_account_payload(wire,COMMAND_TYPE,expected_audience,proofs)?;
+ let WireValue::Object(mut fields)=verified.payload.clone()else{return Err(HumanAuthorError::Author)};
+ fields.retain(|(name,_)|!name.iter().copied().eq("author".encode_utf16()));
+ validate_command_schema(&WireValue::Object(fields),expected_audience,&verified.author.principal_actor_id).map_err(|_|HumanAuthorError::Author)?;
+ Ok(VerifiedAccountCommand{command:verified.payload,author:verified.author})
 }
 
 #[cfg(test)]mod tests{
