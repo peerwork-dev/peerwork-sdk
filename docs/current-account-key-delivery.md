@@ -1,7 +1,8 @@
-# Current Human account recipient candidate
+# Current Human account recipients
 
-Status: development candidate, not released SDK support. Account root workflows
-and complete service activation require a matching qualified release.
+Support contract: native SDK0.3.22 and matching account-enabled Control service.
+Check the release assets and target discovery; an SDK update does not activate
+Passkey accounts or perform another Peer's root maintenance.
 
 A persistent Owner authorization that follows current content keys belongs to
 the stable Human Peer. After a critical account-root replacement, its original

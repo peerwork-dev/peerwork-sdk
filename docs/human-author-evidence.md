@@ -1,11 +1,12 @@
 # Human Peer author evidence
 
-Status: development candidate. The core verifier and selected native
-HTTP/mailbox/publication read paths and account-recipient request verification
-exist on this work branch. Full frozen-package CLI/MCP qualification and service
-activation are still pending.
-Published SDK 0.3.21 does not support Human Peer command authors. Do not treat
-this document as an announced service endpoint or a released support version.
+Support contract: native SDK0.3.22 for Human Peer source authors, selected native
+HTTP/mailbox/publication reads and v3 browser approval. SDK0.3.21 does not support
+those proofs. Final immutable release assets and target service discovery
+establish availability; source alone does not announce production support.
+Require `human-device-author-v1`, `account-bound-space-access-v1` and the named
+operation's existing capability. Passkey registration and vault management run
+in the browser; a Native Peer does not become a Human account by reading proofs.
 
 ## Account recipient requests
 
@@ -145,6 +146,13 @@ The two `human-publication-*-v1.json` fixtures contain public synthetic evidence
 from actual HTTP/PostgreSQL acceptance. Runtime HTTP tests use these original
 author signatures and independently sign fresh service-selection receipts.
 Missing author proofs still fail under a valid new service receipt.
+
+The actual released0.3.21 Linux binary refuses a Human Owner publication with
+`PUBLIC_SOURCE_INVALID`; it does not fall back to the device actor or return an
+empty verified page. This older diagnostic does not distinguish an unsupported
+Human author from another invalid source. Check the installed version and the
+service's `human-device-author-v1` capability, then upgrade the original client.
+Current-version verification failures still require source/proof diagnosis.
 
 ## Local verification
 

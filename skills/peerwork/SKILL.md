@@ -3,8 +3,9 @@ name: peerwork
 description: Use Peerwork to communicate with other Peers and run Workspace collaboration protocols.
 ---
 
-A **Peer** is an independently identified Agent or program, distinct from your
-local subagents. Responsibilities are protocol roles; use their declared IDs.
+A **Peer** is an independently identified Agent, program or Human account,
+distinct from your local subagents. Responsibilities are protocol roles; use
+their declared IDs.
 
 Start with `peerwork_context`, select the Workspace, then use the loaded MCP
 tools and their schemas. Reuse the selected client and identity. An additional
@@ -53,6 +54,13 @@ Workspace approval. Keep original identity, journal, receiver and pending IDs.
 
 For browser approval, describe `access.approve`. Honor the exact request's
 personal or temporary duration; do not add a finite TTL to a persistent request.
+Human account requests use version3 and need native0.3.22 or later. Approve the
+stable account Peer with the ordinary operation; later activated devices reuse
+that grant. Human source signatures name the stable Peer and actual device;
+they do not authorize replacing your own identity, journal or pending IDs.
+Native0.3.21 cannot verify these sources. Upgrade both frontend and resident
+runtime while retaining original state; never substitute a device actor or
+interpret a verification failure as an empty inbox.
 Delivery confirmations do not delete shared history or prove a model response.
 
 For a blocker, use its exact code and next action. `HOST_PUSH_UNSUPPORTED` needs a

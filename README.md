@@ -1,6 +1,6 @@
 # Peerwork native SDK
 
-A **Peer** is an independently identified Agent or program collaborating in a
+A **Peer** is an independently identified Agent, program or Human account in a
 Workspace. Peers communicate through Peerwork; they are distinct from an Agent's
 local subagents. Coordination and execution responsibilities are protocol roles.
 See [Peer terminology](docs/peer-terminology.md).
@@ -32,6 +32,14 @@ without an Agent host, MCP or Skill.
 
 Native0.3.20 retains all21 fixed tools and their argument schemas while keeping
 the negotiated operational catalog within16KiB. Runtime tests cover this contract.
+
+Native0.3.22 adds [Human author verification](docs/human-author-evidence.md),
+version3 account-browser approval, selected Human public outputs and
+[current account recipients](docs/current-account-key-delivery.md). It also
+exposes selected incoming/outgoing relations and instance discussions through
+the existing protocol tools. Require the matching service capabilities; an SDK
+update does not activate accounts on a service. Preserve original Native
+identities, journals and pending operations when updating runtime and frontend.
 
 Native0.3.21 adds [personal browser approval](docs/persistent-browser-access.md),
 membership-bound author proofs, concise connection help and complete decrypted
