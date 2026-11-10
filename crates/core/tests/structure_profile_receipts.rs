@@ -963,3 +963,28 @@ fn member_availability_receipts_bind_self_revision_expiry_and_independent_host_s
  let check=|r:&Value|verify_http_response_for_prepared(&receipt(&service,&query,selected.proof().intent_digest(),r),selected.proof(),&kid);check(&page).unwrap();
  let mut wrong=page;wrong["members"][0]["availability"]["state"]=json!("AVAILABLE");assert!(check(&wrong).is_err(),"host IDLE cannot override expired willingness");
 }
+
+#[test]
+fn selected_relation_pages_bind_direction_scope_and_exact_endpoint_even_with_fresh_service_receipts() {
+    let reader=SigningKey::from_bytes(&[21;32]);let service=SigningKey::from_bytes(&[22;32]);let kid=key_id(&service.verifying_key().to_bytes());
+    let wire=serde_json::to_vec(&json!({"semantics":"peerwork.kernel.v1","audience":"structure-test","command_type":"peerwork.kernel-command.v1+jws","receipt_type":"peerwork.kernel-receipt.v1+jws","receipt_public_key":kid,"limits":{"max":1}})).unwrap();
+    let discovery=parse_discovery_wire(&wire,wire.len()).unwrap();
+    for direction in ["OUTGOING","INCOMING"] {
+        let mut query=command(&reader,"structure.record.relations.read");query["body"]=json!({"profile":PROFILE,"record_id":key_id(&[31;32]),"revision":3,"direction":direction,"limit":2});
+        let prepared=prepare_signed_command_wire(&parse_wire_json_bounded(&serde_json::to_vec(&query).unwrap(),40,180000).unwrap(),&reader,&discovery,None).unwrap();
+        let selected=json!({"record_id":query["body"]["record_id"],"revision":3,"instance_id":query["instance_id"],"execution_context_id":query["instance_id"],"protocol_digest":query["protocol_digest"],"entity_id":key_id(&[32;32]),"schema":"entry","state":"READABLE"});
+        let mut related=selected.clone();related["record_id"]=json!(key_id(&[33;32]));related["instance_id"]=json!(key_id(&[34;32]));related["execution_context_id"]=related["instance_id"].clone();related["protocol_digest"]=json!("b".repeat(64));
+        let edge=if direction=="OUTGOING"{json!({"kind":"evidence_for","source":selected,"target":related})}else{json!({"kind":"evidence_for","source":related,"target":selected})};
+        let result=json!({"profile":PROFILE,"assurance":"BACKEND_CURRENT_STATE","workspace_id":query["workspace_id"],"instance_id":query["instance_id"],"execution_context_id":query["instance_id"],"protocol_digest":query["protocol_digest"],"record_id":query["body"]["record_id"],"revision":3,"direction":direction,"consistency":"LIVE_KEYSET","relations":[edge],"next_cursor":null});
+        let verify=|value:&Value|verify_http_response_for_prepared(&receipt(&service,&query,prepared.proof().intent_digest(),value),prepared.proof(),&kid);
+        verify(&result).unwrap();
+        for field in ["record_id","revision","instance_id","execution_context_id","protocol_digest","state"] {
+            let mut changed=result.clone();let endpoint=if direction=="OUTGOING"{"source"}else{"target"};
+            changed["relations"][0][endpoint][field]=match field {"revision"=>json!(4),"protocol_digest"=>json!("c".repeat(64)),"state"=>json!("WITHDRAWN"),_=>json!(key_id(&[35;32]))};
+            assert!(verify(&changed).is_err(),"{direction}: selected {field}");
+        }
+        let mut changed=result.clone();changed["direction"]=json!(if direction=="OUTGOING"{"INCOMING"}else{"OUTGOING"});assert!(verify(&changed).is_err());
+        changed=result.clone();changed["relations"].as_array_mut().unwrap().push(result["relations"][0].clone());assert!(verify(&changed).is_err(),"duplicate edge");
+        changed=result.clone();let other=if direction=="OUTGOING"{"target"}else{"source"};changed["relations"][0][other]["state"]=json!("WITHDRAWN");verify(&changed).unwrap();
+    }
+}

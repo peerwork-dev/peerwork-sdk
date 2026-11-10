@@ -563,16 +563,22 @@ fn verify_structure_read_authors(result:&WireValue,command:&WireValue,prepared:&
         "structure.record.relations.read"=>{
             let query=command.get("body").ok_or_else(invalid)?;
             let selected=query.get("execution_context_id").unwrap_or(command.get("instance_id").ok_or_else(invalid)?);
-            if result.get("instance_id")!=command.get("instance_id")||result.get("execution_context_id")!=Some(selected)||result.get("protocol_digest")!=command.get("protocol_digest")||result.get("record_id")!=query.get("record_id")||result.get("revision")!=query.get("revision")||ascii_field(result,"consistency").as_deref()!=Some("IMMUTABLE_EDGES_CURRENT_TARGET_STATE"){return Err(invalid());}
+            if result.get("instance_id")!=command.get("instance_id")||result.get("execution_context_id")!=Some(selected)||result.get("protocol_digest")!=command.get("protocol_digest")||result.get("record_id")!=query.get("record_id")||result.get("revision")!=query.get("revision")||ascii_field(result,"consistency").as_deref()!=Some("LIVE_KEYSET"){return Err(invalid());}
             let Some(WireValue::Array(edges))=result.get("relations") else{return Err(invalid());};
             if edges.len()>number(query,"limit").unwrap_or(16) as usize||edges.len()>32{return Err(invalid());}
+            let direction=ascii_field(query,"direction").unwrap_or_else(||"OUTGOING".into());
+            if !matches!(direction.as_str(),"OUTGOING"|"INCOMING")||ascii_field(result,"direction").as_ref()!=Some(&direction){return Err(invalid());}
             let mut seen=std::collections::BTreeSet::new();
             for edge in edges{
                 let kind=ascii_field(edge,"kind").filter(|value|!value.is_empty()&&value.len()<=480).ok_or_else(invalid)?;
-                let target=edge.get("target").ok_or_else(invalid)?;
-                for field in ["instance_id","execution_context_id","entity_id","record_id"]{if ascii_field(target,field).is_none_or(|value|!valid_token(&value)){return Err(invalid());}}
-                if ascii_field(target,"protocol_digest").is_none_or(|value|!valid_digest(&value))||number(target,"revision").is_none_or(|value|value==0)||ascii_field(target,"schema").is_none_or(|value|value.is_empty()||value.len()>480)||!matches!(ascii_field(target,"state").as_deref(),Some("READABLE"|"WITHDRAWN")){return Err(invalid());}
-                if !seen.insert((kind,ascii_field(target,"record_id"),number(target,"revision"))){return Err(invalid());}
+                let source=edge.get("source").ok_or_else(invalid)?;let target=edge.get("target").ok_or_else(invalid)?;
+                for record in [source,target]{
+                    for field in ["instance_id","execution_context_id","entity_id","record_id"]{if ascii_field(record,field).is_none_or(|value|!valid_token(&value)){return Err(invalid());}}
+                    if ascii_field(record,"protocol_digest").is_none_or(|value|!valid_digest(&value))||number(record,"revision").is_none_or(|value|value==0)||ascii_field(record,"schema").is_none_or(|value|value.is_empty()||value.len()>480)||!matches!(ascii_field(record,"state").as_deref(),Some("READABLE"|"WITHDRAWN")){return Err(invalid());}
+                }
+                let focus=if direction=="OUTGOING"{source}else{target};
+                if focus.get("record_id")!=query.get("record_id")||focus.get("revision")!=query.get("revision")||focus.get("instance_id")!=command.get("instance_id")||focus.get("execution_context_id")!=Some(selected)||focus.get("protocol_digest")!=command.get("protocol_digest")||ascii_field(focus,"state").as_deref()!=Some("READABLE"){return Err(invalid());}
+                if !seen.insert((kind,ascii_field(source,"record_id"),ascii_field(target,"record_id"),number(target,"revision"))){return Err(invalid());}
             }
             match result.get("next_cursor"){Some(WireValue::Null)=>Ok(()),Some(value) if value.as_string().is_some_and(|cursor|!cursor.is_empty()&&cursor.len()<=8192)=>Ok(()),_=>Err(invalid())}
         },

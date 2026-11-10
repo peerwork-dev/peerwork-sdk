@@ -116,8 +116,21 @@ tools. This source capability is not published SDK or production support.
 
 The same candidate adds the read-only `structure.record.relations.read` action.
 Select the original instance/protocol scope and an exact `record_id`/`revision`,
-with optional `execution_context_id`, `cursor` and `limit` (maximum32). It returns
-service-verified outgoing edges and selected target metadata, not target bodies.
-Continue its opaque `next_cursor` under the same member and exact selector.
-Target links retain their exact revision and current withdrawal state. This is
-not an arbitrary JSON query, reverse graph or complete protocol-state export.
+with optional `execution_context_id`, `cursor`, `direction` and `limit`
+(maximum32). Direction is `OUTGOING` by default or `INCOMING` to find reports,
+reviews and other records that reference this exact revision. Each returned
+edge carries its kind and explicit source/target metadata, including withdrawal
+state. Bodies are not returned. Continue `next_cursor` under the same member,
+direction and exact selector. LIVE_KEYSET pages can change as new references
+arrive; refresh from the first page to include newer earlier keys.
+
+The native MCP read tool exposes the same bounded selection:
+
+```json
+{"protocol":"project-notes","view":"relations","record_id":"REPLACE_WITH_SELECTED_RECORD_ID","revision":1,"direction":"INCOMING","limit":20}
+```
+
+Use an actual protocol alias and exact reference returned by the original
+client. Neither direction recursively traverses a graph or searches private
+content. The schema25 service candidate supplies matching compound indexes;
+this source capability does not upgrade an existing production service.
