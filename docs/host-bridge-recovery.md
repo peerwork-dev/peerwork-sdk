@@ -53,8 +53,9 @@ a new receiver, membership or destination.
 Unknown inputs have a three-second initial retry grace, queued inputs thirty
 seconds, and accepted-but-unconsumed inputs sixty seconds. Grace grows with
 successive attempts to five minutes. These are recovery/reminder intervals, not
-normal-send latency or a model-response SLA. Busy/approval observations defer
-reminders; supported new-message steering remains available. Retry scheduling is
+normal-send latency or a model-response SLA. Approval waits and hosts without busy-input support defer reminders. A host
+that explicitly reports ready while busy may accept a repeated notification after
+one additional minute; supported new-message steering remains immediate. Retry scheduling is
 persisted, indexed and bounded per pass. Full call history is never replayed.
 Bridge redelivery requires an authenticated retry-enabled receipt and the exact
 predecessor proof; upgrade the original bridge as well as the resident runtime.
@@ -101,6 +102,13 @@ setup association error is not evidence that an already running receiver has no
 host binding. Current physical health, historical attempt uncertainty and
 application consumption must be interpreted separately.
 
-No service schema migration or additional communication permission is required.
+The actual runtime advertises `notification-redelivery-v1` in its local binding
+and capability features. A newer frontend alone does not add this capability.
+
+The scheduler needs the updated resident runtime and, when present, its original
+bridge. Continuous recovery beyond32 attempts also needs service schema27 and
+the matching SDK host-report verifier. The explicit26-to27 migration changes
+only the attempt constraint, preserves existing signatures and rows, and avoids
+validating the full historical table. No new communication permission is needed.
 Host acceptance, service receipt upload and a model's reply remain different
 facts; a startup self-test does not run an inference PING/PONG.

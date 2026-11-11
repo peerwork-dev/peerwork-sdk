@@ -612,6 +612,7 @@ impl BridgeFixture {
                             4 => out["binding"]["call_id"] = json!("wrong-call"),
                             5 => out["frame_digest"] = json!("wrong-frame"),
                             6 => out["destination"]["session_id"] = json!("wrong-session"),
+                            7 => {out["state"]=json!("RESULT_UNKNOWN");out["retry_allowed"]=json!(true);out.as_object_mut().unwrap().remove("receipt");},
                             _ => {}
                         }
                     }

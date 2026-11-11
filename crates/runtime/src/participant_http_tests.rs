@@ -2992,6 +2992,14 @@ async fn native_presence_selftests_empty_receiver_imports_authorized_keys_and_tr
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires synthetic PostgreSQL, real product HTTP and synthetic bridge protocol"]
 async fn runtime_bridge_reconciles_only_original_bound_receipts_across_recipient_restart() {
+    exercise_bridge_recovery(false).await;
+}
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires synthetic PostgreSQL and real product HTTP"]
+async fn runtime_bridge_redelivers_unhandled_notification_and_stops_after_consumption() {
+    exercise_bridge_recovery(true).await;
+}
+async fn exercise_bridge_recovery(redeliver:bool) {
     use crate::{
         communication_host::tests::BridgeFixture,
         communication_runtime::{self as ipc, ClientConfig, EngineConfig, RuntimeConfig},
@@ -3185,6 +3193,32 @@ async fn runtime_bridge_reconciles_only_original_bound_receipts_across_recipient
         "RESULT_UNKNOWN",
     )
     .await;
+    if redeliver {
+        bridge.receipt_state.store(7,Ordering::SeqCst);
+        let accepted=wait_host(&ready.client_endpoints["worker"],&options,&items[0],"HOST_ACCEPTED").await;
+        assert_ne!(accepted["call_id"],original["call_id"]);assert_eq!(accepted["frame_digest"],original["frame_digest"]);
+        wait_host(&ready.client_endpoints["worker"],&options,&items[1],"HOST_ACCEPTED").await;
+        let calls=bridge.calls();let attempts=calls.iter().filter(|v|v["method"]=="deliver"&&v["body"]["binding"]["sequence"]==items[0].sequence).collect::<Vec<_>>();
+        assert_eq!(attempts.len(),2);assert_eq!(attempts[0]["body"]["message"],attempts[1]["body"]["message"]);
+        assert_eq!(attempts[1]["body"]["retry_of"],attempts[0]["body"]["binding"]);
+        let consumed=ipc::call(&ready.client_endpoints["worker"],json!({"method":"consume","options":options,"items":items})).await.unwrap();assert_eq!(consumed["ok"],true,"{consumed}");
+        tokio::time::timeout(Duration::from_secs(15),async{loop{
+            let counts=service.counts().await;
+            if counts["ack_batches"]["APPLICATION_CONSUMED"]["items"].as_u64().unwrap_or(0)>=2 {break;}
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }}).await.unwrap();
+        stop.cancel();server.await.unwrap().unwrap();
+        let before=bridge.calls().iter().filter(|v|v["method"]=="deliver").count();
+        let stop=KernelCancellationToken::new();let(tx,rx)=oneshot::channel();let server=tokio::spawn(ipc::serve(runtime,stop.clone(),tx));let ready=rx.await.unwrap().unwrap();
+        tokio::time::timeout(Duration::from_secs(15),async{loop{
+            let state=ipc::call(&ready.admin_endpoint,json!({"method":"status"})).await.unwrap();
+            if state["value"]["hosts"][0]["host_observation"]["ready"]==true {break;}
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }}).await.unwrap();
+        assert_eq!(bridge.calls().iter().filter(|v|v["method"]=="deliver").count(),before,"consumption survives recipient restart");
+        assert_eq!(service.counts().await["actions"]["structure.message.send"],2,"host retries never repeat a business submission");
+        stop.cancel();server.await.unwrap().unwrap();owner.close().await.unwrap();return;
+    }
     // A malicious/mismatched receipt cannot release the original lane.
     bridge.receipt_state.store(4, Ordering::SeqCst);
     let seen = bridge

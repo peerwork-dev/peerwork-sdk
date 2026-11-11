@@ -881,8 +881,16 @@ async fn run_owned(
                             next=(index+1)%watches.len();return Ok(true);
                         }
                     }
-                    let busy=status.lock().ok().is_some_and(|s|matches!(s["host_observation"]["execution_state"].as_str(),Some("BUSY"|"WAITING_APPROVAL")));
-                    if allow_retry && call.retry_at<=crate::participant_store::now() && !busy { recovery_call=Some(call); }
+                    let now=crate::participant_store::now();
+                    let eligible=status.lock().ok().is_some_and(|s| {
+                        let host=&s["host_observation"];
+                        match host["execution_state"].as_str() {
+                            Some("WAITING_APPROVAL")=>false,
+                            Some("BUSY")=>host["ready"]==true && now>=call.retry_at.saturating_add(60_000),
+                            _=>true,
+                        }
+                    });
+                    if allow_retry && call.retry_at<=now && eligible { recovery_call=Some(call); }
                 }
             }
             let (item,frame) = if let Some(call)=&recovery_call {

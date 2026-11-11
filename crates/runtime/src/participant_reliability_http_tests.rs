@@ -459,3 +459,46 @@ async fn stop_attach_while_original_pulse_is_in_flight_preserves_current_receive
     assert_eq!(c.service.counts().await["claim_commands"].as_array().unwrap().len(),1);
     c.client.close().await.unwrap();
 }
+
+#[tokio::test(flavor="multi_thread",worker_threads=2)]
+#[ignore="requires explicit synthetic PostgreSQL and real product HTTP fixture"]
+async fn direct_codex_lost_acceptance_redelivers_same_notification_without_connect_or_rebind() {
+    use crate::{communication_host::tests::CodexFixture,participant_dispatch::{self,HostConfig,HostSubscription},participant_inbox::HostBinding};
+    use std::sync::atomic::Ordering;
+    let fixture=CodexFixture::start();let adapter=fixture.config();
+    let destination=HostBinding::new(json!({"host":"CODEX_APP_SERVER","conversation_id":"existing-thread","session_id":adapter["expected_session_id"],"endpoint":adapter["endpoint"]})).unwrap();
+    let c=Cohort::with_destination(1,Some(destination.digest)).await;
+    let options=c.members[0].options.clone();let cancel=KernelCancellationToken::new();
+    let configs=[HostConfig{name:"same-codex".into(),adapter,subscriptions:vec![HostSubscription{client:"original".into(),client_generation:None,watch:options.clone()}]}];
+    let clients=BTreeMap::from([("original".into(),c.client.clone())]);
+    let initial=c.client.inbox(&options,0,32).await.unwrap();
+    let initial=initial.items.iter().map(|item|DeliveryReference{sequence:item["sequence"].as_u64().unwrap(),delivery_id:item["delivery_id"].as_str().unwrap().into()}).collect::<Vec<_>>();
+    if !initial.is_empty(){c.client.consume(&options,initial).await.unwrap();}
+    let sent=c.send(0,"one-business-message").await;
+    let item=tokio::time::timeout(Duration::from_secs(15),async{loop{
+        let page=c.client.inbox(&options,0,32).await.unwrap();
+        if let Some(item)=page.items.iter().find(|v|v["envelope"]["message"]["message_id"]==sent["message_id"]){break DeliveryReference{sequence:item["sequence"].as_u64().unwrap(),delivery_id:item["delivery_id"].as_str().unwrap().into()};}
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }}).await.unwrap();
+    fixture.lose_next_ack.store(true,Ordering::SeqCst);
+    let hosts=participant_dispatch::start(&configs,&clients,c._temp.path(),cancel.clone()).unwrap();
+    tokio::time::timeout(Duration::from_secs(15),async{loop{
+        if c.client.delivery_status(&options,item.clone()).await.unwrap()["host"]=="RESULT_UNKNOWN" {break;}
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }}).await.unwrap();
+    assert_eq!(fixture.calls().iter().filter(|v|matches!(v["method"].as_str(),Some("turn/start"|"turn/steer"))).count(),1);
+    // The fixture was actually processing the first input. Finish that turn;
+    // recovery must not require Connect, a new session or manual replay.
+    *fixture.status_override.lock().unwrap()=Some("idle".into());
+    let accepted=tokio::time::timeout(Duration::from_secs(20),async{loop{
+        let status=c.client.delivery_status(&options,item.clone()).await.unwrap();
+        if status["host"]=="HOST_ACCEPTED" {break status;}
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }}).await.unwrap();
+    assert_eq!(accepted["delivery"]["attempt"],2,"the missing original reply must recover automatically");
+    let inputs=fixture.calls().into_iter().filter(|v|matches!(v["method"].as_str(),Some("turn/start"|"turn/steer"))).collect::<Vec<_>>();
+    assert_eq!(inputs.len(),2);assert_eq!(inputs[0]["params"]["clientUserMessageId"],inputs[1]["params"]["clientUserMessageId"]);assert_eq!(inputs[0]["params"]["input"],inputs[1]["params"]["input"]);
+    c.client.consume(&options,vec![item]).await.unwrap();
+    assert_eq!(c.service.counts().await["actions"]["structure.message.send"],1);
+    cancel.cancel();for host in hosts{host.task.await.unwrap();}c.client.close().await.unwrap();
+}

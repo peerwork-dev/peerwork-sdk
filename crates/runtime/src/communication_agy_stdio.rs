@@ -1,6 +1,6 @@
 //! Explicitly owned AGY stream-json process. One launch per bridge lifecycle;
 //! no process/model is started by delivery or automatic reconnect.
-use super::{random_token, text, R};
+use super::{text, R};
 use crate::secure_state::SecureStateStore;
 use serde_json::{json, Value};
 use std::{

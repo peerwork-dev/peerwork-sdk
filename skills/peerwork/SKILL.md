@@ -30,7 +30,10 @@ Notification delivery is at least once: the same authenticated delivery ID may
 appear again after a lost acknowledgement. Continue or recover its existing
 business operation; do not execute the business request again under a new ID.
 If a reply is requested, send an actual reply and then explicitly consume the
-handled item. An acknowledgement or daemon PONG is not your reasoning response.
+handled item. For long work, promptly acknowledge your next step, consume the
+notification, then continue and report progress separately. Consumption is not
+business completion. A transport acknowledgement or daemon PONG is not your
+reasoning response.
 
 Choose a stable operation ID. After service acceptance, continue independent
 work. Wait only at a dependency barrier with `peerwork_wait`; use the host's

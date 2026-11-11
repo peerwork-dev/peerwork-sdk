@@ -13,7 +13,7 @@ pub(super) fn retry_delay(state: &str, attempt: u64) -> i64 {
 }
 
 impl InboxStore {
-    pub(super) fn host_delivery_consumed(
+    pub(super) fn host_delivery_completed(
         &mut self, namespace: &str, options: &WatchOptions, call: &HostCall,
     ) -> Result<bool> {
         self.host_original_scope(namespace, options, call)?;
@@ -23,9 +23,12 @@ impl InboxStore {
             "SELECT EXISTS(SELECT 1 FROM inbox_items WHERE workspace=?1 AND mailbox=?2 AND sequence=?3 AND delivery_id=?4 AND consume_requested=1) OR EXISTS(SELECT 1 FROM inbox_consumed WHERE workspace=?1 AND mailbox=?2 AND sequence=?3 AND delivery_id=?4)",
             params![options.workspace_id, options.mailbox_id, sequence, id], |r|r.get(0),
         ).map_err(db_error)?;
-        if !consumed { return Ok(false); }
+        let retired=sequence<=self.host_retired(options,options.host_destination.as_deref().unwrap_or(""))?.0;
+        let terminal:bool=self.db.query_row("SELECT EXISTS(SELECT 1 FROM inbox_items WHERE workspace=?1 AND mailbox=?2 AND sequence=?3 AND delivery_id=?4 AND status<>'PENDING')",params![options.workspace_id,options.mailbox_id,sequence,id],|r|r.get(0)).map_err(db_error)?;
+        if !consumed && !retired && !terminal { return Ok(false); }
+        let disposition=if consumed {"CONSUMED"}else if retired {"RETIRED"}else{"TERMINAL"};
         let tx = self.db.unchecked_transaction().map_err(db_error)?;
-        tx.execute("UPDATE inbox_host_calls SET delivery_state='CONSUMED' WHERE workspace=?1 AND mailbox=?2 AND sequence=?3 AND delivery_id=?4 AND host=?5", params![options.workspace_id,options.mailbox_id,sequence,id,options.host_destination]).map_err(db_error)?;
+        tx.execute("UPDATE inbox_host_calls SET delivery_state=?6 WHERE workspace=?1 AND mailbox=?2 AND sequence=?3 AND delivery_id=?4 AND host=?5", params![options.workspace_id,options.mailbox_id,sequence,id,options.host_destination,disposition]).map_err(db_error)?;
         let lane: Option<String> = tx.query_row("SELECT lane FROM inbox_host_lanes WHERE workspace=?1 AND mailbox=?2 AND sequence=?3",params![options.workspace_id,options.mailbox_id,sequence],|r|r.get(0)).optional().map_err(db_error)?;
         tx.execute("UPDATE inbox_host_lanes SET state='CONSUMED' WHERE workspace=?1 AND mailbox=?2 AND sequence=?3",params![options.workspace_id,options.mailbox_id,sequence]).map_err(db_error)?;
         tx.execute("DELETE FROM inbox_host_ready WHERE workspace=?1 AND mailbox=?2 AND sequence=?3",params![options.workspace_id,options.mailbox_id,sequence]).map_err(db_error)?;
@@ -44,7 +47,7 @@ impl InboxStore {
         if call.scope != original.scope || call.frame_digest != original.frame_digest {
             return Err(failure("HOST_EVIDENCE_SCOPE_MISMATCH"));
         }
-        if self.host_delivery_consumed(namespace, options, &call)? { return Ok(None); }
+        if self.host_delivery_completed(namespace, options, &call)? { return Ok(None); }
         let (active, retry_at): (bool,i64) = self.db.query_row("SELECT delivery_state='ACTIVE',retry_at FROM inbox_host_calls WHERE call_id=?1",[&call.call_id],|r|Ok((r.get(0)?,r.get(1)?))).map_err(db_error)?;
         if !active || !matches!(call.state.as_str(),"RESULT_UNKNOWN"|"HOST_QUEUED"|"HOST_ACCEPTED") || retry_at > crate::participant_store::now() { return Ok(None); }
         let pins = self.pins(&options.workspace_id,&options.mailbox_id)?.ok_or_else(invalid)?;
@@ -123,6 +126,8 @@ mod tests {
         f.finish(&first,HostOutcome::Unknown{code:"HOST_ACK_UNKNOWN".into()});
         assert!(f.store.host_retry(&f.identity,NS,&f.options,&first).unwrap().is_none(),"respect the initial recovery grace");
         f.retry_now();
+        for index in ["inbox_host_current_unknown","inbox_host_original_active","inbox_host_delivery_recovery"] {f.store.db.execute_batch(&format!("DROP INDEX {index}")).unwrap();}
+        for column in ["retry_at","retry_of","diagnostic","delivery_state"] {f.store.db.execute_batch(&format!("ALTER TABLE inbox_host_calls DROP COLUMN {column}")).unwrap();}
         let mut reopened=InboxStore::open_local(&f.root.path().join("inbox"),&f.identity,"https://example.invalid/").unwrap();
         let original=reopened.host_reconcile_due(&f.identity,NS,&f.options).unwrap().unwrap();
         let retry=reopened.host_retry(&f.identity,NS,&f.options,&original).unwrap().unwrap();
@@ -162,9 +167,26 @@ mod tests {
     #[test]
     fn accepted_input_is_not_a_consumption_receipt_and_has_a_longer_reminder_grace() {
         let mut f=Fixture::new();let first=f.begin();f.finish(&first,HostOutcome::HostAccepted{receipt:"host-only".into()});
-        assert!(f.store.host_retry(&f.identity,NS,&f.options,&first).unwrap().is_none());f.retry_now();
+        assert!(f.store.host_retry(&f.identity,NS,&f.options,&first).unwrap().is_none());
+        f.store.db.execute("UPDATE inbox_host_calls SET retry_at=?1,reconcile_at=?1",[crate::participant_store::now()+172_800_000]).unwrap();
+        let repaired=f.store.host_reconcile_due(&f.identity,NS,&f.options).unwrap().unwrap();
+        assert!(repaired.retry_at<=crate::participant_store::now(),"a persisted deadline after a backwards clock jump cannot stall recovery");
         let reminder=f.store.host_retry(&f.identity,NS,&f.options,&first).unwrap().unwrap();
         assert_eq!(reminder.frame["message_id"],first.frame["message_id"]);
         assert!(retry_delay("HOST_ACCEPTED",1)>retry_delay("RESULT_UNKNOWN",1));assert_eq!(retry_delay("RESULT_UNKNOWN",1000),300000);
     }
+    #[test]
+    fn confirmed_retirement_closes_old_unknown_after_bounded_consumption_receipts_are_trimmed() {
+        let mut f=Fixture::new();let first=f.begin();f.finish(&first,HostOutcome::Unknown{code:"HOST_ACK_UNKNOWN".into()});
+        f.store.db.execute("INSERT INTO inbox_consumed VALUES(?1,?2,1,?3)",params![f.options.workspace_id,f.options.mailbox_id,f.items[0].delivery_id]).unwrap();
+        f.store.db.execute("DELETE FROM inbox_items WHERE sequence=1",[]).unwrap();
+        let plan=f.store.host_retirement_plan(&f.identity,NS,&f.options).unwrap().unwrap();
+        f.store.host_retirement_commit(&f.identity,NS,&f.options,&plan).unwrap();
+        f.store.db.execute("DELETE FROM inbox_consumed",[]).unwrap();f.retry_now();
+        assert!(f.store.host_reconcile_due(&f.identity,NS,&f.options).unwrap().is_none());
+        let status=f.store.host_status(&f.identity,NS,&f.options,&f.items[0]).unwrap();
+        assert_eq!(status["host"],"RESULT_UNKNOWN");assert_eq!(status["delivery"]["state"],"RETIRED");
+        assert_eq!(f.store.host_summary(&f.identity,NS,&f.options).unwrap()["acceptance_unresolved"],false);
+    }
+
 }

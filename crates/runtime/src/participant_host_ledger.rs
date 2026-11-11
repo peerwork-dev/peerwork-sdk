@@ -174,6 +174,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(store.host_due(ns, &options, 32).unwrap()[0].sequence, 3);
+        store.db.execute("UPDATE inbox_host_calls SET reconcile_at=0 WHERE call_id=?1",[&first.call_id]).unwrap();
         let observed=store.host_reconcile_due(&identity,ns,&options).unwrap().unwrap();
         assert_eq!(observed.call_id,first.call_id);
         assert_eq!(observed.frame,first.frame);
@@ -686,10 +687,14 @@ impl InboxStore {
             }
         }
         let Some((id,_,failures))=selected else{return Ok(None);};
-        let call=self.host_call(identity,&id)?;
+        let mut call=self.host_call(identity,&id)?;
         if call.scope["namespace"]!=namespace||call.scope["membership_id"]!=options.membership_id||call.scope["destination_digest"]!=host {return Err(failure("HOST_EVIDENCE_SCOPE_MISMATCH"));}
-        if self.host_delivery_consumed(namespace, options, &call)? { return Ok(None); }
-        let delay=if call.state == "HOST_ACCEPTED" { 3000 } else { (500i64<<failures.min(6)).min(30000) };
+        if self.host_delivery_completed(namespace, options, &call)? { return Ok(None); }
+        if call.retry_at>now.saturating_add(300_000) {
+            self.db.execute("UPDATE inbox_host_calls SET retry_at=?2 WHERE call_id=?1",params![call.call_id,now]).map_err(db_error)?;
+            call.retry_at=now;
+        }
+        let delay=if call.state == "HOST_ACCEPTED" { 3000 } else { (500i64<<failures.min(6)).min(3000) };
         self.db.execute("UPDATE inbox_host_calls SET reconcile_at=?2,reconcile_failures=min(reconcile_failures+1,64) WHERE call_id=?1",params![id,now.saturating_add(delay)]).map_err(db_error)?;
         Ok(Some(call))
     }
@@ -888,7 +893,7 @@ impl InboxStore {
         let attempts:Option<u64>=tx.query_row("SELECT attempts FROM inbox_host_ready WHERE workspace=?1 AND mailbox=?2 AND sequence=?3 AND delivery_id=?4",params![options.workspace_id,options.mailbox_id,item.sequence,item.delivery_id],|r|r.get(0)).optional().map_err(db_error)?;
         attempts.ok_or_else(|| failure("HOST_WORK_NOT_READY"))?;
         let attempts:u64=tx.query_row("SELECT COALESCE(max(attempt),0) FROM inbox_host_calls WHERE workspace=?1 AND mailbox=?2 AND sequence=?3",params![options.workspace_id,options.mailbox_id,item.sequence],|r|r.get(0)).map_err(db_error)?;
-        if attempts >= 9_007_199_254_740_991 {
+        if attempts >= i32::MAX as u64 {
             return Err(failure("HOST_ATTEMPT_LIMIT"));
         }
         let (bytes, rows): (usize, usize) = tx
@@ -1115,7 +1120,7 @@ impl InboxStore {
         let pending:Option<String>=self.db.query_row("SELECT call_id FROM inbox_host_calls WHERE workspace=?1 AND mailbox=?2 AND state='RESULT_UNKNOWN' AND delivery_state='ACTIVE' AND json_extract(scope,'$.namespace')=?3 AND json_extract(scope,'$.membership_id')=?4 LIMIT 1",params![options.workspace_id,options.mailbox_id,namespace,options.membership_id],|r|r.get(0)).optional().map_err(db_error)?;
         if let Some(id)=pending {
             let call=self.host_call(identity,&id)?;self.host_original_scope(namespace,options,&call)?;
-            return Ok(json!({"workspace_id":options.workspace_id,"mailbox_id":options.mailbox_id,"acceptance_unresolved":true,"code":"HOST_ACCEPTANCE_UNRESOLVED","call_id":call.call_id,"sequence":call.scope["sequence"],"original_destination_digest":call.scope["destination_digest"],"binding_version":call.scope["binding_version"]}));
+            return Ok(json!({"workspace_id":options.workspace_id,"mailbox_id":options.mailbox_id,"acceptance_unresolved":true,"code":"HOST_ACCEPTANCE_UNRESOLVED","call_id":call.call_id,"sequence":call.scope["sequence"],"original_destination_digest":call.scope["destination_digest"],"binding_version":call.scope["binding_version"],"delivery_state":"RECOVERING","attempt":call.attempt,"retry_at":call.retry_at}));
         }
         Ok(json!({"workspace_id":options.workspace_id,"mailbox_id":options.mailbox_id,"acceptance_unresolved":false}))
     }

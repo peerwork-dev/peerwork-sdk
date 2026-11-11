@@ -695,7 +695,10 @@ fn provider_loop(config:Value,executor:tokio::runtime::Handle,progress:crate::co
             let result=if let Some(frame)=&request.frame {
                 let delivered=selected.deliver(&request.binding,frame);
                 let disconnect=delivered.as_ref().is_err_and(|code|!matches!(*code,"HOST_NOT_READY"|"HOST_INPUT_TOO_LARGE"|"HOST_INPUT_CONFLICT"|"HOST_INBOX_FULL") && !(config["kind"]=="agy-stdio" && *code=="HOST_ACK_UNKNOWN"));
-                if config["kind"]=="agy-stdio" && delivered.is_err(){pending_receipt=Some((request.binding.clone(),frame.clone()));}
+                if config["kind"]=="agy-stdio" {
+                    if matches!(delivered,Err("HOST_ACK_UNKNOWN")){pending_receipt=Some((request.binding.clone(),frame.clone()));}
+                    else if delivered.is_ok(){pending_receipt=None;}
+                }
                 let destination=selected.destination.clone();
                 #[cfg(test)] if config["_test_panic_after_input"]==true&&!injected {injected=true;panic!("injected provider failure after possible input");}
                 let value=serde_json::to_value(crate::participant_dispatch::host_outcome(config["kind"].as_str().unwrap_or(""),delivered)).map_err(|_|"BRIDGE_OUTCOME_INVALID")?;
@@ -704,7 +707,7 @@ fn provider_loop(config:Value,executor:tokio::runtime::Handle,progress:crate::co
             }else{
                 let observed=selected.health(&request.binding);
                 let recovered=if let Some((binding,frame))=&pending_receipt {
-                    selected.reconcile(binding,frame["message_id"].as_str().unwrap_or(""),binding["frame_digest"].as_str().unwrap_or("")).ok().flatten().map(|outcome|json!({"binding":binding,"message_id":frame["message_id"],"frame_digest":binding["frame_digest"],"outcome":outcome}))
+                    selected.reconcile(binding,frame["message_id"].as_str().unwrap_or(""),binding["frame_digest"].as_str().unwrap_or("")).ok().flatten().map(|outcome|json!({"binding":binding,"message_id":frame["message_id"],"frame_digest":binding["frame_digest"],"outcome":crate::participant_dispatch::host_outcome("agy-stdio",Ok(outcome))}))
                 }else{None};
                 match (observed,recovered) {
                     (Ok(mut health),receipt)=>{if let Some(receipt)=receipt{health["recovered_input"]=receipt;}Ok(health)},

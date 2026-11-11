@@ -1219,3 +1219,38 @@ fn controlled_successor_preserves_unknown_receipt_and_checks_exact_frozen_source
     assert_eq!(store.get(&successor,message,digest).unwrap().unwrap()["receipt"],"successor-accepted");
     assert_eq!(store.source_available(&binding).unwrap_err(),"HOST_ORIGINAL_INPUT_REQUIRES_RECOVERY");
 }
+
+#[cfg(unix)]
+#[tokio::test(flavor="multi_thread",worker_threads=2)]
+async fn managed_agy_bridge_reconciles_late_acceptance_without_relaunch_or_second_input() {
+    use std::os::unix::fs::PermissionsExt;
+    let root=crate::test_support::protected_test_dir();let executable=root.path().join("owned-agy.sh");
+    let script=r#"#!/bin/sh
+printf '%s\n' start >> starts.txt
+printf '%s\n' '{"event":"init","conversation_id":"owned-conversation"}'
+IFS= read -r line || exit 0
+printf '%s\n' input >> inputs.txt
+sleep 1.5
+printf '%s\n' '{"event":"step_update","step_update":{"conversation_id":"owned-conversation","state":"DONE","step_type":"user_input","step_index":1}}'
+printf '%s\n' '{"event":"result","result":{"conversation_id":"owned-conversation"}}'
+IFS= read -r line
+"#;
+    std::fs::write(&executable,script).unwrap();std::fs::set_permissions(&executable,std::fs::Permissions::from_mode(0o700)).unwrap();
+    let config=BridgeConfig{format:"peerwork.host-bridge.v1".into(),state_directory:root.path().join("bridge"),host:json!({"kind":"agy-stdio","managed":true,"executable":executable,"working_directory":root.path(),"conversation_id":"owned-conversation"}),bindings:vec![grant()]};
+    let stop=KernelCancellationToken::new();let(tx,rx)=oneshot::channel();let selected_stop=stop.clone();
+    let server=tokio::spawn(serve_limit(config,selected_stop,tx,Duration::from_secs(1)));
+    let ready=rx.await.unwrap().unwrap();let(binding,frame)=frame(&ready.adapter["destination"],1);let executor=tokio::runtime::Handle::current();
+    let recovered=tokio::task::spawn_blocking(move||{
+        let mut client=Host::open(ready.adapter,executor).unwrap();
+        assert_eq!(client.deliver(&binding,&frame).unwrap()["state"],"RESULT_UNKNOWN");
+        let deadline=std::time::Instant::now()+Duration::from_secs(8);
+        loop {
+            if let Some(receipt)=client.reconcile(&binding,frame["message_id"].as_str().unwrap(),binding["frame_digest"].as_str().unwrap()).unwrap(){if receipt["state"]=="HOST_ACCEPTED"{break receipt;}}
+            assert!(std::time::Instant::now()<deadline,"late AGY input acknowledgement never reached the original bridge receipt");std::thread::sleep(Duration::from_millis(50));
+        }
+    }).await.unwrap();
+    assert_eq!(recovered["model_response"],Value::Null,"host acceptance is not a model response");
+    stop.cancel();server.await.unwrap().unwrap();
+    assert_eq!(std::fs::read_to_string(root.path().join("starts.txt")).unwrap().lines().count(),1);
+    assert_eq!(std::fs::read_to_string(root.path().join("inputs.txt")).unwrap().lines().count(),1);
+}

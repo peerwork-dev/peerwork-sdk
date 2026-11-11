@@ -57,7 +57,7 @@ pub(super) fn verify_with_proofs(value:&WireValue,audience:&[u16],workspace:&str
     token_field(scope, "receiver_id")?;
     if number(scope, "epoch")? > number(body, "epoch")?
         || number(report, "attempt")? == 0
-        || number(report, "attempt")? > 32
+        || number(report, "attempt")? > i32::MAX as u64
         || number(report, "report_sequence")? == 0
     {
         return Err(CommunicationError);
@@ -128,7 +128,7 @@ mod tests {
         let mailbox = "M".repeat(43);
         let call = "C".repeat(43);
         let scope = json!({"format":"peerwork.host-call.v1","owner":"synthetic-root","namespace":"program:worker","workspace_id":ws,"mailbox_id":mailbox,"membership_id":"G".repeat(43),"sequence":1,"delivery_id":"D".repeat(43),"receiver_id":"R".repeat(43),"epoch":2,"binding_version":1,"destination_digest":"d".repeat(64),"call_id":call,"frame_digest":"e".repeat(64),"source_digest":"f".repeat(64)});
-        let report = json!({"sequence":1,"delivery_id":"D".repeat(43),"call_id":call,"attempt":1,"scope":scope,"frame_digest":"e".repeat(64),"state":"HOST_ACCEPTED","facts":[{"state":"RESULT_UNKNOWN","code":"HOST_ACK_UNKNOWN"},{"state":"HOST_ACCEPTED","receipt":"selected-turn"}],"report_sequence":3});
+        let report = json!({"sequence":1,"delivery_id":"D".repeat(43),"call_id":call,"attempt":33,"scope":scope,"frame_digest":"e".repeat(64),"state":"HOST_ACCEPTED","facts":[{"state":"RESULT_UNKNOWN","code":"HOST_ACK_UNKNOWN"},{"state":"HOST_ACCEPTED","receipt":"selected-turn"}],"report_sequence":3});
         let command = json!({"v":1,"audience":"host-report-test","actor_id":actor,"command_id":"I".repeat(43),"authority":sha256_hex(actor.as_bytes()),"method":"POST","path":"/api/workspace/v1/commands","action_id":"structure.mailbox.report","workspace_id":ws,"instance_id":null,"protocol_digest":null,"expected_workspace_revision":null,"expected_instance_revision":null,"exact_input_refs":[],"issued_at":1,"expires_at":600001,"body":{"profile":"backend-structure-v1","mailbox_id":mailbox,"receiver_id":"R".repeat(43),"epoch":2,"report":report}});
         let jws=crate::crypto::sign_compact(&json!({"alg":"EdDSA","typ":"peerwork.kernel-command.v1+jws","kid":crate::crypto::key_id(&key.verifying_key().to_bytes())}),&command,&key).unwrap();
         let mut snapshot = report;
