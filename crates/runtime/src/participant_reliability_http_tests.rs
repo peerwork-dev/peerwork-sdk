@@ -483,7 +483,12 @@ async fn direct_codex_lost_acceptance_redelivers_same_notification_without_conne
     fixture.lose_next_ack.store(true,Ordering::SeqCst);
     let hosts=participant_dispatch::start(&configs,&clients,c._temp.path(),cancel.clone()).unwrap();
     tokio::time::timeout(Duration::from_secs(15),async{loop{
-        if c.client.delivery_status(&options,item.clone()).await.unwrap()["host"]=="RESULT_UNKNOWN" {break;}
+        match c.client.delivery_status(&options,item.clone()).await {
+            Ok(value) if value["host"]=="RESULT_UNKNOWN"=>break,
+            Ok(_)=>(),
+            Err(problem) if problem.code=="HOST_BINDING_NOT_CONFIGURED"=>(),
+            Err(problem)=>panic!("unexpected original-host observation failure: {problem:?}"),
+        }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }}).await.unwrap();
     assert_eq!(fixture.calls().iter().filter(|v|matches!(v["method"].as_str(),Some("turn/start"|"turn/steer"))).count(),1);
