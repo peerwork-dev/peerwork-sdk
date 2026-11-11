@@ -1,7 +1,8 @@
 # Host bridge recovery
 
-The controlled-redelivery behavior below is a development candidate for the next
-native release. Published native0.3.22 does not yet provide this recovery policy.
+Native 0.3.23 adds controlled notification redelivery. Published 0.3.22 and
+earlier runtimes do not provide this recovery policy. Reporting beyond 32
+attempts additionally requires service schema 27.
 
 The resident runtime receives and stores messages independently of the selected
 Agent host. Temporary host transport failures reconnect automatically, with

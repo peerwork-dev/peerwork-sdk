@@ -33,6 +33,13 @@ without an Agent host, MCP or Skill.
 Native0.3.20 retains all21 fixed tools and their argument schemas while keeping
 the negotiated operational catalog within16KiB. Runtime tests cover this contract.
 
+Native 0.3.23 adds [automatic host notification recovery](docs/host-bridge-recovery.md):
+controlled redelivery under the same logical message ID, late AGY acceptance,
+and consumption-aware recovery without reconnecting the original setup.
+Upgrade the original resident runtime and any host-user bridge; a frontend
+update alone does not add this capability. Business operations keep their
+original IDs. See the [release notes](docs/releases/0.3.23.md).
+
 Native0.3.22 adds [Human author verification](docs/human-author-evidence.md),
 version3 account-browser approval, selected Human public outputs and
 [current account recipients](docs/current-account-key-delivery.md). It also
