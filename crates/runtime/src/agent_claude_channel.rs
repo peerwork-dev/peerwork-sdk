@@ -104,7 +104,21 @@ pub(super) async fn watch(tools:Arc<Tools>,output:mpsc::Sender<Value>,state:Stat
 async fn watch_scope(profile:AgentProfile,alias:String,scope:MailScope,output:mpsc::Sender<Value>,observed:State)->Result<()> {
     let _owner=ownership(&profile,&scope)?;
     let client=AgentTools::open(profile.clone()).await?;
+    validate_source(&client.call(AgentRequest::Context).await?,&scope)?;
     project_scope(&profile,&alias,&scope,output,observed,Duration::from_secs(30),|request|client.call(request)).await
+}
+
+fn validate_source(context:&Value,scope:&MailScope)->Result<()> {
+    let matches=|source:&Value|source["workspace_id"]==scope.workspace_id&&source["mailbox_id"]==scope.mailbox_id&&source["membership_id"]==scope.membership_id;
+    let bindings=context["bindings"].as_array().ok_or_else(||ParticipantError::local("CLAUDE_CHANNEL_SOURCE_STATUS_UNAVAILABLE","CLAUDE_CHANNEL"))?;
+    if bindings.iter().filter(|source|matches(source)).any(|source|source["host_destination"].as_str().is_some()) {
+        return Err(ParticipantError::local("CLAUDE_CHANNEL_SOURCE_ALREADY_BOUND_TO_ANOTHER_HOST","CLAUDE_CHANNEL"));
+    }
+    let hosts=context["host_status"]["hosts"].as_array().ok_or_else(||ParticipantError::local("CLAUDE_CHANNEL_SOURCE_STATUS_UNAVAILABLE","CLAUDE_CHANNEL"))?;
+    if hosts.iter().any(|host|host["source_bindings"].as_array().is_some_and(|sources|sources.iter().any(|source|matches(&source["watch"])))) {
+        return Err(ParticipantError::local("CLAUDE_CHANNEL_SOURCE_ALREADY_BOUND_TO_ANOTHER_HOST","CLAUDE_CHANNEL"));
+    }
+    Ok(())
 }
 
 // Exercise the projection separately from the already-tested native transport.
@@ -196,6 +210,20 @@ mod tests {
         let event=notification(&profile(),"space",&mail(),&input).unwrap();
         assert!(event["params"]["content"].as_str().unwrap().contains("MESSAGE_WITHDRAWN"));
         assert!(!event["params"]["content"].as_str().unwrap().contains("Synthetic ping"));
+    }
+    #[test]
+    fn installing_tools_cannot_duplicate_an_existing_codex_or_agy_push_destination() {
+        let scope=mail();let source=json!({"workspace_id":scope.workspace_id,"mailbox_id":scope.mailbox_id,"membership_id":scope.membership_id,"host_destination":null});
+        let mut context=json!({"bindings":[source.clone()],"host_status":{"hosts":[]}});assert!(validate_source(&context,&scope).is_ok());
+        context["bindings"][0]["host_destination"]=json!("a".repeat(64));
+        assert_eq!(validate_source(&context,&scope).unwrap_err().code,"CLAUDE_CHANNEL_SOURCE_ALREADY_BOUND_TO_ANOTHER_HOST");
+        context["bindings"][0]["host_destination"]=Value::Null;
+        context["host_status"]["hosts"]=json!([{"state":"OFFLINE","source_bindings":[{"watch":source}]}]);
+        assert_eq!(validate_source(&context,&scope).unwrap_err().code,"CLAUDE_CHANNEL_SOURCE_ALREADY_BOUND_TO_ANOTHER_HOST");
+        context["host_status"]["hosts"][0]["source_bindings"][0]["watch"]["membership_id"]=json!("H".repeat(43));
+        assert!(validate_source(&context,&scope).is_ok(),"an earlier membership must not block the current receiving source");
+        context["host_status"]=json!({"state":"UNKNOWN"});
+        assert_eq!(validate_source(&context,&scope).unwrap_err().code,"CLAUDE_CHANNEL_SOURCE_STATUS_UNAVAILABLE");
     }
     #[test]
     fn a_mailbox_has_one_live_channel_writer_and_releases_on_exit() {

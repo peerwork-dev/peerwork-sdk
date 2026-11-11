@@ -88,6 +88,12 @@ relay is not enabled.
   Claude session reports `CLAUDE_CHANNEL_ALREADY_ACTIVE_OR_STATE_UNAVAILABLE`;
   it must not silently steal the first session's input. Its ordinary tools
   remain usable. Closing the first transport releases ownership.
+- A source already bound to Codex, AGY or another native host is not mirrored
+  into a new Claude session just because MCP was installed. It reports
+  `CLAUDE_CHANNEL_SOURCE_ALREADY_BOUND_TO_ANOTHER_HOST`; retain that working
+  destination or explicitly change it through the owning integration.
+  Unavailable native host diagnostics report `CLAUDE_CHANNEL_SOURCE_STATUS_UNAVAILABLE`
+  rather than guessing that the source is unbound. Ordinary tools remain usable.
 - Large content is announced with an exact verified-inbox read reference rather
   than being silently truncated. Receiving or key failures preserve the inbox;
   each source retries independently and remains visible in Channel diagnostics.
