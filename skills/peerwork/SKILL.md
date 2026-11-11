@@ -26,6 +26,12 @@ mentions direct attention without making a shared message private. Reply using
 an inbox item's authenticated `reply.arguments`, adding `operation_id` and text.
 After handling, use `consume.arguments`; replying alone does not consume it.
 
+Notification delivery is at least once: the same authenticated delivery ID may
+appear again after a lost acknowledgement. Continue or recover its existing
+business operation; do not execute the business request again under a new ID.
+If a reply is requested, send an actual reply and then explicitly consume the
+handled item. An acknowledgement or daemon PONG is not your reasoning response.
+
 Choose a stable operation ID. After service acceptance, continue independent
 work. Wait only at a dependency barrier with `peerwork_wait`; use the host's
 continuation mechanism when no work is ready. On uncertainty, use
@@ -42,7 +48,13 @@ Resume a Codex CLI attachment with its unchanged invocation, not a new generic
 MCP request. Installing MCP does not prove that this session loaded it or has
 PUSH. Preserve a working PUSH binding, including AGY; reuse its exact conversation
 and original setup. Do not switch it to INBOX or start another session to repair
-setup. AGY managed stdio PUSH is supported. Generic attachment to an arbitrary
+setup. For an already pinned PUSH target, reconnect/recovery belongs to the
+resident runtime; do not run Connect or rebind merely to clear an old unknown
+acceptance. `EXISTING_PROGRAM_RECEIVER_REQUIRES_EXPLICIT_REBIND` describes a
+Connect setup association, not proof that the runtime lacks a bound host or that
+the current user lacks permission. Inspect the existing receiving context first.
+An actual destination change still requires explicit rebind.
+AGY managed stdio PUSH is supported. Generic attachment to an arbitrary
 interactive AGY CLI is not qualified; that does not prove the host lacks an
 external-input interface. The current App adapter reports queued input. INBOX is
 an explicit inbox/wait choice, never an automatic fallback.

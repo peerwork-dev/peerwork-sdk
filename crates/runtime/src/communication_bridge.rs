@@ -320,6 +320,8 @@ struct Query {
     binding: Value,
     destination: Value,
     #[serde(default)]
+    retry_of: Option<Value>,
+    #[serde(default)]
     message: Option<Value>,
     #[serde(default)]
     message_id: Option<String>,
@@ -347,6 +349,14 @@ struct Work {
 }
 fn validate_query(bindings: &[BridgeGrant], destination: &Value, method: &str, q: &Query) -> R<()> {
     let b = &q.binding;
+    if let Some(previous) = &q.retry_of {
+        let mut expected = b.clone();
+        expected["call_id"] = previous["call_id"].clone();
+        if method != "deliver" || previous != &expected
+            || previous["call_id"] == b["call_id"] || previous["call_id"].as_str().is_none_or(|v|!token(v)) {
+            return Err("HOST_INPUT_CONFLICT");
+        }
+    }
     if q.destination != *destination {
         return Err("HOST_BINDING_MISMATCH");
     }
@@ -500,6 +510,7 @@ fn source_scope(binding: &Value) -> Value {
 }
 fn envelope(destination: &Value, binding: &Value, value: Value) -> Value {
     let mut out = json!({"format":"peerwork.host-result.v1","binding":binding,"destination":destination,"frame_digest":binding["frame_digest"]});
+    out["retry_allowed"]=json!(value["retry_allowed"]!=false);
     for (k, v) in value.as_object().into_iter().flatten() {
         out[k] = v.clone();
     }
@@ -534,7 +545,7 @@ fn prepare(
     if store.retired(&q.binding)? {
         return Err("HOST_EVIDENCE_RETIRED");
     }
-    store.source_available(&q.binding)?;
+    store.retry_available(&q.binding, message, digest, q.retry_of.as_ref())?;
     if method == "receipt" {
         // A durable negative answer fences any later arrival of this exact
         // call. Without this tombstone, absence is not a safe NOT_SENT proof.
@@ -658,6 +669,7 @@ struct ProviderRequest {
 // may synchronously reap children using the runtime handle.
 fn provider_loop(config:Value,executor:tokio::runtime::Handle,progress:crate::communication_host::operation::Budget,mut requests:mpsc::Receiver<ProviderRequest>)->R<()> {
     let mut host:Option<Host>=None;
+    let mut pending_receipt:Option<(Value,Value)>=None;
     #[cfg(test)] let mut injected=false;
     while let Some(request)=requests.blocking_recv(){
         let _operation=progress.scope(if request.frame.is_some(){"DELIVER"}else{"HEALTH"});progress.clamp(request.deadline);
@@ -682,13 +694,24 @@ fn provider_loop(config:Value,executor:tokio::runtime::Handle,progress:crate::co
             }
             let result=if let Some(frame)=&request.frame {
                 let delivered=selected.deliver(&request.binding,frame);
-                let disconnect=delivered.as_ref().is_err_and(|code|!matches!(*code,"HOST_NOT_READY"|"HOST_INPUT_TOO_LARGE"|"HOST_INPUT_CONFLICT"|"HOST_INBOX_FULL"));
+                let disconnect=delivered.as_ref().is_err_and(|code|!matches!(*code,"HOST_NOT_READY"|"HOST_INPUT_TOO_LARGE"|"HOST_INPUT_CONFLICT"|"HOST_INBOX_FULL") && !(config["kind"]=="agy-stdio" && *code=="HOST_ACK_UNKNOWN"));
+                if config["kind"]=="agy-stdio" && delivered.is_err(){pending_receipt=Some((request.binding.clone(),frame.clone()));}
                 let destination=selected.destination.clone();
                 #[cfg(test)] if config["_test_panic_after_input"]==true&&!injected {injected=true;panic!("injected provider failure after possible input");}
                 let value=serde_json::to_value(crate::participant_dispatch::host_outcome(config["kind"].as_str().unwrap_or(""),delivered)).map_err(|_|"BRIDGE_OUTCOME_INVALID")?;
                 if disconnect{drop(host.take());}
                 return Ok((destination,value));
-            }else{selected.health(&request.binding)};
+            }else{
+                let observed=selected.health(&request.binding);
+                let recovered=if let Some((binding,frame))=&pending_receipt {
+                    selected.reconcile(binding,frame["message_id"].as_str().unwrap_or(""),binding["frame_digest"].as_str().unwrap_or("")).ok().flatten().map(|outcome|json!({"binding":binding,"message_id":frame["message_id"],"frame_digest":binding["frame_digest"],"outcome":outcome}))
+                }else{None};
+                match (observed,recovered) {
+                    (Ok(mut health),receipt)=>{if let Some(receipt)=receipt{health["recovered_input"]=receipt;}Ok(health)},
+                    (Err(code),Some(receipt))=>Ok(json!({"ready":false,"execution_state":"OFFLINE","reason":code,"recovered_input":receipt})),
+                    (Err(code),None)=>Err(code),
+                }
+            };
             result.map(|value|(selected.destination.clone(),value))
         })).unwrap_or(Err("HOST_PROVIDER_PANICKED"));
         if let Err(code)=&result{progress.failure(code,None);drop(host.take());}
@@ -919,6 +942,7 @@ async fn serve_limit(mut config:BridgeConfig,cancel:KernelCancellationToken,read
         let mut active:Option<Work>=None;
         let mut io:Option<oneshot::Receiver<R<(Value,Value)>>>=None;
         let mut finish_pending:Option<(Work,Value)>=None;
+        let mut recovered_pending:Option<Value>=None;
         let mut health=json!({"ready":false,"execution_state":"UNKNOWN","reason":"HOST_ATTACHING"});
         let mut next_probe=std::time::Instant::now();
         let mut retry_attempt=0u32;
@@ -932,7 +956,7 @@ async fn serve_limit(mut config:BridgeConfig,cancel:KernelCancellationToken,read
                     if let Some(value)=known{return Ok(value);}
                     let id=work.query.message.as_ref().unwrap()["message_id"].as_str().unwrap();
                     let digest=work.query.binding["frame_digest"].as_str().unwrap();
-                    store.reserve(&work.query.binding,id,digest,None)?;
+                    store.reserve_retry(&work.query.binding,id,digest,None,work.query.retry_of.as_ref())?;
                     store.get(&work.query.binding,id,digest)?.map(|v|envelope(&destination,&work.query.binding,v)).ok_or("BRIDGE_STATE_INVALID")
                 });let _=work.reply.send(result);
             }
@@ -944,14 +968,22 @@ async fn serve_limit(mut config:BridgeConfig,cancel:KernelCancellationToken,read
                     Err(code)=>{health=json!({"ready":false,"execution_state":"UNKNOWN","reason":code});finish_pending=Some((work,value));}
                 }
             }
+            if let Some(receipt)=recovered_pending.take() {
+                let saved=(||->R<()>{
+                    let original=store.get(&receipt["binding"],receipt["message_id"].as_str().ok_or("BRIDGE_STATE_INVALID")?,receipt["frame_digest"].as_str().ok_or("BRIDGE_STATE_INVALID")?)?.ok_or("BRIDGE_STATE_INVALID")?;
+                    if matches!(original["state"].as_str(),Some("RESULT_UNKNOWN"|"HOST_ACCEPTED")){store.finish(&receipt["binding"],&receipt["outcome"])?;}
+                    Ok(())
+                })();
+                if let Err(code)=saved {health=json!({"ready":false,"execution_state":"UNKNOWN","reason":code});recovered_pending=Some(receipt);}
+            }
             coordinator_phase(&worker_cache,"LEDGER_CAPACITY");
-            let capacity=store.capacity().unwrap_or(false)&&pending.len()<8&&finish_pending.is_none();
+            let capacity=store.capacity().unwrap_or(false)&&pending.len()<8&&finish_pending.is_none()&&recovered_pending.is_none();
             let mut observed=health.clone();observed["coordinator_phase"]=json!("IDLE");observed["capacity"]=json!(if capacity{"AVAILABLE"}else{"FULL"});
             if !capacity{observed["ready"]=json!(false);observed["can_attempt"]=json!(false);}
             if health_at.elapsed()>=Duration::from_secs(10){observed["ready"]=json!(false);observed["execution_state"]=json!("UNKNOWN");observed["reason"]=json!("HOST_OBSERVATION_STALE");}
-            observed["observation_age_ms"]=json!(health_at.elapsed().as_millis() as u64);observed["queue_depth"]=json!(pending.len());observed["result_write_pending"]=json!(finish_pending.is_some());
+            observed["observation_age_ms"]=json!(health_at.elapsed().as_millis() as u64);observed["queue_depth"]=json!(pending.len());observed["result_write_pending"]=json!(finish_pending.is_some()||recovered_pending.is_some());
             if let Ok(mut cache)=worker_cache.lock(){*cache=(json!({"destination":destination,"health":observed}),std::time::Instant::now());}
-            if io.is_none()&&finish_pending.is_none()&&!worker_cancel.is_cancelled() {
+            if io.is_none()&&finish_pending.is_none()&&recovered_pending.is_none()&&!worker_cancel.is_cancelled() {
                 let work=pending.pop_front();
                 let probe=work.is_none()&&std::time::Instant::now()>=next_probe;
                 if work.is_some()||probe {
@@ -965,11 +997,11 @@ async fn serve_limit(mut config:BridgeConfig,cancel:KernelCancellationToken,read
                                 let message=work.query.message.as_ref().unwrap();
                                 let id=message["message_id"].as_str().unwrap();let digest=work.query.binding["frame_digest"].as_str().unwrap();
                                 if std::time::Instant::now()>=work.deadline {
-                                    let result=store.reserve(&work.query.binding,id,digest,None).and_then(|_|store.get(&work.query.binding,id,digest)).and_then(|v|v.ok_or("BRIDGE_STATE_INVALID"));
+                                    let result=store.reserve_retry(&work.query.binding,id,digest,None,work.query.retry_of.as_ref()).and_then(|_|store.get(&work.query.binding,id,digest)).and_then(|v|v.ok_or("BRIDGE_STATE_INVALID"));
                                     let _=work.reply.send(result.map(|v|envelope(&destination,&work.query.binding,v)));launch=false;
                                 }else{
                                     coordinator_phase(&worker_cache,"LEDGER_RESERVE");
-                                    if let Err(code)=store.reserve(&work.query.binding,id,digest,Some(message)){let _=work.reply.send(Err(code));launch=false;}
+                                    if let Err(code)=store.reserve_retry(&work.query.binding,id,digest,Some(message),work.query.retry_of.as_ref()){let _=work.reply.send(Err(code));launch=false;}
                                     else{active=Some(work);}
                                 }
                             }
@@ -1003,7 +1035,11 @@ async fn serve_limit(mut config:BridgeConfig,cancel:KernelCancellationToken,read
                         finish_pending=Some((work,value));next_probe=std::time::Instant::now();
                     }else{
                         health_at=std::time::Instant::now();
-                        match result {Ok(value)=>{health=value;retry_attempt=0;},Err(code)=>{progress.failure(code,None);health=json!({"ready":false,"execution_state":"UNKNOWN","reason":code});retry_attempt=retry_attempt.saturating_add(1);}}
+                        match result {Ok(mut value)=>{
+                            let receipt=value.as_object_mut().and_then(|o|o.remove("recovered_input"));
+                            if let Some(receipt)=receipt {recovered_pending=Some(receipt);}
+                            health=value;retry_attempt=0;
+                        },Err(code)=>{progress.failure(code,None);health=json!({"ready":false,"execution_state":"UNKNOWN","reason":code});retry_attempt=retry_attempt.saturating_add(1);}}
                         let delay=if retry_attempt==0{Duration::from_secs(3)}else{crate::communication_host::operation::retry_delay(retry_attempt,&config.state_directory.to_string_lossy())};
                         next_probe=std::time::Instant::now()+delay;
                     }
@@ -1016,10 +1052,10 @@ async fn serve_limit(mut config:BridgeConfig,cancel:KernelCancellationToken,read
                         let mut value=health.clone();
                         if health_at.elapsed()>=Duration::from_secs(10){value=json!({"ready":false,"execution_state":"UNKNOWN","reason":"HOST_OBSERVATION_STALE"});}
                         value["observation_age_ms"]=json!(health_at.elapsed().as_millis() as u64);
-                        let capacity=store.capacity().unwrap_or(false)&&pending.len()<8&&finish_pending.is_none();
+                        let capacity=store.capacity().unwrap_or(false)&&pending.len()<8&&finish_pending.is_none()&&recovered_pending.is_none();
                         value["capacity"]=json!(if capacity{"AVAILABLE"}else{"FULL"});
                         if !capacity{value["ready"]=json!(false);value["can_attempt"]=json!(false);}
-                        value["diagnostic"]=progress.snapshot();value["queue_depth"]=json!(pending.len());value["result_write_pending"]=json!(finish_pending.is_some());
+                        value["diagnostic"]=progress.snapshot();value["queue_depth"]=json!(pending.len());value["result_write_pending"]=json!(finish_pending.is_some()||recovered_pending.is_some());
                         let _=work.reply.send(Ok(json!({"destination":destination,"health":value})));
                     }else{
                         coordinator_phase(&worker_cache,"LEDGER_QUERY");

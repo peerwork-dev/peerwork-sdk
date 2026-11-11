@@ -77,11 +77,12 @@ impl Store {
             CREATE TABLE IF NOT EXISTS bridge_calls(call_id TEXT PRIMARY KEY,scope_hash TEXT NOT NULL,message_id TEXT NOT NULL,frame_digest TEXT NOT NULL,proof BLOB NOT NULL,frame BLOB,state TEXT NOT NULL,outcome BLOB,allocation INTEGER NOT NULL);
             CREATE UNIQUE INDEX IF NOT EXISTS bridge_single_open ON bridge_calls(state) WHERE state='CALL_OPEN';
             CREATE TABLE IF NOT EXISTS bridge_inputs(call_id TEXT PRIMARY KEY,source_key TEXT NOT NULL,sequence INTEGER NOT NULL,delivery_id TEXT NOT NULL,state TEXT NOT NULL);
-            CREATE UNIQUE INDEX IF NOT EXISTS bridge_single_input ON bridge_inputs(source_key,sequence) WHERE state<>'NOT_SENT';
+            CREATE UNIQUE INDEX IF NOT EXISTS bridge_single_input ON bridge_inputs(source_key,sequence) WHERE state NOT IN ('NOT_SENT','SUPERSEDED');
             CREATE TABLE IF NOT EXISTS bridge_retirements(scope_key TEXT PRIMARY KEY,through_sequence INTEGER NOT NULL,proof BLOB NOT NULL);").map_err(|_|"BRIDGE_STATE_FAILED")?;
         tx.execute("INSERT OR IGNORE INTO bridge_meta VALUES(1,?1,0,0)", [pin])
             .map_err(|_| "BRIDGE_STATE_FAILED")?;
         tx.commit().map_err(|_| "BRIDGE_STATE_FAILED")?;
+        db.execute_batch("DROP INDEX IF EXISTS bridge_single_input; CREATE UNIQUE INDEX bridge_single_input ON bridge_inputs(source_key,sequence) WHERE state NOT IN ('NOT_SENT','SUPERSEDED');").map_err(|_|"BRIDGE_STATE_FAILED")?;
         let old: String = db
             .query_row("SELECT pin FROM bridge_meta WHERE id=1", [], |r| r.get(0))
             .map_err(|_| "BRIDGE_STATE_FAILED")?;
@@ -188,7 +189,7 @@ impl Store {
             }
             value
         } else {
-            json!({"state":"RESULT_UNKNOWN","code":"HOST_ACK_UNKNOWN"})
+            json!({"state":"RESULT_UNKNOWN","code":"HOST_ACK_UNKNOWN","retry_allowed":state!="CALL_OPEN"})
         };
         Ok(Some(value))
     }
@@ -199,13 +200,27 @@ impl Store {
         digest: &str,
         frame: Option<&Value>,
     ) -> R<()> {
+        self.reserve_retry(binding,message,digest,frame,None)
+    }
+    pub fn retry_available(&self, binding:&Value, message:&str, digest:&str, previous:Option<&Value>) -> R<()> {
+        if let Some(previous)=previous {
+            let mut expected=binding.clone();expected["call_id"]=previous["call_id"].clone();
+            if &expected!=previous || binding["call_id"]==previous["call_id"] { return Err("HOST_INPUT_CONFLICT"); }
+            let value=self.get(previous,message,digest)?.ok_or("HOST_RETRY_ORIGINAL_NOT_FOUND")?;
+            if !matches!(value["state"].as_str(),Some("RESULT_UNKNOWN"|"HOST_QUEUED"|"HOST_ACCEPTED")) {return Err("HOST_INPUT_CONFLICT");}
+            let active:bool=self.db.query_row("SELECT EXISTS(SELECT 1 FROM bridge_inputs WHERE call_id=?1 AND state NOT IN ('NOT_SENT','SUPERSEDED','CALL_OPEN'))",[previous["call_id"].as_str().ok_or("BRIDGE_REQUEST_INVALID")?],|r|r.get(0)).map_err(|_|"BRIDGE_STATE_FAILED")?;
+            if !active { return Err("HOST_RETRY_CONFLICT"); }
+            Ok(())
+        }else{self.source_available(binding)}
+    }
+    pub fn reserve_retry(&mut self,binding:&Value,message:&str,digest:&str,frame:Option<&Value>,previous:Option<&Value>) -> R<()> {
         let id = binding["call_id"]
             .as_str()
             .ok_or("BRIDGE_REQUEST_INVALID")?;
         if self.retired(binding)? {
             return Err("HOST_EVIDENCE_RETIRED");
         }
-        self.source_available(binding)?;
+        self.retry_available(binding,message,digest,previous)?;
         let proof = self.seal(
             id,
             "PROOF",
@@ -228,6 +243,10 @@ impl Store {
             .map_err(|_| "BRIDGE_STATE_FAILED")?;
         if bytes + allocation > MAX_BYTES || rows >= MAX_ROWS {
             return Err("BRIDGE_CAPACITY");
+        }
+        if let Some(previous)=previous {
+            let changed=tx.execute("UPDATE bridge_inputs SET state='SUPERSEDED' WHERE call_id=?1 AND state NOT IN ('NOT_SENT','SUPERSEDED','CALL_OPEN')",[previous["call_id"].as_str().ok_or("BRIDGE_REQUEST_INVALID")?]).map_err(|_|"BRIDGE_STATE_FAILED")?;
+            if changed!=1 {return Err("HOST_RETRY_CONFLICT");}
         }
         tx.execute(
             "INSERT INTO bridge_calls VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",
@@ -287,13 +306,15 @@ impl Store {
             .db
             .unchecked_transaction()
             .map_err(|_| "BRIDGE_STATE_FAILED")?;
-        let updated=tx.execute("UPDATE bridge_calls SET state=?2,outcome=?3 WHERE call_id=?1 AND state='CALL_OPEN'",params![id,value["state"].as_str().ok_or("BRIDGE_OUTCOME_INVALID")?,sealed]).map_err(|_|"BRIDGE_STATE_FAILED")?;
+        let updated=tx.execute("UPDATE bridge_calls SET state=?2,outcome=?3 WHERE call_id=?1 AND (state='CALL_OPEN' OR (state='RESULT_UNKNOWN' AND ?2='HOST_ACCEPTED'))",params![id,value["state"].as_str().ok_or("BRIDGE_OUTCOME_INVALID")?,sealed]).map_err(|_|"BRIDGE_STATE_FAILED")?;
         if updated != 1 {
+            let prior:Option<Vec<u8>>=tx.query_row("SELECT outcome FROM bridge_calls WHERE call_id=?1",[id],|r|r.get(0)).optional().map_err(|_|"BRIDGE_STATE_FAILED")?.flatten();
+            if prior.as_ref().and_then(|bytes|self.open_value(id,"OUTCOME",bytes,4096).ok()).as_ref()==Some(value) {return Ok(());}
             return Err("BRIDGE_OUTCOME_CONFLICT");
         }
 
         tx.execute(
-            "UPDATE bridge_inputs SET state=?2 WHERE call_id=?1",
+            "UPDATE bridge_inputs SET state=?2 WHERE call_id=?1 AND state<>'SUPERSEDED'",
             params![id, value["state"].as_str().ok_or("BRIDGE_OUTCOME_INVALID")?],
         )
         .map_err(|_| "BRIDGE_STATE_FAILED")?;

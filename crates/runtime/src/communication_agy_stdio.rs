@@ -60,6 +60,8 @@ pub(super) struct AgyStdio {
     io_budget: Duration,
     shutdown_budget: Duration,
     failed: bool,
+    awaiting_input: bool,
+    last_delivery: Option<(String,String,Option<Value>)>,
     aggregate: Option<super::operation::Budget>,
 }
 fn session_tool_settings(config: &Value) -> R<Option<String>> {
@@ -245,6 +247,8 @@ impl AgyStdio {
             io_budget: Duration::from_secs(10),
             shutdown_budget: Duration::from_secs(10),
             failed: false,
+            awaiting_input: false,
+            last_delivery: None,
             aggregate,
         };
         match host.next(Instant::now() + Duration::from_secs(30))? {
@@ -273,8 +277,12 @@ impl AgyStdio {
             if self.aggregate.as_ref().is_some_and(|b|b.remaining().is_err()){return Err("HOST_OPERATION_TIMEOUT");}
             let next = self.events.as_mut().ok_or("HOST_DISCONNECTED")?.try_recv();
             match next {
+                Ok(Ok(Event::Input(id,index))) if self.awaiting_input && id==self.conversation && self.last_input.is_none_or(|last|index>last) => {
+                    self.accept_input(index);
+                }
                 Ok(Ok(Event::Result(id))) if id == self.conversation && self.busy => {
-                    self.busy = false
+                    self.busy = false;
+                    self.awaiting_input = false;
                 }
                 Err(mpsc::error::TryRecvError::Empty) => return Ok(()),
                 other => {
@@ -287,6 +295,19 @@ impl AgyStdio {
             }
         }
         Ok(())
+    }
+    fn accept_input(&mut self,index:u64)->Value {
+        self.last_input=Some(index);self.busy=true;self.awaiting_input=false;
+        let receipt=json!({"state":"HOST_ACCEPTED","receipt":format!("agy-stdio:{index}:{}",peerwork_core::crypto::sha256_hex(self.conversation.as_bytes())),"execution_state":"BUSY","model_response":"NOT_ATTESTED"});
+        if let Some((_,_,saved))=&mut self.last_delivery{*saved=Some(receipt.clone());}
+        receipt
+    }
+    pub fn reconcile(&mut self,id:&str,digest:&str)->R<Option<Value>> {
+        let observed=self.drain();
+        if let Some((saved_id,saved_digest,Some(receipt)))=&self.last_delivery {
+            if saved_id==id && saved_digest==digest {return Ok(Some(receipt.clone()));}
+        }
+        observed?;Ok(None)
     }
     pub fn health(&mut self) -> R<Value> {
         self.drain()?;
@@ -320,6 +341,8 @@ impl AgyStdio {
             .map_err(|_| "HOST_STATE_FAILED")?;
         if self.aggregate.as_ref().is_some_and(|b|b.remaining().is_err()){return Err("HOST_PREFLIGHT_DEADLINE");}
         self.attempted = true;
+        self.last_delivery=Some((message["message_id"].as_str().unwrap_or("").to_owned(),peerwork_core::crypto::sha256_hex(message.to_string().as_bytes()),None));
+        self.awaiting_input=true;self.busy=true;
         let mut bytes = serde_json::to_vec(&json!({"event":"user","message":{"content":rendered}}))
             .map_err(|_| "HOST_INPUT_INVALID")?;
         bytes.push(b'\n');
@@ -337,12 +360,9 @@ impl AgyStdio {
             Ok(Event::Input(id, index))
                 if id == self.conversation && self.last_input.is_none_or(|last| index > last) =>
             {
-                self.last_input = Some(index);
-                self.busy = true;
-                Ok(
-                    json!({"state":"HOST_ACCEPTED","receipt":format!("agy-stdio:{index}:{}",random_token()?),"execution_state":"BUSY","model_response":"NOT_ATTESTED"}),
-                )
+                Ok(self.accept_input(index))
             }
+            Err("HOST_ACK_UNKNOWN") => Err("HOST_ACK_UNKNOWN"),
             _ => {
                 self.failed = true;
                 Err("HOST_ACK_UNKNOWN")
@@ -475,6 +495,38 @@ mod tests {
         assert!(!root.path().join("starts.txt").exists());
         config.as_object_mut().unwrap().remove("mcp_server");
         drop(AgyStdio::open(&config, rt.handle().clone()).unwrap());
+    }
+    #[cfg(unix)]
+    #[test]
+    fn late_input_ack_recovers_without_restarting_or_killing_the_owned_conversation() {
+        use std::os::unix::fs::PermissionsExt;
+        let rt=tokio::runtime::Runtime::new().unwrap();let root=crate::test_support::protected_test_dir();
+        let config=stub(root.path(),false);let executable=Path::new(config["executable"].as_str().unwrap());
+        let script = r#"#!/bin/sh
+printf '%s\n' start >> starts.txt
+printf '%s\n' '{"event":"init","conversation_id":"owned-conversation"}'
+IFS= read -r line || exit 0
+printf '%s\n' "$line" >> inputs.txt
+sleep 0.2
+printf '%s\n' '{"event":"step_update","step_update":{"conversation_id":"owned-conversation","state":"DONE","step_type":"user_input","step_index":1}}'
+printf '%s\n' '{"event":"result","result":{"conversation_id":"owned-conversation"}}'
+IFS= read -r line || exit 0
+printf '%s\n' "$line" >> inputs.txt
+printf '%s\n' '{"event":"step_update","step_update":{"conversation_id":"owned-conversation","state":"DONE","step_type":"user_input","step_index":2}}'
+IFS= read -r line
+"#;
+        std::fs::write(executable,script).unwrap();std::fs::set_permissions(executable,std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut host=AgyStdio::open(&config,rt.handle().clone()).unwrap();host.io_budget=Duration::from_millis(30);
+        let pid=host.pid;let message=json!({"message_id":"same-logical-message","rendered_text":"external notification"});
+        let digest=peerwork_core::crypto::sha256_hex(message.to_string().as_bytes());
+        assert_eq!(host.deliver(&message).unwrap_err(),"HOST_ACK_UNKNOWN");assert_eq!(host.health().unwrap()["execution_state"],"BUSY");
+        let deadline=Instant::now()+Duration::from_secs(3);
+        loop {if let Some(receipt)=host.reconcile("same-logical-message",&digest).unwrap(){assert_eq!(receipt["state"],"HOST_ACCEPTED");break;}assert!(Instant::now()<deadline);std::thread::sleep(Duration::from_millis(10));}
+        assert!(host.reconcile("another-message",&digest).unwrap().is_none());assert_eq!(host.pid,pid);
+        while host.health().unwrap()["ready"]!=true{assert!(Instant::now()<deadline);std::thread::sleep(Duration::from_millis(5));}
+        host.io_budget=Duration::from_secs(2);assert_eq!(host.deliver(&json!({"message_id":"next-message","rendered_text":"second input"})).unwrap()["state"],"HOST_ACCEPTED");
+        assert_eq!(std::fs::read_to_string(root.path().join("starts.txt")).unwrap().lines().count(),1);
+        assert_eq!(std::fs::read_to_string(root.path().join("inputs.txt")).unwrap().lines().count(),2);drop(host);
     }
     #[test]
     fn one_process_handles_two_inputs_and_terminal_restart_does_not_replay() {

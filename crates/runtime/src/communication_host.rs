@@ -477,7 +477,7 @@ impl Drop for Host {
 }
 impl RetirementControl {
     pub(crate) fn cloned(&self)->Self{self.host.retirement_control()}
-    pub(crate) fn reconcile(&self,binding:&Value,id:&str,digest:&str)->R<Option<Value>>{self.host.reconcile(binding,id,digest)}
+    pub(crate) fn reconcile(&self,binding:&Value,id:&str,digest:&str)->R<Option<Value>>{if self.host.config["kind"]=="bridge"{self.host.bridge("receipt",binding,json!({"message_id":id,"body_hash":digest})).map(Some)}else{Ok(None)}}
     pub fn retire(&self, plan: &Value) -> R<()> {
         if self.host.config["kind"] != "bridge" {
             return Ok(());
@@ -763,7 +763,8 @@ impl Host {
         }
         Ok(json!({"ready":false,"can_attempt":true,"execution_state":"UNKNOWN"}))
     }
-    pub fn reconcile(&self, binding: &Value, id: &str, digest: &str) -> R<Option<Value>> {
+    pub fn reconcile(&mut self, binding: &Value, id: &str, digest: &str) -> R<Option<Value>> {
+        if let Some(host)=&mut self.agy_stdio {return host.reconcile(id,digest);}
         if self.config["kind"] == "bridge" {
             return self
                 .bridge(
@@ -776,9 +777,14 @@ impl Host {
         Ok(None)
     }
     pub fn deliver(&mut self,binding:&Value,message:&Value)->R<Value>{
+        self.deliver_attempt(binding,message,None)
+    }
+    pub fn deliver_attempt(&mut self,binding:&Value,message:&Value,previous:Option<&Value>)->R<Value>{
         let _operation=self.progress.scope("DELIVER");
         if self.progress.remaining().is_err(){return Err("HOST_PREFLIGHT_DEADLINE");}
-        let result=self.deliver_inner(binding,message);
+        let result=if self.config["kind"]=="bridge" {
+            self.bridge("deliver",binding,json!({"message":message,"retry_of":previous}))
+        }else{self.deliver_inner(binding,message)};
         if let Err(code)=&result {self.progress.failure(code,None);}
         result
     }

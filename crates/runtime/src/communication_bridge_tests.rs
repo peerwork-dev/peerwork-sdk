@@ -1198,3 +1198,24 @@ async fn expired_budget_after_durable_reservation_is_proven_not_sent(){
     assert!(!fixture.calls().iter().any(|v|matches!(v["method"].as_str(),Some("turn/start"|"turn/steer"))));
     stop.cancel();task.await.unwrap().unwrap();drop(fixture);
 }
+
+#[test]
+fn controlled_successor_preserves_unknown_receipt_and_checks_exact_frozen_source() {
+    let root=crate::test_support::protected_test_dir();let directory=root.path().join("retry");create_private_state_directory(&directory).unwrap();
+    let destination=json!({"host":"CODEX_APP_SERVER","conversation_id":"thread","session_id":"session"});
+    let (binding,frame)=frame(&destination,1);let message=frame["message_id"].as_str().unwrap();let digest=binding["frame_digest"].as_str().unwrap();
+    let mut store=store::Store::open(&directory,"retry-pin",true).unwrap();store.reserve(&binding,message,digest,Some(&frame)).unwrap();
+    let mut successor=binding.clone();successor["call_id"]=json!("N".repeat(43));
+    assert_eq!(store.reserve_retry(&successor,message,digest,Some(&frame),Some(&binding)).unwrap_err(),"HOST_RETRY_CONFLICT","an active physical input cannot be superseded");
+    store.finish(&binding,&json!({"state":"RESULT_UNKNOWN","code":"HOST_ACK_UNKNOWN"})).unwrap();
+    let mut changed=successor.clone();changed["source_digest"]=json!("b".repeat(64));
+    assert_eq!(store.reserve_retry(&changed,message,digest,Some(&frame),Some(&binding)).unwrap_err(),"HOST_INPUT_CONFLICT");
+    store.reserve_retry(&successor,message,digest,Some(&frame),Some(&binding)).unwrap();
+    assert_eq!(store.get(&binding,message,digest).unwrap().unwrap()["state"],"RESULT_UNKNOWN");
+    assert_eq!(store.reserve_retry(&successor,message,digest,Some(&frame),Some(&binding)).unwrap_err(),"HOST_RETRY_CONFLICT");
+    store.finish(&successor,&json!({"state":"HOST_ACCEPTED","receipt":"successor-accepted"})).unwrap();
+    store.finish(&binding,&json!({"state":"HOST_ACCEPTED","receipt":"late-original"})).unwrap();
+    drop(store);let store=store::Store::open(&directory,"retry-pin",false).unwrap();
+    assert_eq!(store.get(&successor,message,digest).unwrap().unwrap()["receipt"],"successor-accepted");
+    assert_eq!(store.source_available(&binding).unwrap_err(),"HOST_ORIGINAL_INPUT_REQUIRES_RECOVERY");
+}

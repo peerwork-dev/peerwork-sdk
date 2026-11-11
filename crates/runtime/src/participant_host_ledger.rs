@@ -3,6 +3,8 @@
 use super::*;
 #[path="participant_host_gc.rs"]
 mod retirement;
+#[path = "participant_host_recovery.rs"]
+mod recovery;
 #[path = "participant_host_rebind.rs"]
 pub(super) mod rebind;
 use crate::participant_watch::{DeliveryReference, WatchOptions};
@@ -506,6 +508,10 @@ pub(crate) struct HostCall {
     pub outcome: Option<Value>,
     pub attempt: u64,
     pub report_version: u64,
+    #[serde(default)]
+    pub retry_at: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_of: Option<Value>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(
@@ -535,6 +541,8 @@ pub(crate) enum HostOperation {
     RetirementCommit(Value),
     AccessScope,
     ReconcileDue,
+    Retry { call: HostCall },
+    Diagnostic { call: HostCall, value: Value },
     Presence{value:Value,observed_at:std::time::Instant},
     Attach(HostBinding),
     Due {
@@ -636,11 +644,18 @@ pub(super) fn initialize(db: &Connection) -> Result<()> {
         db.execute_batch("ALTER TABLE inbox_host_calls ADD COLUMN report_code TEXT")
             .map_err(db_error)?;
     }
-    for name in ["reconcile_at", "reconcile_failures"] {
+    for name in ["reconcile_at", "reconcile_failures", "retry_at"] {
         if !columns.iter().any(|c|c==name) {
             db.execute_batch(&format!("ALTER TABLE inbox_host_calls ADD COLUMN {name} INTEGER NOT NULL DEFAULT 0")).map_err(db_error)?;
         }
     }
+    for (name, definition) in [("delivery_state", "TEXT NOT NULL DEFAULT 'ACTIVE'"), ("retry_of", "TEXT"), ("diagnostic", "TEXT")] {
+        if !columns.iter().any(|c| c == name) {
+            db.execute_batch(&format!("ALTER TABLE inbox_host_calls ADD COLUMN {name} {definition}")).map_err(db_error)?;
+        }
+    }
+    db.execute_batch("CREATE INDEX IF NOT EXISTS inbox_host_current_unknown ON inbox_host_calls(workspace,mailbox,delivery_state,state); CREATE INDEX IF NOT EXISTS inbox_host_original_active ON inbox_host_calls(workspace,mailbox,delivery_state,state,json_extract(scope,'$.namespace'),json_extract(scope,'$.membership_id'));").map_err(db_error)?;
+    db.execute_batch("CREATE INDEX IF NOT EXISTS inbox_host_delivery_recovery ON inbox_host_calls(workspace,mailbox,host,delivery_state,state,reconcile_at,call_id);").map_err(db_error)?;
     db.execute_batch("CREATE INDEX IF NOT EXISTS inbox_host_gc ON inbox_host_calls(workspace,mailbox,report_pending,state,sequence,call_id);").map_err(db_error)?;
     db.execute_batch("CREATE INDEX IF NOT EXISTS inbox_host_gc_binding ON inbox_host_calls(workspace,mailbox,host,report_pending,state,sequence,call_id);").map_err(db_error)?;
     db.execute_batch("CREATE INDEX IF NOT EXISTS inbox_host_reconcile ON inbox_host_calls(workspace,mailbox,host,state,reconcile_at,call_id);").map_err(db_error)?;
@@ -659,11 +674,11 @@ impl InboxStore {
         let (host,_)=self.host_link(namespace,options)?;
         let now=crate::participant_store::now();
         let mut selected:Option<(String,i64,u64)>=None;
-        for status in ["RESULT_UNKNOWN","HOST_QUEUED"] {
+        for status in ["RESULT_UNKNOWN","HOST_QUEUED","HOST_ACCEPTED"] {
             // Two range seeks, rather than scanning sleeping calls. The second
             // also repairs scheduling after a backwards wall-clock jump.
             for (predicate,threshold) in [("reconcile_at<=?5",now),("reconcile_at>?5",now.saturating_add(30000))] {
-                let sql=format!("SELECT call_id,reconcile_at,reconcile_failures FROM inbox_host_calls WHERE workspace=?1 AND mailbox=?2 AND host=?3 AND state=?4 AND {predicate} ORDER BY reconcile_at,call_id LIMIT 1");
+                let sql=format!("SELECT call_id,reconcile_at,reconcile_failures FROM inbox_host_calls WHERE workspace=?1 AND mailbox=?2 AND host=?3 AND delivery_state='ACTIVE' AND state=?4 AND {predicate} ORDER BY reconcile_at,call_id LIMIT 1");
                 let row:Option<(String,i64,u64)>=self.db.query_row(&sql,params![options.workspace_id,options.mailbox_id,host,status,threshold],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(db_error)?;
                 if let Some(row)=row {
                     if selected.as_ref().is_none_or(|old|(row.1.min(now),&row.0)<(old.1.min(now),&old.0)) {selected=Some(row);}
@@ -673,7 +688,8 @@ impl InboxStore {
         let Some((id,_,failures))=selected else{return Ok(None);};
         let call=self.host_call(identity,&id)?;
         if call.scope["namespace"]!=namespace||call.scope["membership_id"]!=options.membership_id||call.scope["destination_digest"]!=host {return Err(failure("HOST_EVIDENCE_SCOPE_MISMATCH"));}
-        let delay=(500i64<<failures.min(6)).min(30000);
+        if self.host_delivery_consumed(namespace, options, &call)? { return Ok(None); }
+        let delay=if call.state == "HOST_ACCEPTED" { 3000 } else { (500i64<<failures.min(6)).min(30000) };
         self.db.execute("UPDATE inbox_host_calls SET reconcile_at=?2,reconcile_failures=min(reconcile_failures+1,64) WHERE call_id=?1",params![id,now.saturating_add(delay)]).map_err(db_error)?;
         Ok(Some(call))
     }
@@ -800,6 +816,12 @@ impl InboxStore {
         item: &DeliveryReference,
         frame: Value,
     ) -> Result<Option<HostCall>> {
+        self.host_begin_attempt(identity, namespace, options, item, frame, None)
+    }
+    fn host_begin_attempt(
+        &mut self, identity: &KernelIdentity, namespace: &str, options: &WatchOptions,
+        item: &DeliveryReference, frame: Value, previous: Option<&HostCall>,
+    ) -> Result<Option<HostCall>> {
         let (host, _) = self.host_link(namespace, options)?;
         let retired=self.host_retired(options,&host)?;
         if item.sequence<=retired.0{return Ok(None);}
@@ -853,10 +875,12 @@ impl InboxStore {
         let sealed = seal_bounded(identity, &aad, &wire, 65536).map_err(|_| invalid())?;
         let allocation = sealed.len() + aad.len() + 32768;
         let tx = self.db.unchecked_transaction().map_err(db_error)?;
-        let prior:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM inbox_host_calls WHERE workspace=?1 AND mailbox=?2 AND sequence=?3 AND state<>'NOT_SENT')",params![options.workspace_id,options.mailbox_id,item.sequence],|r|r.get(0)).map_err(db_error)?;
-        if prior {
-            return Err(failure("HOST_ORIGINAL_CALL_UNRESOLVED_OR_ACCEPTED"));
+        if let Some(prior) = previous {
+            let changed = tx.execute("UPDATE inbox_host_calls SET delivery_state='SUPERSEDED' WHERE call_id=?1 AND delivery_state='ACTIVE' AND state IN ('RESULT_UNKNOWN','HOST_QUEUED','HOST_ACCEPTED')", [&prior.call_id]).map_err(db_error)?;
+            if changed != 1 { return Err(failure("HOST_RETRY_CONFLICT")); }
         }
+        let prior:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM inbox_host_calls WHERE workspace=?1 AND mailbox=?2 AND sequence=?3 AND state<>'NOT_SENT' AND delivery_state='ACTIVE')",params![options.workspace_id,options.mailbox_id,item.sequence],|r|r.get(0)).map_err(db_error)?;
+        if prior { return Err(failure("HOST_ORIGINAL_CALL_UNRESOLVED_OR_ACCEPTED")); }
         let blocked:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM inbox_host_lanes b JOIN inbox_host_lanes a ON a.workspace=b.workspace AND a.mailbox=b.mailbox AND a.lane=b.lane WHERE a.workspace=?1 AND a.mailbox=?2 AND a.sequence=?3 AND b.sequence<a.sequence AND b.state IN ('WAITING','CALL_OPEN','RESULT_UNKNOWN'))",params![options.workspace_id,options.mailbox_id,item.sequence],|r|r.get(0)).map_err(db_error)?;
         if blocked {
             return Err(failure("HOST_LANE_BLOCKED"));
@@ -864,7 +888,7 @@ impl InboxStore {
         let attempts:Option<u64>=tx.query_row("SELECT attempts FROM inbox_host_ready WHERE workspace=?1 AND mailbox=?2 AND sequence=?3 AND delivery_id=?4",params![options.workspace_id,options.mailbox_id,item.sequence,item.delivery_id],|r|r.get(0)).optional().map_err(db_error)?;
         attempts.ok_or_else(|| failure("HOST_WORK_NOT_READY"))?;
         let attempts:u64=tx.query_row("SELECT COALESCE(max(attempt),0) FROM inbox_host_calls WHERE workspace=?1 AND mailbox=?2 AND sequence=?3",params![options.workspace_id,options.mailbox_id,item.sequence],|r|r.get(0)).map_err(db_error)?;
-        if attempts >= 32 {
+        if attempts >= 9_007_199_254_740_991 {
             return Err(failure("HOST_ATTEMPT_LIMIT"));
         }
         let (bytes, rows): (usize, usize) = tx
@@ -878,6 +902,7 @@ impl InboxStore {
             return Err(failure("HOST_STATE_CAPACITY"));
         }
         tx.execute("INSERT INTO inbox_host_calls(call_id,workspace,mailbox,sequence,delivery_id,host,attempt,scope,frame_digest,frame,state,outcome,allocation) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,'CALL_OPEN',NULL,?11)",params![call_id,options.workspace_id,options.mailbox_id,item.sequence,item.delivery_id,host,attempts+1,aad,hash,sealed,allocation]).map_err(db_error)?;
+        tx.execute("UPDATE inbox_host_calls SET retry_of=?2 WHERE call_id=?1", params![call_id, previous.map(|c|c.scope.to_string())]).map_err(db_error)?;
         tx.execute(
             "DELETE FROM inbox_host_ready WHERE workspace=?1 AND mailbox=?2 AND sequence=?3",
             params![options.workspace_id, options.mailbox_id, item.sequence],
@@ -899,6 +924,8 @@ impl InboxStore {
             outcome: None,
             attempt: attempts + 1,
             report_version: 1,
+            retry_at: 0,
+            retry_of: previous.map(|c|c.scope.clone()),
         }))
     }
     fn host_call(&self, identity: &KernelIdentity, call_id: &str) -> Result<HostCall> {
@@ -930,6 +957,7 @@ impl InboxStore {
         } else if !matches!(status.as_str(), "CALL_OPEN" | "RESULT_UNKNOWN") {
             return Err(invalid());
         }
+        let (retry_of,retry_at): (Option<String>,i64) = self.db.query_row("SELECT retry_of,retry_at FROM inbox_host_calls WHERE call_id=?1", [call_id], |r| Ok((r.get(0)?,r.get(1)?))).map_err(db_error)?;
         Ok(HostCall {
             call_id: call_id.into(),
             scope,
@@ -939,6 +967,8 @@ impl InboxStore {
             outcome: outcome.map(|v| serde_json::to_value(v).unwrap()),
             attempt,
             report_version,
+            retry_at,
+            retry_of: retry_of.map(|v|serde_json::from_str(&v).map_err(|_|invalid())).transpose()?,
         })
     }
     pub fn host_finish(
@@ -1007,6 +1037,10 @@ impl InboxStore {
             params![call.call_id, outcome.status(), sealed],
         )
         .map_err(db_error)?;
+        let delay = recovery::retry_delay(outcome.status(), old.attempt);
+        tx.execute("UPDATE inbox_host_calls SET retry_at=?2,reconcile_at=?3,reconcile_failures=0 WHERE call_id=?1",params![old.call_id,crate::participant_store::now().saturating_add(delay),crate::participant_store::now().saturating_add(500)]).map_err(db_error)?;
+        let active: bool = tx.query_row("SELECT delivery_state='ACTIVE' FROM inbox_host_calls WHERE call_id=?1", [&old.call_id], |r|r.get(0)).map_err(db_error)?;
+        if !active { tx.commit().map_err(db_error)?; return Ok(()); }
         tx.execute("UPDATE inbox_host_lanes SET state=?4 WHERE workspace=?1 AND mailbox=?2 AND sequence=?3",params![options.workspace_id,options.mailbox_id,sequence,if historical&&matches!(outcome,HostOutcome::NotSent{..}){"HISTORICAL_NOT_SENT"}else if matches!(outcome,HostOutcome::NotSent{..}){"WAITING"}else{outcome.status()}]).map_err(db_error)?;
         if historical {tx.commit().map_err(db_error)?;return Ok(());}
         let lane:String=tx.query_row("SELECT lane FROM inbox_host_lanes WHERE workspace=?1 AND mailbox=?2 AND sequence=?3",params![options.workspace_id,options.mailbox_id,sequence],|r|r.get(0)).map_err(db_error)?;
@@ -1067,21 +1101,25 @@ impl InboxStore {
         } else {
             (0, None)
         };
+        let delivery = if let Some(c)=&call {
+            let (state, retry, diagnostic):(String,i64,Option<String>)=self.db.query_row("SELECT delivery_state,retry_at,diagnostic FROM inbox_host_calls WHERE call_id=?1",[&c.call_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).map_err(db_error)?;
+            json!({"state":state,"attempt":c.attempt,"retry_at":retry,"diagnostic":diagnostic.and_then(|v|serde_json::from_str::<Value>(&v).ok())})
+        }else{Value::Null};
         Ok(
-            json!({"format":"peerwork.communication-state.v1","observer":"RECIPIENT_RUNTIME","assurance":"RECEIVER_ATTESTED","reporting":if reporting.0==2{"BLOCKED"}else if reporting.0==1{"PENDING"}else if call.is_some(){"SERVICE_CONFIRMED"}else{"LOCAL_ONLY"},"reporting_error":reporting.1,"workspace_id":options.workspace_id,"mailbox_id":options.mailbox_id,"delivery_id":item.delivery_id,"sequence":item.sequence,"host":call.as_ref().map(|c|c.state.as_str()).unwrap_or(if retired{"LOCAL_EVIDENCE_RETIRED"}else{"NO_CONFIRMED_INVOCATION"}),"call_id":call.as_ref().map(|c|&c.call_id),"frame_digest":call.as_ref().map(|c|&c.frame_digest),"outcome":call.as_ref().and_then(|c|c.outcome.as_ref()),"facts":facts,"blocker":blocker,"model_response":"NOT_ATTESTED"}),
+            json!({"format":"peerwork.communication-state.v1","observer":"RECIPIENT_RUNTIME","assurance":"RECEIVER_ATTESTED","reporting":if reporting.0==2{"BLOCKED"}else if reporting.0==1{"PENDING"}else if call.is_some(){"SERVICE_CONFIRMED"}else{"LOCAL_ONLY"},"reporting_error":reporting.1,"workspace_id":options.workspace_id,"mailbox_id":options.mailbox_id,"delivery_id":item.delivery_id,"sequence":item.sequence,"host":call.as_ref().map(|c|c.state.as_str()).unwrap_or(if retired{"LOCAL_EVIDENCE_RETIRED"}else{"NO_CONFIRMED_INVOCATION"}),"call_id":call.as_ref().map(|c|&c.call_id),"frame_digest":call.as_ref().map(|c|&c.frame_digest),"outcome":call.as_ref().and_then(|c|c.outcome.as_ref()),"facts":facts,"blocker":blocker,"model_response":"NOT_ATTESTED","delivery":delivery}),
         )
     }
     pub fn host_scope_check(&self,namespace:&str,options:&WatchOptions)->Result<()>{self.host_link(namespace,options).map(|_|())}
     pub fn host_summary(&self,identity:&KernelIdentity,namespace:&str,options:&WatchOptions)->Result<Value>{
         self.host_watch_scope(namespace,options)?;
-        let pending:Option<String>=self.db.query_row("SELECT call_id FROM inbox_host_calls WHERE workspace=?1 AND mailbox=?2 AND state='RESULT_UNKNOWN' AND json_extract(scope,'$.namespace')=?3 AND json_extract(scope,'$.membership_id')=?4 LIMIT 1",params![options.workspace_id,options.mailbox_id,namespace,options.membership_id],|r|r.get(0)).optional().map_err(db_error)?;
+        let pending:Option<String>=self.db.query_row("SELECT call_id FROM inbox_host_calls WHERE workspace=?1 AND mailbox=?2 AND state='RESULT_UNKNOWN' AND delivery_state='ACTIVE' AND json_extract(scope,'$.namespace')=?3 AND json_extract(scope,'$.membership_id')=?4 LIMIT 1",params![options.workspace_id,options.mailbox_id,namespace,options.membership_id],|r|r.get(0)).optional().map_err(db_error)?;
         if let Some(id)=pending {
             let call=self.host_call(identity,&id)?;self.host_original_scope(namespace,options,&call)?;
             return Ok(json!({"workspace_id":options.workspace_id,"mailbox_id":options.mailbox_id,"acceptance_unresolved":true,"code":"HOST_ACCEPTANCE_UNRESOLVED","call_id":call.call_id,"sequence":call.scope["sequence"],"original_destination_digest":call.scope["destination_digest"],"binding_version":call.scope["binding_version"]}));
         }
         Ok(json!({"workspace_id":options.workspace_id,"mailbox_id":options.mailbox_id,"acceptance_unresolved":false}))
     }
-    pub fn host_has_unknown(&self,workspace:&str,mailbox:&str)->Result<bool>{self.db.query_row("SELECT EXISTS(SELECT 1 FROM inbox_host_calls WHERE workspace=?1 AND mailbox=?2 AND state='RESULT_UNKNOWN')",params![workspace,mailbox],|r|r.get(0)).map_err(db_error)}
+    pub fn host_has_unknown(&self,workspace:&str,mailbox:&str)->Result<bool>{self.db.query_row("SELECT EXISTS(SELECT 1 FROM inbox_host_calls WHERE workspace=?1 AND mailbox=?2 AND delivery_state='ACTIVE' AND state='RESULT_UNKNOWN')",params![workspace,mailbox],|r|r.get(0)).map_err(db_error)}
 
     fn host_facts(&self, identity: &KernelIdentity, c: &HostCall) -> Result<Vec<Value>> {
         let rows=self.db.prepare("SELECT state,evidence FROM inbox_host_facts WHERE call_id=?1 ORDER BY state LIMIT 4").map_err(db_error)?.query_map([&c.call_id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,Vec<u8>>(1)?))).map_err(db_error)?.collect::<std::result::Result<Vec<_>,_>>().map_err(db_error)?;

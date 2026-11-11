@@ -24,7 +24,7 @@ impl Store {
     }
     pub fn source_available(&self, binding: &Value) -> R<()> {
         let key = digest_value(&super::super::source_scope(binding));
-        let found:Option<String>=self.db.query_row("SELECT call_id FROM bridge_inputs INDEXED BY bridge_single_input WHERE source_key=?1 AND sequence=?2 AND state<>'NOT_SENT'",params![key,binding["sequence"].as_u64().ok_or("BRIDGE_REQUEST_INVALID")?],|r|r.get(0)).optional().map_err(|_|"BRIDGE_STATE_FAILED")?;
+        let found:Option<String>=self.db.query_row("SELECT call_id FROM bridge_inputs INDEXED BY bridge_single_input WHERE source_key=?1 AND sequence=?2 AND state NOT IN ('NOT_SENT','SUPERSEDED')",params![key,binding["sequence"].as_u64().ok_or("BRIDGE_REQUEST_INVALID")?],|r|r.get(0)).optional().map_err(|_|"BRIDGE_STATE_FAILED")?;
         if found.is_some() {
             return Err("HOST_ORIGINAL_INPUT_REQUIRES_RECOVERY");
         }

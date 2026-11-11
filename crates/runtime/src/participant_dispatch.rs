@@ -398,9 +398,8 @@ pub(crate) fn host_outcome(
         Err("HOST_ORIGINAL_INPUT_REQUIRES_RECOVERY") => HostOutcome::Unknown {
             code: "HOST_ORIGINAL_INPUT_REQUIRES_RECOVERY".into(),
         },
-        _ => HostOutcome::Unknown {
-            code: "HOST_ACK_UNKNOWN".into(),
-        },
+        Err(code) if crate::communication_store::identifier(code) => HostOutcome::Unknown {code:code.into()},
+        _ => HostOutcome::Unknown {code:"HOST_ACK_UNKNOWN".into()},
     }
 }
 fn scope_error(status: &Arc<Mutex<Value>>, options: &WatchOptions, problem: &ParticipantError) {
@@ -795,7 +794,13 @@ async fn run_owned(
                     scope_error(&status, options, &problem);
                 }
             }
-            if let Ok(mut current)=status.lock(){current["delivery_obligations"]=json!(obligations);}
+            if let Ok(mut current)=status.lock(){
+                if !obligations.iter().any(|v|v["acceptance_unresolved"]==true) && current["code"]=="HOST_ACCEPTANCE_UNRESOLVED" {
+                    current["state"]=json!("HOST_ATTACHED");
+                    current.as_object_mut().unwrap().remove("code");current.as_object_mut().unwrap().remove("recovery");
+                }
+                current["delivery_obligations"]=json!(obligations);
+            }
             if observed.as_ref().is_ok_and(|value|value["ready"]==true) {
                 if let Ok(mut current)=status.lock() {
                     if matches!(current["code"].as_str(),Some("HOST_BUSY"|"HOST_WAITING_APPROVAL"|"HOST_NOT_READY")) {
@@ -858,26 +863,31 @@ async fn run_owned(
                 continue;
             }
             let scope_result:Result<bool>=async {
-            if config.adapter["kind"]=="bridge"&&!receipt_probed {
+            let mut recovery_call=None;
+            if !receipt_probed {
                 let original=match client.host_operation(options,HostOperation::ReconcileDue).await? {
                     HostReply::Call(call)=>call,_=>return Err(error("HOST_STATE_INVALID")),
                 };
                 if let Some(call)=original {
-                    receipt_probed=true;next=(index+1)%watches.len();
-                    let selected=control.as_ref().ok_or_else(||error("HOST_NOT_READY"))?.cloned();
+                    receipt_probed=true;
+                    let selected=adapter.as_ref().ok_or_else(||error("HOST_NOT_READY"))?.clone();
                     let binding=call.scope.clone();let id=call.frame["message_id"].as_str().ok_or_else(||error("HOST_FRAME_INVALID"))?.to_owned();let digest=call.frame_digest.clone();
-                    // Receipt observation never invokes deliver or creates an
-                    // input attempt, even when the previous response was lost.
-                    let observed=tokio::task::spawn_blocking(move||selected.reconcile(&binding,&id,&digest)).await.unwrap_or(Err("BRIDGE_UNAVAILABLE"));
+                    let observed=tokio::task::spawn_blocking(move||crate::communication_host::operation::with_host(&selected,std::time::Instant::now()+Duration::from_secs(10),|host|host.reconcile(&binding,&id,&digest))).await.unwrap_or(Err("HOST_RECEIPT_UNAVAILABLE"));
+                    let allow_retry = config.adapter["kind"]!="bridge" || observed.as_ref().is_ok_and(|value|value.as_ref().is_some_and(|v|v["retry_allowed"]==true));
                     if let Ok(Some(value))=observed {
-                        let outcome=host_outcome("bridge",Ok(value));
-                        if !matches!(outcome,HostOutcome::Unknown{..}) {
+                        let outcome=host_outcome(config.adapter["kind"].as_str().unwrap_or(""),Ok(value));
+                        if !matches!(outcome,HostOutcome::Unknown{..}) && call.outcome.as_ref()!=serde_json::to_value(&outcome).ok().as_ref() {
                             finish(pending_finishes,client,options,call,outcome).await?;
-                            next=(index+1)%watches.len();progressed=true;return Ok(true);
+                            next=(index+1)%watches.len();return Ok(true);
                         }
                     }
+                    let busy=status.lock().ok().is_some_and(|s|matches!(s["host_observation"]["execution_state"].as_str(),Some("BUSY"|"WAITING_APPROVAL")));
+                    if allow_retry && call.retry_at<=crate::participant_store::now() && !busy { recovery_call=Some(call); }
                 }
             }
+            let (item,frame) = if let Some(call)=&recovery_call {
+                (crate::participant_watch::DeliveryReference{sequence:call.scope["sequence"].as_u64().ok_or_else(||error("HOST_FRAME_INVALID"))?,delivery_id:call.scope["delivery_id"].as_str().ok_or_else(||error("HOST_FRAME_INVALID"))?.into()},call.frame.clone())
+            }else{
             let due = match client
                 .host_operation(options, HostOperation::Due { limit: 1 })
                 .await
@@ -921,7 +931,9 @@ async fn run_owned(
             } else {
                 json!({})
             };
-            if matches!(config.adapter["kind"].as_str(),Some("codex"|"bridge")) {
+            (item,frame)
+            };
+            if matches!(config.adapter["kind"].as_str(),Some("codex"|"bridge"|"agy-stdio")) {
                 // Metadata-only preflight precedes a durable input attempt.
                 // Waiting for user approval must not burn delivery attempts.
                 let selected = adapter.as_ref().unwrap().clone();
@@ -970,7 +982,7 @@ async fn run_owned(
             }
             if !selected(sources,client,options)?{return Ok(false);}
             let call = match client
-                .host_operation(options, HostOperation::Begin { item, frame })
+                .host_operation(options, if let Some(call)=recovery_call { HostOperation::Retry{call} } else { HostOperation::Begin { item, frame } })
                 .await?
             {
                 HostReply::Call(Some(call)) => call,
@@ -987,14 +999,19 @@ async fn run_owned(
             let message = call.frame.clone();
             let binding = call.scope.clone();
             let deadline=std::time::Instant::now()+Duration::from_secs(10);
-            let delivered = tokio::task::spawn_blocking(move ||crate::communication_host::operation::with_host(&selected,deadline,|host|host.deliver(&binding,&message)))
-            .await
-            .unwrap_or(Err("HOST_ACK_UNKNOWN"));
+            let previous=call.retry_of.clone();
+            let delivered = tokio::task::spawn_blocking(move ||crate::communication_host::operation::with_host(&selected,deadline,|host|{
+                let result=host.deliver_attempt(&binding,&message,previous.as_ref());
+                Ok((result,host.progress.snapshot()))
+            })).await.unwrap_or(Err("HOST_ACK_UNKNOWN"));
+            let (delivered,diagnostic)=delivered.unwrap_or_else(|code|(Err(code),progress.snapshot()));
+            if let Err(problem)=client.host_operation(options,HostOperation::Diagnostic{call:call.clone(),value:diagnostic}).await {scope_error(&status,options,&problem);}
             let outcome = host_outcome(config.adapter["kind"].as_str().unwrap_or(""), delivered);
             let unknown = matches!(outcome, HostOutcome::Unknown { .. });
             // Persist before allowing another host call. If storage fails, the
-            // original CALL_OPEN remains uncertain; it is never reinjected.
-            if unknown{close_adapter(adapter).await?;}
+            // original CALL_OPEN remains uncertain. Recovery uses a separate
+            // durable attempt with the same frozen notification ID.
+            if unknown && config.adapter["kind"]!="agy-stdio" {close_adapter(adapter).await?;}
             finish(pending_finishes,client,options,call.clone(),outcome).await?;
             // Input acceptance can change host eligibility immediately. Refresh
             // its observed state before dispatching another eligible message.
@@ -1004,12 +1021,12 @@ async fn run_owned(
             // the first delivery, making current-host checks unverifiable.
             if let Ok(mut current)=status.lock() {
                 current["state"]=json!(if unknown{"HOST_RESULT_UNKNOWN"}else{"HOST_ATTACHED"});
-                if unknown {current["code"]=json!("HOST_ACCEPTANCE_UNRESOLVED");current["recovery"]=json!(if config.adapter["kind"]=="bridge"{"RECONCILE_ORIGINAL_BRIDGE_RECEIPT"}else{"HOST_CORRELATED_RECEIPT_REQUIRED"});}
+                if unknown {current["code"]=json!("HOST_ACCEPTANCE_UNRESOLVED");current["recovery"]=json!("AUTOMATIC_RECEIPT_RECONCILIATION_OR_SAME_MESSAGE_REDELIVERY");}
                 else if let Some(fields)=current.as_object_mut(){fields.remove("code");fields.remove("recovery");}
                 current["last_call_id"]=json!(call.call_id);
                 current["model_response"]=json!("NOT_ATTESTED");
             }
-            if unknown {
+            if unknown && config.adapter["kind"]!="agy-stdio" {
                 close_adapter(adapter).await?;
             }
             next = (index + 1) % watches.len();

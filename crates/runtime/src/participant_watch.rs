@@ -658,7 +658,7 @@ pub(crate) async fn run(
                 Some(Command::Host{local_live,namespace,options,operation,reply})=>{
                     use crate::participant_inbox::{HostOperation as Op,HostReply as Reply};
                     let value=(||->Result<Reply>{
-                        if resident.paused(&options) && !matches!(&operation,Op::Finish{..}|Op::Status{..}|Op::Summary|Op::AccessScope|Op::RetirementCommit(_)) {
+                        if resident.paused(&options) && !matches!(&operation,Op::Finish{..}|Op::Diagnostic{..}|Op::Status{..}|Op::Summary|Op::AccessScope|Op::RetirementCommit(_)) {
                             return Err(error("HOST_REBIND_PENDING_RESUME_ORIGINAL_OPERATION"));
                         }
                         let selected=slots.get(&options.key()).filter(|s|s.binding.namespace==namespace&&s.binding.options==options);
@@ -669,6 +669,8 @@ pub(crate) async fn run(
                             Op::Summary=>Reply::Status(store.host_summary(&identity,&namespace,&options)?),
                             Op::AccessScope=>Reply::AccessScope(store.host_access_scope(&namespace,&options)?),
                             Op::ReconcileDue=>Reply::Call(if live{store.host_reconcile_due(&identity,&namespace,&options)?}else{None}),
+                            Op::Retry{call}=>{if !local_live.load(std::sync::atomic::Ordering::Acquire){return Err(error("LOCAL_CLIENT_REVOKED"));}Reply::Call(if live{store.host_retry(&identity,&namespace,&options,&call)?}else{None})},
+                            Op::Diagnostic{call,value}=>{store.host_diagnostic(&identity,&namespace,&options,&call,&value)?;Reply::Saved},
                             Op::Presence{value,observed_at}=>{store.host_scope_check(&namespace,&options)?;let s=slots.get_mut(&options.key()).ok_or_else(||error("WATCH_NOT_FOUND"))?;let before=s.presence.version;s.presence.host_observed(value,observed_at)?;if before!=s.presence.version{s.next_control=Instant::now();}s.notify();Reply::Saved},
                             Op::Attach(host)=>{if !local_live.load(std::sync::atomic::Ordering::Acquire){return Err(error("LOCAL_CLIENT_REVOKED"));}if selected.is_none(){return Err(error("WATCH_NOT_FOUND"));}store.host_attach(&namespace,&options,&host)?;Reply::Saved},
                             Op::Due{limit}=>Reply::Due(if live{store.host_due(&namespace,&options,limit)?}else{Vec::new()}),
