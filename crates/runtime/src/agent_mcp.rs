@@ -17,6 +17,8 @@ const MAX_FRAME: usize = 512 * 1024;
 const MAX_INFLIGHT: usize = 16;
 const MODERN: &str = "2026-07-28";
 const LEGACY: &str = "2025-11-25";
+#[path="agent_claude_channel.rs"]
+mod claude_channel;
 fn error(id: Value, code: i64, message: &str) -> Value {
     json!({"jsonrpc":"2.0","id":id,"error":{"code":code,"message":message}})
 }
@@ -102,6 +104,12 @@ struct Tools {
     client: OnceCell<AgentTools>,
 }
 impl Tools {
+    fn channel_profile(&self)->Result<Option<AgentProfile>> {
+        if let Some(directory)=&self.local {
+            return crate::participant_connect::Connect::inspect(directory)?.profile_for_scope(self.handle.as_deref(),self.workspace.as_deref());
+        }
+        Ok(self.profile.clone())
+    }
     async fn call(&self, request: AgentRequest) -> Result<Value> {
         if let Some(directory)=&self.local {
             let connect=crate::participant_connect::Connect::inspect(directory)?;
@@ -242,7 +250,23 @@ where R:AsyncBufRead+Send+Unpin+'static,W:AsyncWrite+Unpin {
     else{drop(crate::participant_connect::Connect::open(&directory)?);}
     serve_tools(Tools { profile:None,local:Some(directory),handle,workspace,client:OnceCell::new() },reader,writer).await
 }
-async fn serve_tools<R,W>(tools:Tools,mut reader:R,mut writer:W)->Result<()>
+/// Claude Code's opt-in Channels transport over the same native tools and inbox.
+/// A successful notification write is never recorded as host acceptance.
+pub async fn serve_claude<R,W>(profile:AgentProfile,reader:R,writer:W)->Result<()>
+where R:AsyncBufRead+Send+Unpin+'static,W:AsyncWrite+Unpin {
+    profile.validate()?;
+    serve_tools_mode(Tools{profile:Some(profile),local:None,handle:None,workspace:None,client:OnceCell::new()},reader,writer,true).await
+}
+pub async fn serve_claude_local<R,W>(directory:std::path::PathBuf,handle:Option<String>,workspace:Option<String>,reader:R,writer:W)->Result<()>
+where R:AsyncBufRead+Send+Unpin+'static,W:AsyncWrite+Unpin {
+    if directory.exists(){crate::participant_connect::Connect::inspect(&directory)?;}else{drop(crate::participant_connect::Connect::open(&directory)?);}
+    serve_tools_mode(Tools{profile:None,local:Some(directory),handle,workspace,client:OnceCell::new()},reader,writer,true).await
+}
+async fn serve_tools<R,W>(tools:Tools,reader:R,writer:W)->Result<()>
+where R:AsyncBufRead+Send+Unpin+'static,W:AsyncWrite+Unpin {
+    serve_tools_mode(tools,reader,writer,false).await
+}
+async fn serve_tools_mode<R,W>(tools:Tools,mut reader:R,mut writer:W,claude:bool)->Result<()>
 where R:AsyncBufRead+Send+Unpin+'static,W:AsyncWrite+Unpin {
     let tools = Arc::new(tools);
     let (tx, mut rx) = mpsc::channel(8);
@@ -268,9 +292,15 @@ where R:AsyncBufRead+Send+Unpin+'static,W:AsyncWrite+Unpin {
     let mut cancelled = BTreeSet::new();
     let mut initialized = false;
     let mut initializing = false;
+    let mut channel_task:Option<tokio::task::JoinHandle<()>>=None;
+    let (channel_tx,mut channel_rx)=mpsc::channel(8);
+    let channel_state=claude_channel::State::default();
+    let capabilities=if claude {json!({"tools":{},"experimental":{"claude/channel":{}}})}else{json!({"tools":{}})};
+    let guidance=if claude {format!("{} {}",instructions(),claude_channel::INSTRUCTIONS)}else{instructions().to_owned()};
     let outcome=async{
     loop{
         tokio::select!{
+            notification=channel_rx.recv(),if channel_task.is_some()=>if let Some(notification)=notification {write(&mut writer,notification).await?;channel_state.written();},
             joined=jobs.join_next_with_id(),if !jobs.is_empty()=>if let Some(joined)=joined{
                 match joined{
                     Ok((task,(id,response)))=>{ids.remove(&task);if calls.remove(&id).is_some()&&!cancelled.remove(&id){write(&mut writer,response).await?;}},
@@ -287,7 +317,10 @@ where R:AsyncBufRead+Send+Unpin+'static,W:AsyncWrite+Unpin {
                 }
                 let method=method.unwrap();let params=value.get("params").cloned().unwrap_or(json!({}));
                 if id.is_none(){
-                    if method=="notifications/initialized"&&initializing{initialized=true;}
+                    if method=="notifications/initialized"&&initializing{
+                        initialized=true;
+                        if claude && channel_task.is_none(){channel_task=Some(tokio::spawn(claude_channel::watch(tools.clone(),channel_tx.clone(),channel_state.clone())));}
+                    }
                     if method=="notifications/cancelled"{if let Some(id)=key(&params["requestId"]){if let Some(handle)=calls.get(&id){cancelled.insert(id);handle.abort();}}}
                     continue;
                 }
@@ -300,12 +333,14 @@ where R:AsyncBufRead+Send+Unpin+'static,W:AsyncWrite+Unpin {
                     if !params["_meta"]["io.modelcontextprotocol/clientCapabilities"].is_object(){write(&mut writer,error(id,-32602,"Required clientCapabilities missing")).await?;continue;}
                 }else if method=="initialize"{
                     if initializing||initialized||!params["protocolVersion"].is_string()||!params["capabilities"].is_object()||!params["clientInfo"].is_object(){write(&mut writer,error(id,-32602,"Invalid initialize")).await?;continue;}
-                    initializing=true;write(&mut writer,success(id,json!({"protocolVersion":LEGACY,"capabilities":{"tools":{}},"serverInfo":info(),"instructions":instructions()}),false)).await?;continue;
+                    let requested=params["protocolVersion"].as_str().unwrap();
+                    let negotiated=if ["2025-03-26","2025-06-18",LEGACY].contains(&requested){requested}else{LEGACY};
+                    initializing=true;write(&mut writer,success(id,json!({"protocolVersion":negotiated,"capabilities":capabilities,"serverInfo":info(),"instructions":guidance}),false)).await?;continue;
                 }else if !initialized{
                     write(&mut writer,error(id,-32602,"Provide per-request protocol metadata or initialize first")).await?;continue;
                 }
                 match method{
-                    "server/discover" if modern=>write(&mut writer,success(id,json!({"supportedVersions":[MODERN,LEGACY],"capabilities":{"tools":{}},"instructions":instructions()}),true)).await?,
+                    "server/discover" if modern=>write(&mut writer,success(id,json!({"supportedVersions":[MODERN,LEGACY],"capabilities":capabilities,"instructions":guidance}),true)).await?,
                     "ping"=>write(&mut writer,success(id,json!({}),modern)).await?,
                     "tools/list"=>{
                         if params.get("cursor").is_some_and(|v|!v.is_null()){write(&mut writer,error(id,-32602,"No further tool page")).await?;continue;}
@@ -317,10 +352,13 @@ where R:AsyncBufRead+Send+Unpin+'static,W:AsyncWrite+Unpin {
                         if name.is_none()||params.as_object().is_none_or(|o|o.keys().any(|k|!["name","arguments","_meta"].contains(&k.as_str()))){write(&mut writer,error(id,-32602,"Unknown tool or invalid parameters")).await?;continue;}
                         let arguments=params.get("arguments").cloned().unwrap_or(json!({}));
                         let request=match AgentRequest::parse(name.unwrap(),arguments.clone()){Ok(v)=>v,Err(_)=>{write(&mut writer,argument_error(id,name.unwrap(),&arguments)).await?;continue;}};
+                        let context=claude&&matches!(request,AgentRequest::Context);
+                        let consume=claude&&matches!(request,AgentRequest::Consume{..});
+                        let channel_state=channel_state.clone();
                         let original=arguments["operation_id"].as_str().map(str::to_owned);let tools=tools.clone();let task_key=id_key.clone();
                         let handle=jobs.spawn(async move{
                             let (out,is_error)=match tools.call(request).await{
-                                Ok(value)=>{let failed=matches!(value["state"].as_str(),Some("FAILED"|"REJECTED_NO_EFFECT"|"REJECTED"));(value,failed)},
+                                Ok(mut value)=>{if context{value["host_channel"]=channel_state.status();}let failed=matches!(value["state"].as_str(),Some("FAILED"|"REJECTED_NO_EFFECT"|"REJECTED"));if consume&&!failed{channel_state.consumed();}(value,failed)},
                                 Err(mut e)=>{if e.operation_id.is_none(){e.operation_id=original;}(json!({"error":e}),true)},
                             };
                             let result=json!({"content":[{"type":"text","text":out.to_string()}],"structuredContent":out,"isError":is_error});
@@ -334,6 +372,7 @@ where R:AsyncBufRead+Send+Unpin+'static,W:AsyncWrite+Unpin {
         }
     }Ok(())}.await;
     reading.abort();
+    if let Some(task)=channel_task {task.abort();let _=task.await;}
     let _ = reading.await;
     jobs.abort_all();
     while jobs.join_next().await.is_some() {}
@@ -398,6 +437,24 @@ mod tests {
             .write_all(format!("{value}\n").as_bytes())
             .await
             .unwrap();
+    }
+    #[tokio::test]
+    async fn claude_negotiates_mcp_and_exposes_tools_without_claiming_a_channel_is_accepted() {
+        let root=crate::test_support::protected_test_dir();let directory=root.path().join("local");
+        drop(crate::participant_connect::Connect::open(&directory).unwrap());
+        let (server,client)=tokio::io::duplex(65536);let (sr,sw)=tokio::io::split(server);let (cr,mut cw)=tokio::io::split(client);let mut cr=BufReader::new(cr);
+        let task=tokio::spawn(serve_claude_local(directory,None,None,BufReader::new(sr),sw));
+        send(&mut cw,json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"claude-code-qualification","version":"synthetic"}}})).await;
+        let init=receive(&mut cr).await;assert_eq!(init["result"]["protocolVersion"],"2025-03-26");
+        assert_eq!(init["result"]["capabilities"]["experimental"]["claude/channel"],json!({}));
+        assert!(init["result"]["capabilities"]["experimental"].get("claude/channel/permission").is_none());
+        send(&mut cw,json!({"jsonrpc":"2.0","method":"notifications/initialized"})).await;
+        send(&mut cw,json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}})).await;
+        assert_eq!(receive(&mut cr).await["result"]["tools"].as_array().unwrap().len(),2);
+        send(&mut cw,json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"peerwork_context","arguments":{}}})).await;
+        let context=receive(&mut cr).await;assert_eq!(context["result"]["structuredContent"]["state"],"NOT_CONFIGURED");
+        assert_eq!(context["result"]["structuredContent"]["host_channel"]["host_acceptance"],"NOT_ATTESTED");
+        drop(cw);assert!(tokio::time::timeout(Duration::from_secs(2),task).await.unwrap().unwrap().is_ok());
     }
     #[tokio::test]
     async fn modern_discovery_is_stateless_and_needs_no_running_engine() {

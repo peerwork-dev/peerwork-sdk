@@ -115,8 +115,9 @@ pub fn cli(args: &[String]) -> Value {
                 [selected,value,tail @ ..] if selected=="--workspace"=>(Some(value.clone()),tail),
                 _=>(None,rest),
             };
-            if rest == ["mcp"] {
-                runtime.block_on(crate::agent_mcp::serve_local_selected(path,handle,workspace,tokio::io::BufReader::new(tokio::io::stdin()),tokio::io::stdout()))?;
+            if rest == ["mcp"] || rest == ["mcp","--claude-channel"] {
+                if rest.len()==2 {runtime.block_on(crate::agent_mcp::serve_claude_local(path,handle,workspace,tokio::io::BufReader::new(tokio::io::stdin()),tokio::io::stdout()))?;}
+                else {runtime.block_on(crate::agent_mcp::serve_local_selected(path,handle,workspace,tokio::io::BufReader::new(tokio::io::stdin()),tokio::io::stdout()))?;}
                 return Ok(Value::Null);
             }
             let request=selection(rest)?;
@@ -154,12 +155,13 @@ pub fn cli(args: &[String]) -> Value {
             });
         }
         let profile = AgentProfile::load(Path::new(path))?;
-        if rest == ["mcp"] {
-            runtime.block_on(crate::agent_mcp::serve(
+        if rest == ["mcp"] || rest == ["mcp","--claude-channel"] {
+            if rest.len()==2 {runtime.block_on(crate::agent_mcp::serve_claude(profile,tokio::io::BufReader::new(tokio::io::stdin()),tokio::io::stdout()))?;}
+            else {runtime.block_on(crate::agent_mcp::serve(
                 profile,
                 tokio::io::BufReader::new(tokio::io::stdin()),
                 tokio::io::stdout(),
-            ))?;
+            ))?;}
             return Ok(Value::Null);
         }
         let request = selection(rest)?;

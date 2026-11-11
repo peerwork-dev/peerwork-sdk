@@ -26,6 +26,47 @@ mod tests {
         connect.save().unwrap();
     }
     #[test]
+    fn claude_installs_native_mcp_and_skill_without_replacing_other_hosts_or_identity() {
+        let root=crate::test_support::protected_test_dir();let project=root.path().join("project");files::directory(&project,false).unwrap();
+        let original=json!({"mcpServers":{"unrelated":{"command":"preserve","args":["original"]}},"extra":{"keep":true}});
+        files::replace(&project.join(".mcp.json"),&serde_json::to_vec(&original).unwrap()).unwrap();
+        let mut c=Connect::open(&root.path().join("local")).unwrap();registration(&mut c);
+        let identity=serde_json::to_value(&c.registry.participants).unwrap();
+        let ws="W".repeat(43);let claude=Installation{host:"claude".into(),project:project.clone(),executable:std::env::current_exe().unwrap()};
+        let agy=Installation{host:"agy".into(),..claude.clone()};
+        c.install("worker",&ws,agy.clone()).unwrap();
+        let installed=c.install("worker",&ws,claude.clone()).unwrap();
+        assert_eq!(installed["channel"]["state"],"ACTIVATION_REQUIRED");
+        assert_eq!(installed["channel"]["host_acceptance"],"NOT_ATTESTED");
+        let name=installed["server_name"].as_str().unwrap();let config=json_config(&project.join(".mcp.json")).unwrap();
+        assert_eq!(config["mcpServers"]["unrelated"],original["mcpServers"]["unrelated"]);
+        assert_eq!(config["mcpServers"][name]["type"],"stdio");
+        assert_eq!(config["mcpServers"][name]["args"][8],"--claude-channel");
+        assert_eq!(std::fs::read(project.join(".claude/skills/peerwork/SKILL.md")).unwrap(),SKILL.as_bytes());
+        let before=std::fs::metadata(project.join(".mcp.json")).unwrap().modified().unwrap();
+        assert_eq!(c.install("worker",&ws,claude.clone()).unwrap(),installed);
+        assert_eq!(std::fs::metadata(project.join(".mcp.json")).unwrap().modified().unwrap(),before);
+        assert_eq!(serde_json::to_value(&c.registry.participants).unwrap(),identity);
+        let discovered=super::super::discovery::project_bindings(&project,Some(&ws)).unwrap();
+        assert_eq!(discovered.len(),1,"same identity is one discovery choice across hosts");
+        c.uninstall("worker",&ws,agy).unwrap();
+        assert!(project.join(".claude/skills/peerwork/SKILL.md").is_file());
+        c.uninstall("worker",&ws,claude).unwrap();
+        assert_eq!(json_config(&project.join(".mcp.json")).unwrap(),original);
+        assert!(!project.join(".claude/skills/peerwork/SKILL.md").exists());
+    }
+    #[test]
+    fn claude_uninstall_preserves_a_user_edited_configuration() {
+        let root=crate::test_support::protected_test_dir();let project=root.path().join("project");files::directory(&project,false).unwrap();
+        let mut c=Connect::open(&root.path().join("local")).unwrap();registration(&mut c);let ws="W".repeat(43);
+        let spec=Installation{host:"claude".into(),project:project.clone(),executable:std::env::current_exe().unwrap()};
+        let result=c.install("worker",&ws,spec.clone()).unwrap();let name=result["server_name"].as_str().unwrap();
+        let mut value=json_config(&project.join(".mcp.json")).unwrap();value["mcpServers"][name]["args"]=json!(["user-edited"]);
+        files::replace(&project.join(".mcp.json"),&serde_json::to_vec(&value).unwrap()).unwrap();
+        assert_eq!(c.uninstall("worker",&ws,spec).unwrap_err().code,"HOST_CONFIGURATION_CHANGED");
+        assert_eq!(json_config(&project.join(".mcp.json")).unwrap(),value);
+    }
+    #[test]
     fn owned_project_install_preserves_other_servers_is_idempotent_and_uninstalls_only_owned_outputs(
     ) {
         let temp = crate::test_support::protected_test_dir();
@@ -267,7 +308,7 @@ mod tests {
         pending.entry_owned = false;
         connect.save().unwrap();
         {
-            let mut project = ProjectFiles::open(&project,None).unwrap();
+            let mut project = ProjectFiles::open(&project,None,"agy").unwrap();
             project.ownership.skill_owned = false;
             project.ownership.skill_hash = None;
             project.ownership.pending_skill_hash = Some(sha256_hex(SKILL.as_bytes()));
@@ -349,7 +390,16 @@ pub(super) fn server_name(
     )
 }
 fn entry(directory: &Path, participant: &str, workspace: &str, spec: &Installation) -> Value {
-    json!({"command":spec.executable,"args":["agent","--local",directory,"--participant",participant,"--workspace",workspace,"mcp"]})
+    let mut value=json!({"command":spec.executable,"args":["agent","--local",directory,"--participant",participant,"--workspace",workspace,"mcp"]});
+    if spec.host=="claude" {
+        value["type"]=json!("stdio");
+        value["args"].as_array_mut().unwrap().push(json!("--claude-channel"));
+    }
+    value
+}
+fn skill_root(host:&str)->&str {if host=="claude"{".claude"}else{".agents"}}
+fn config_location(host:&str)->(Option<&str>,&str) {
+    match host {"codex"=>(Some(".codex"),"config.toml"),"claude"=>(None,".mcp.json"),_=>(Some(".agents"),"mcp_config.json")}
 }
 #[derive(Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -372,10 +422,10 @@ pub(super) fn matches_installation(connect:&Connect,project:&Path,host:&str,name
         && record.project_identity.as_ref().is_none_or(|wanted|crate::onboarding_project::Directory::open(project).and_then(|p|p.identity()).as_ref().ok()==Some(wanted)))
 }
 impl ProjectFiles {
-    fn open(project:&Path,own_reference:Option<&str>)->Result<Self>{
+    fn open(project:&Path,own_reference:Option<&str>,host:&str)->Result<Self>{
         let context=crate::onboarding_project::Directory::open(project)?;
         let identity=context.identity()?;
-        let agents=context.child(".agents",false,false)?.ok_or_else(||local("HOST_INSTALLATION_RECOVERY_REQUIRED"))?;
+        let agents=context.child(skill_root(host),false,false)?.ok_or_else(||local("HOST_INSTALLATION_RECOVERY_REQUIRED"))?;
         const MARKER:&str=".peerwork-installation";
         let kind=agents.kind(MARKER)?;
         let legacy=kind==Some("DIRECTORY");
@@ -384,7 +434,7 @@ impl ProjectFiles {
             OwnershipStore::anchored(directory,"ownership.state",true)?
         }else{
             if kind==Some("OTHER"){return Err(local("HOST_INSTALLATION_RECOVERY_REQUIRED"))}
-            let directory=crate::onboarding_state::project(project,"installations",true)?.unwrap();
+            let directory=crate::onboarding_state::project(project,if host=="claude"{"claude-installations"}else{"installations"},true)?.unwrap();
             if kind.is_some() && !directory.join("ownership.state").is_file(){return Err(local("HOST_INSTALLATION_ORIGINAL_STATE_REQUIRED"))}
             let store=SecureStateStore::open(&directory.join("ownership.state")).map_err(|_|local("HOST_INSTALLATION_ALREADY_OWNED_OR_UNSAFE"))?;
             OwnershipStore::Protected(store)
@@ -524,7 +574,7 @@ impl Connect {
         self.require_writer()?;
         if !self.registry.participants.contains_key(participant)
             || !token(workspace)
-            || !["codex", "agy"].contains(&spec.host.as_str())
+            || !["codex", "agy", "claude"].contains(&spec.host.as_str())
             || !spec.executable.is_absolute()
             || !std::fs::metadata(&spec.executable).is_ok_and(|m| m.is_file())
         {
@@ -541,17 +591,17 @@ impl Connect {
         if prior.is_none() && self.registry.installations.len() >= 32 {
             return Err(local("HOST_INSTALLATION_LIMIT"));
         }
-        let agents = project_root.child(".agents",true,false)?.unwrap();
+        let agents = project_root.child(skill_root(&spec.host),true,false)?.unwrap();
         // This project-scoped owner serializes Peerwork installations from
         // distinct identity registries and tracks shared Skill provenance.
-        let mut project = ProjectFiles::open(&spec.project,prior.as_ref().map(|_|reference.as_str()))?;
+        let mut project = ProjectFiles::open(&spec.project,prior.as_ref().map(|_|reference.as_str()),&spec.host)?;
         if !project.ownership.references.contains(&reference)
             && project.ownership.references.len() >= 64
         {
             return Err(local("HOST_INSTALLATION_LIMIT"));
         }
-        let config_directory = if spec.host == "codex" { project_root.child(".codex",true,false)?.unwrap() } else { project_root.child(".agents",true,false)?.unwrap() };
-        let config_name = if spec.host == "codex" {"config.toml"} else {"mcp_config.json"};
+        let (subdirectory,config_name)=config_location(&spec.host);
+        let config_directory=match subdirectory {Some(name)=>project_root.child(name,true,false)?.unwrap(),None=>crate::onboarding_project::Directory::open(&spec.project)?};
         let config = config_directory.path().join(config_name);
         let old_config = config_directory.read(config_name,256*1024,false)?;
         let new_config = if spec.host == "codex" {
@@ -684,11 +734,13 @@ impl Connect {
             self.registry.installations.get_mut(&key).unwrap().committed = true;
             self.save()?;
         }
-        Ok(
-            json!({"state":"HOST_INTEGRATION_INSTALLED","host":spec.host,"server_name":name,"participant":participant,"workspace_id":workspace,
+        let mut result=json!({"state":"HOST_INTEGRATION_INSTALLED","host":spec.host,"server_name":name,"participant":participant,"workspace_id":workspace,
             "mcp_configuration":config,"skill":skill,"current_session_tools":"NOT_ATTESTED","host_delivery":"NOT_ATTESTED",
-            "next_action":"REFRESH_HOST_AND_CALL_PEERWORK_CONTEXT","identity_files_copied":false}),
-        )
+            "next_action":"REFRESH_HOST_AND_CALL_PEERWORK_CONTEXT","identity_files_copied":false});
+        if spec.host=="claude" {
+            result["channel"]=json!({"state":"ACTIVATION_REQUIRED","maturity":"RESEARCH_PREVIEW","start_argv":["claude","--dangerously-load-development-channels",format!("server:{name}")],"host_acceptance":"NOT_ATTESTED","next_action":"ENABLE_CHANNEL_IN_CLAUDE_AND_VERIFY_A_REAL_MESSAGE"});
+        }
+        Ok(result)
     }
     pub fn uninstall(
         &mut self,
@@ -703,10 +755,10 @@ impl Connect {
         };
         let project_root=crate::onboarding_project::Directory::open(&spec.project)?;
         if owned.project_identity.as_ref().is_some_and(|wanted|project_root.identity().as_ref().ok()!=Some(wanted)) {return Err(local("PROJECT_DIRECTORY_CHANGED_RESELECT_ORIGINAL"))}
-        let config_directory=project_root.child(if spec.host=="codex"{".codex"}else{".agents"},false,false)?.ok_or_else(||local("HOST_CONFIGURATION_CHANGED"))?;
-        let config_name=if spec.host=="codex"{"config.toml"}else{"mcp_config.json"};
+        let (subdirectory,config_name)=config_location(&spec.host);
+        let config_directory=match subdirectory {Some(name)=>project_root.child(name,false,false)?.ok_or_else(||local("HOST_CONFIGURATION_CHANGED"))?,None=>crate::onboarding_project::Directory::open(&spec.project)?};
         let own_reference=reference(&self.directory,&key);
-        let mut project=ProjectFiles::open(&spec.project,Some(&own_reference))?;
+        let mut project=ProjectFiles::open(&spec.project,Some(&own_reference),&spec.host)?;
         let old_config=config_directory.read(config_name,256*1024,false)?;
         let new_config = if !owned.entry_owned {
             None
@@ -748,7 +800,7 @@ impl Connect {
             .references
             .iter()
             .any(|r| r != &own_reference);
-        let agents=project_root.child(".agents",false,false)?.ok_or_else(||local("HOST_SKILL_CHANGED"))?;
+        let agents=project_root.child(skill_root(&spec.host),false,false)?.ok_or_else(||local("HOST_SKILL_CHANGED"))?;
         let skill_dir=agents.child("skills",false,false)?.map(|d|d.child("peerwork",false,false)).transpose()?.flatten();
         let existing_skill=match &skill_dir {Some(dir)=>dir.read("SKILL.md",65536,false)?,None=>None};
         let remove_skill = !shared

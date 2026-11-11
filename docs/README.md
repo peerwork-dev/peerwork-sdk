@@ -12,6 +12,7 @@ Workspace memberships and protocol roles.
 ## Installation and operation
 
 - [Distribution and OS dependencies](native-distribution.md)
+- [Claude Code tools and Channels](claude-code.md)
 - [Existing-client tool attachment](existing-client-tools.md)
 - [Participant API and resident runtime](participant-runtime-candidate.md)
 - [Identity, state and session handoff](native-state-handoff.md)

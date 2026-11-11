@@ -155,6 +155,7 @@ pub(super) fn pin_project_binding(project:&Path,original:&Connect,participant:&s
     match &target.binding {Some(old) if old!=binding=>Err(local("ORIGINAL_INSTALLATION_RECOVERY_REQUIRED")),Some(_)=>Ok(()),None=>{target.binding=Some(binding.clone());index.save()}}
 }
 fn read_project_config(project:&ProjectDirectory,host:&str)->Result<Option<Vec<u8>>> {
+    if host=="claude" {return project.read(".mcp.json",256*1024,false)}
     let name=if host=="codex"{".codex"}else{".agents"};
     let Some(directory)=project.child(name,false,false)? else{return Ok(None)};
     directory.read(if host=="codex"{"config.toml"}else{"mcp_config.json"},256*1024,false)
@@ -164,8 +165,8 @@ pub(super) fn project_bindings(project:&Path,workspace:Option<&str>)->Result<Vec
     let context=ProjectDirectory::open(project)?;
     let project_identity=context.identity()?;
     let mut found=BTreeMap::new();
-    for host in ["codex","agy"] {
-        let path=project.join(if host=="codex"{".codex/config.toml"}else{".agents/mcp_config.json"});
+    for host in ["codex","agy","claude"] {
+        let path=project.join(match host {"codex"=>".codex/config.toml","claude"=>".mcp.json",_=>".agents/mcp_config.json"});
         let Some(bytes)=read_project_config(&context,host)? else{continue};
         let entries:Vec<(String,Value)>=if host=="codex" {
             let doc=std::str::from_utf8(&bytes).ok().and_then(|s|s.parse::<toml_edit::DocumentMut>().ok()).ok_or_else(||local("DISCOVERY_INCOMPLETE"))?;
@@ -184,7 +185,8 @@ pub(super) fn project_bindings(project:&Path,workspace:Option<&str>)->Result<Vec
         for (name,entry) in entries {
             if !name.starts_with("peerwork-"){continue}
             let Some(args)=entry["args"].as_array() else{continue};
-            if args.len()!=8 || args[0]!="agent" || args[1]!="--local" || args[3]!="--participant" || args[5]!="--workspace" || args[7]!="mcp"{continue}
+            let wanted=if host=="claude" {9}else{8};
+            if args.len()!=wanted || args[0]!="agent" || args[1]!="--local" || args[3]!="--participant" || args[5]!="--workspace" || args[7]!="mcp" || host=="claude" && args[8]!="--claude-channel" {continue}
             let (Some(directory),Some(participant),Some(ws))=(args[2].as_str(),args[4].as_str(),args[6].as_str())else{continue};
             if workspace.is_some_and(|wanted|wanted!=ws){continue}
             let directory=PathBuf::from(directory);let original=Connect::inspect(&directory)?;

@@ -45,6 +45,20 @@ verified receiving and a model reply are separate observations. The supported
 Codex shared-daemon path and scoped cross-user bridge are described in the
 [connection reference](participant-connect.md).
 
+## Claude Code: native MCP and opt-in Channels
+
+Development builds after0.3.24 add:
+
+```sh
+peerwork connect --workspace WORKSPACE_ID --join --body-keys --install claude
+```
+
+This installs `.mcp.json` and the Claude Skill while retaining the original
+runtime and native inbox. Use the returned `integration.channel.start_argv`
+to activate Claude Code's Channels preview interactively. MCP installation
+alone does not establish automatic wake. See the [Claude Code guide](claude-code.md)
+for availability, exact confirmation and existing-session limits.
+
 ## AGY: use only the supported receiving path
 
 If this Peer already received PUSH in AGY, keep the original host binding and

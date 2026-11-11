@@ -1563,12 +1563,14 @@ pub fn cli(args: &[String]) -> Value {
             "peerwork connect --workspace WORKSPACE --codex --join --body-keys --install codex",
             "peerwork connect --workspace WORKSPACE --codex --codex-chat EXACT_TITLE_OR_THREAD --join --body-keys --install codex",
             "peerwork connect --workspace WORKSPACE --host EXISTING_AGY_HOST --install agy",
+            "peerwork connect --workspace WORKSPACE --join --body-keys --install claude",
             "peerwork connect --workspace WORKSPACE --receive --receive-mode inbox --join --body-keys --install agy",
             "peerwork connect --workspace WORKSPACE --program --join --body-keys"],
             "existing_client":"Start with peerwork_context. Reuse the selected client and loaded tools.",
             "defaults":{"send":true,"receive":true,"agent_receive_mode":"PUSH"},
             "resume":"Resume the same setup. For Codex CLI attachment, repeat its unchanged invocation and keep the returned setup ID.",
             "agy":"INBOX supports explicit inbox/wait. Existing interactive CLI PUSH is not established. Reuse an owned stdio binding for supported live input; MCP installation alone does not enable PUSH.",
+            "claude":"--install claude installs native stdio MCP and the Claude Skill. It uses the existing native inbox for opt-in Claude Channels; the returned start_argv requires interactive activation during the research preview. Notification writes do not prove model acceptance.",
             "advanced_help_command":"peerwork connect --help-all"});
     }
     if args == ["--help-all"] {
@@ -1618,6 +1620,10 @@ pub fn cli(args: &[String]) -> Value {
             if values.contains_key("--codex-chat")&&values.contains_key("--codex-host"){return Err(local("SELECT_ONE_CODEX_DESTINATION"));}
             if selected_adapter.is_some()||values.contains_key("--host")||values.contains_key("--attach")||values.contains_key("--program")||values.get("--receive-mode").is_some_and(|m|m!="push") {return Err(local("SELECT_ONE_HOST_ADAPTER"));}
             values.insert("--receive".into(),"true".into());
+        }
+        if values.get("--install").is_some_and(|host|host=="claude")
+            && (values.contains_key("--codex")||selected_adapter.is_some()||values.contains_key("--host")||values.get("--receive-mode").is_some_and(|mode|mode!="inbox")) {
+            return Err(local("CLAUDE_CHANNEL_USES_NATIVE_INBOX_NOT_ANOTHER_HOST_ADAPTER"));
         }
         if let Some(mode)=values.get("--receive-mode"){
             if !matches!(mode.as_str(),"push"|"inbox")||!values.contains_key("--receive"){return Err(local("RECEIVE_MODE_REQUIRES_RECEIVE_AND_PUSH_OR_INBOX"));}
@@ -1729,7 +1735,8 @@ pub fn cli(args: &[String]) -> Value {
             alias: values.get("--alias").cloned().unwrap_or_else(default_alias),
             send: !values.contains_key("--tools-only")&&!values.contains_key("--no-send"),
             receive: !values.contains_key("--tools-only")&&!values.contains_key("--no-receive"),
-            receive_mode: values.get("--receive-mode").map(|v|match v.as_str(){"push"=>Ok(ReceiveMode::Push),"inbox"=>Ok(ReceiveMode::Inbox),_=>Err(local("RECEIVE_MODE_USE_PUSH_OR_INBOX"))}).transpose()?,
+            receive_mode: values.get("--receive-mode").map(|v|match v.as_str(){"push"=>Ok(ReceiveMode::Push),"inbox"=>Ok(ReceiveMode::Inbox),_=>Err(local("RECEIVE_MODE_USE_PUSH_OR_INBOX"))}).transpose()?
+                .or_else(||(values.get("--install").is_some_and(|host|host=="claude")&&!values.contains_key("--tools-only")&&!values.contains_key("--no-receive")).then_some(ReceiveMode::Inbox)),
             require_body_keys: values.contains_key("--body-keys"),
             request_membership: values.contains_key("--join"),
             protocols: Vec::new(),

@@ -69,6 +69,7 @@ the service. Multiple roles share the original runtime and receiver.
 | Need | Guide |
 | --- | --- |
 | Install and verify an Agent | [Quickstart](docs/native-participant-quickstart.md) |
+| Claude Code installation and opt-in Channels (development) | [Claude Code](docs/claude-code.md) |
 | Identity, rights and additional roles | [Connect](docs/participant-connect.md) |
 | Program API and resident runtime | [Participant interface](docs/participant-runtime-candidate.md) |
 | Attach tools without identity migration | [Existing client tools](docs/existing-client-tools.md) |
