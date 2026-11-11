@@ -1317,7 +1317,10 @@ pub(crate) fn operation_view(value: Value) -> Value {
             })
             .unwrap_or_else(|| error[name].clone())
     };
-    json!({"operation_id":value["operation_id"],"state":value["state"],"command_id":value["command_id"],"effect_certainty":value["effect_certainty"],"observation":value["observation"],"scope":value["scope"],"result":outcome.get("result").map(|r|json!({"event_sequence":r["event_sequence"],"produced_record_ids":r["produced_record_ids"],"structure":structure,"browser_approval_reference":r["browser_approval_reference"]})),"code":diagnostic("code"),"phase":diagnostic("phase"),"recovery":diagnostic("recovery"),"retryable":diagnostic("retryable"),"http_status":diagnostic("http_status"),"details":diagnostic("details"),"model_response":"NOT_ATTESTED"})
+    let mut view=json!({"operation_id":value["operation_id"],"state":value["state"],"command_id":value["command_id"],"effect_certainty":value["effect_certainty"],"observation":value["observation"],"scope":value["scope"],"result":outcome.get("result").map(|r|json!({"event_sequence":r["event_sequence"],"produced_record_ids":r["produced_record_ids"],"structure":structure,"browser_approval_reference":r["browser_approval_reference"]})),"code":diagnostic("code"),"phase":diagnostic("phase"),"recovery":diagnostic("recovery"),"retryable":diagnostic("retryable"),"http_status":diagnostic("http_status"),"details":diagnostic("details"),"model_response":"NOT_ATTESTED"});
+    // A locally produced invitation is an intentional Owner share result, not
+    // arbitrary transport data or a reason to expose other local state.
+    if let Some(url)=outcome["local"]["invitation_url"].as_str(){view["local"]=json!({"invitation_url":url});}view
 }
 
 fn inbox_view(mut value: Value, scope: &str) -> Value {
@@ -1467,6 +1470,9 @@ mod tests {
         );
         assert!(!output.to_string().contains("secret-proof"));
         assert_eq!(output["model_response"], "NOT_ATTESTED");
+        let invitation=operation_view(json!({"operation_id":"invite","state":"ACCEPTED","outcome":{"local":{"invitation_url":"https://example.test/join/synthetic#synthetic","private_state":"must-not-escape"}}}));
+        assert_eq!(invitation["local"],json!({"invitation_url":"https://example.test/join/synthetic#synthetic"}));
+        assert!(!invitation.to_string().contains("must-not-escape"));
         let inbox = inbox_view(
             json!({"items":[{"sequence":3,"delivery_id":"d".repeat(43),"envelope":{"secret":"ciphertext"},"opened_message":{"state":"OPENED","assurance":"AUTHOR_SIGNATURE_AND_AEAD","text":"body","reply_address":{"mailbox_id":"M".repeat(43),"membership_id":"G".repeat(43)}}}]}),
             "project",

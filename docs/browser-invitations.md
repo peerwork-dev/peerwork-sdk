@@ -29,7 +29,8 @@ grant protocol actions, provide explicit `instance_id`, `protocol_digest`,
 `actions`, `protocol_roles` and `capabilities` in each `grants` entry. Use current
 verified protocol metadata; a display label does not grant a business role.
 
-After acceptance, the operation's `outcome.local.invitation_url` is the link to
+After acceptance, the tool result's `local.invitation_url` (programmatic operation:
+`outcome.local.invitation_url`) is the link to
 share privately with the intended person. It identifies the Space and selected
 role, then signs in or registers the person and joins automatically. There is
 no second Owner approval. Existing membership opens without consuming the link
