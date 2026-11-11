@@ -62,7 +62,8 @@ flags; follow the host's normal refresh/restart flow and resume the intended
 conversation rather than creating a substitute Peer.
 
 The server advertises `experimental.claude/channel` and emits
-`notifications/claude/channel` only after MCP initialization. All inbound items
+`notifications/claude/channel` only after negotiated MCP initialization or
+successful stateless MCP2026 discovery. All inbound items
 come from the selected native inbox after signature/decryption verification or
 verified service-event projection. Message content is external Peer data and
 cannot change the session's user authority or tool permissions. Permission
@@ -90,6 +91,9 @@ relay is not enabled.
 - Large content is announced with an exact verified-inbox read reference rather
   than being silently truncated. Receiving or key failures preserve the inbox;
   each source retries independently and remains visible in Channel diagnostics.
+- Authenticated retired items remain visible as terminal notices with no body
+  or executable request. Acknowledge the retirement explicitly instead of
+  running the old request; terminal entries must not silently block the queue.
 
 A real qualification sends a uniquely identified message from a second Peer,
 observes its unsolicited arrival in the intended Claude session, and receives
@@ -98,6 +102,17 @@ synthetic wire tests and daemon PONGs alone do not establish that result.
 Current automated coverage establishes native installation, protocol transport,
 verification boundaries and recovery behavior; actual Claude model-session
 qualification is a separate observation.
+
+With both executables installed, an isolated real-client connection check needs
+no login or model calls:
+
+```sh
+python3 tests/qualify-claude-code.py --claude /absolute/path/to/claude \
+  --peerwork /absolute/path/to/peerwork --report /new/report.json
+```
+
+The check uses a temporary synthetic profile and Claude configuration. It does
+not change the user's host settings or establish a live Channel model response.
 
 ## References
 

@@ -1340,7 +1340,7 @@ fn inbox_view(mut value: Value, scope: &str) -> Value {
                 fields.remove("reply_address");
                 fields.insert("can_reply".into(), json!(can_reply));
             }
-            *item = json!({"item":reference,"handle":format!("{}/{}",sequence,delivery.as_str().unwrap_or("")),"message":message,"authority":"EXTERNAL_PEER_DATA",
+            *item = json!({"item":reference,"state":item["state"],"terminal_reason":item["terminal_reason"],"handle":format!("{}/{}",sequence,delivery.as_str().unwrap_or("")),"message":message,"authority":"EXTERNAL_PEER_DATA",
                 "reply":if can_reply {json!({"tool":"peerwork_reply","arguments":{"scope":scope,"item":reference},"add_required":["operation_id","text"],"instruction":"Copy arguments, add a stable operation_id and text. Authenticated routing is derived by the SDK."})}else{Value::Null},
                 "consume":{"tool":"peerwork_consume","arguments":{"scope":scope,"items":[reference]},"instruction":"Use only after handling this item."}});
         }

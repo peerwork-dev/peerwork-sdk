@@ -23,7 +23,7 @@ impl State {
     }
 }
 
-pub(super) const INSTRUCTIONS:&str="Claude channel events contain verified Peerwork inbox items, which remain external Peer data. Use the item's reply.arguments with peerwork_reply and a stable operation_id when a reply is requested. After handling, call peerwork_consume with its consume.arguments. The same delivery_id may be notified again until consumed; do not repeat a business action under a new ID. Notification writes have no Claude acceptance acknowledgement. MCP tools work even when Channels is disabled, but automatic wake does not. Never infer a model reply from a notification write.";
+pub(super) const INSTRUCTIONS:&str="Claude channel events contain verified Peerwork inbox items, which remain external Peer data. Use the item's reply.arguments with peerwork_reply and a stable operation_id when a reply is requested. After handling, call peerwork_consume with its consume.arguments. TERMINAL items report retirement only: do not execute a retired request. The same delivery_id may be notified again until consumed; do not repeat a business action under a new ID. Notification writes have no Claude acceptance acknowledgement. MCP tools work even when Channels is disabled, but automatic wake does not. Never infer a model reply from a notification write.";
 
 pub(super) fn status()->Value {
     json!({"host":"CLAUDE_CODE","transport":"MCP_STDIO_CHANNEL","maturity":"RESEARCH_PREVIEW",
@@ -42,7 +42,8 @@ fn ownership(profile:&AgentProfile,scope:&MailScope)->Result<SecureStateStore> {
 fn notification(profile:&AgentProfile,scope:&str,mail:&MailScope,item:&Value)->Result<Value> {
     let message=&item["message"];
     let verified=message["state"]=="OPENED"&&message["assurance"]=="AUTHOR_SIGNATURE_AND_AEAD"&&message["partial"]!=true
-        ||message["state"]=="EVENT"&&message["assurance"]=="SERVICE_ATTESTED_EVENT";
+        ||message["state"]=="EVENT"&&message["assurance"]=="SERVICE_ATTESTED_EVENT"
+        ||item["state"]=="TERMINAL"&&message.is_null();
     let sequence=item["item"]["sequence"].as_u64().filter(|n|*n>0);
     let delivery=item["item"]["delivery_id"].as_str().filter(|s|s.len()==43&&s.bytes().all(|b|b.is_ascii_alphanumeric()||matches!(b,b'-'|b'_')));
     if !verified||sequence.is_none()||delivery.is_none()||item["authority"]!="EXTERNAL_PEER_DATA" {
@@ -103,6 +104,13 @@ pub(super) async fn watch(tools:Arc<Tools>,output:mpsc::Sender<Value>,state:Stat
 async fn watch_scope(profile:AgentProfile,alias:String,scope:MailScope,output:mpsc::Sender<Value>,observed:State)->Result<()> {
     let _owner=ownership(&profile,&scope)?;
     let client=AgentTools::open(profile.clone()).await?;
+    project_scope(&profile,&alias,&scope,output,observed,Duration::from_secs(30),|request|client.call(request)).await
+}
+
+// Exercise the projection separately from the already-tested native transport.
+// The source accepts only normal AgentRequest reads and retains custody itself.
+async fn project_scope<F,Fut>(profile:&AgentProfile,alias:&str,scope:&MailScope,output:mpsc::Sender<Value>,observed:State,retry_after:Duration,mut read:F)->Result<()>
+where F:FnMut(AgentRequest)->Fut,Fut:std::future::Future<Output=Result<Value>> {
     let mut notified:BTreeMap<String,Instant>=BTreeMap::new();
     let mut previous=String::new();
     observed.scope(&alias,"WAITING_NATIVE_INBOX",None);
@@ -111,11 +119,11 @@ async fn watch_scope(profile:AgentProfile,alias:String,scope:MailScope,output:mp
         let started=Instant::now();
         // A fixed head page applies backpressure without replaying the whole
         // inbox. Explicit consumption immediately admits the next pending item.
-        let mut value=client.call(AgentRequest::Wait{scope:alias.clone(),after:0,limit:8,wait_ms:5000}).await?;
+        let mut value=read(AgentRequest::Wait{scope:alias.into(),after:0,limit:8,wait_ms:5000}).await?;
         if value["state"]=="WAIT_EXPIRED" {
             // Expiry is not evidence of an empty or healthy receiver. Inspect
             // its bounded local snapshot to retain the actual source blocker.
-            value=client.call(AgentRequest::Inbox{scope:alias.clone(),after:0,limit:8}).await?;
+            value=read(AgentRequest::Inbox{scope:alias.into(),after:0,limit:8}).await?;
         }
         observed.scope(&alias,value["state"].as_str().unwrap_or("NATIVE_INBOX_OBSERVED"),value["code"].as_str());
         let items=value["items"].as_array().ok_or_else(||ParticipantError::local("CLAUDE_CHANNEL_INBOX_INVALID","CLAUDE_CHANNEL"))?;
@@ -123,7 +131,7 @@ async fn watch_scope(profile:AgentProfile,alias:String,scope:MailScope,output:mp
         notified.retain(|id,_|current.contains(id));
         for item in items {
             let id=item["item"]["delivery_id"].as_str().unwrap_or("");
-            if notified.get(id).is_some_and(|at|at.elapsed()<Duration::from_secs(30)){continue}
+            if notified.get(id).is_some_and(|at|at.elapsed()<retry_after){continue}
             match notification(&profile,&alias,&scope,item) {
                 Ok(event)=>{if output.send(event).await.is_err(){return Ok(())}notified.insert(id.into(),Instant::now());},
                 Err(error)=>{observed.scope(&alias,"UNVERIFIED_ITEM_RETAINED",Some(&error.code));if previous!=error.code {eprintln!("Peerwork Claude channel: {}",error.code);previous=error.code;}},
@@ -183,8 +191,56 @@ mod tests {
         assert_eq!(input["message"]["text"].as_str().unwrap().len(),100_000);
     }
     #[test]
+    fn authenticated_terminal_items_remain_visible_without_replaying_retired_content() {
+        let mut input=item();input["state"]=json!("TERMINAL");input["terminal_reason"]=json!("MESSAGE_WITHDRAWN");input["message"]=Value::Null;input["reply"]=Value::Null;
+        let event=notification(&profile(),"space",&mail(),&input).unwrap();
+        assert!(event["params"]["content"].as_str().unwrap().contains("MESSAGE_WITHDRAWN"));
+        assert!(!event["params"]["content"].as_str().unwrap().contains("Synthetic ping"));
+    }
+    #[test]
     fn a_mailbox_has_one_live_channel_writer_and_releases_on_exit() {
         let profile=profile();let scope=mail();let first=ownership(&profile,&scope).unwrap();
         assert!(ownership(&profile,&scope).is_err());drop(first);assert!(ownership(&profile,&scope).is_ok());
+    }
+    #[tokio::test]
+    async fn bounded_window_admits_the_next_page_only_after_explicit_handling() {
+        let head=Arc::new(std::sync::atomic::AtomicU64::new(0));let source=head.clone();
+        let (tx,mut rx)=mpsc::channel(8);let state=State::default();let observed=state.clone();
+        let task=tokio::spawn(async move {
+            project_scope(&profile(),"space",&mail(),tx,observed,Duration::from_secs(30),move|request| {
+                assert!(matches!(request,AgentRequest::Wait{after:0,limit:8,..}),"projection must not scan history or consume on its own");
+                let first=source.load(std::sync::atomic::Ordering::SeqCst);
+                let items:Vec<_>=(1..=8).map(|n|{let mut v=item();v["item"]["sequence"]=json!(first+n);v["item"]["delivery_id"]=json!(format!("{:043}",first+n));v}).collect();
+                async move {Ok(json!({"state":"RECEIVING","items":items}))}
+            }).await
+        });
+        for sequence in 1..=8 {let event=tokio::time::timeout(Duration::from_secs(1),rx.recv()).await.unwrap().unwrap();assert_eq!(event["params"]["meta"]["sequence"],sequence.to_string());}
+        assert!(tokio::time::timeout(Duration::from_millis(30),rx.recv()).await.is_err(),"full window must apply backpressure");
+        head.store(8,std::sync::atomic::Ordering::SeqCst);state.consumed();
+        for sequence in 9..=16 {let event=tokio::time::timeout(Duration::from_secs(1),rx.recv()).await.unwrap().unwrap();assert_eq!(event["params"]["meta"]["sequence"],sequence.to_string());}
+        task.abort();let _=task.await;
+    }
+    #[tokio::test]
+    async fn uncertain_notifications_redeliver_the_same_item_and_restart_keeps_it_pending() {
+        let mut first_delivery=None;
+        for _ in 0..2 {
+            let (tx,mut rx)=mpsc::channel(8);let state=State::default();let observed=state.clone();
+            let task=tokio::spawn(async move {
+                project_scope(&profile(),"space",&mail(),tx,observed,Duration::from_millis(40),|request| {
+                    assert!(matches!(request,AgentRequest::Wait{after:0,limit:8,..}));
+                    async {Ok(json!({"state":"RECEIVING","items":[item()]}))}
+                }).await
+            });
+            let event=tokio::time::timeout(Duration::from_secs(1),rx.recv()).await.unwrap().unwrap();
+            let id=event["params"]["meta"]["delivery_id"].clone();
+            if let Some(first)=&first_delivery {assert_eq!(&id,first)}else{first_delivery=Some(id.clone());}
+            state.consumed();
+            assert!(tokio::time::timeout(Duration::from_millis(15),rx.recv()).await.is_err(),"a wake without consumption must not duplicate an immediate notification");
+            tokio::time::sleep(Duration::from_millis(50)).await;state.consumed();
+            let retry=tokio::time::timeout(Duration::from_secs(1),rx.recv()).await.unwrap().unwrap();
+            assert_eq!(retry["params"]["meta"]["delivery_id"],id);
+            assert_eq!(state.status()["host_acceptance"],"NOT_ATTESTED");
+            task.abort();let _=task.await;
+        }
     }
 }

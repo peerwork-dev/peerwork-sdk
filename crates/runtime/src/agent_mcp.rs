@@ -340,7 +340,12 @@ where R:AsyncBufRead+Send+Unpin+'static,W:AsyncWrite+Unpin {
                     write(&mut writer,error(id,-32602,"Provide per-request protocol metadata or initialize first")).await?;continue;
                 }
                 match method{
-                    "server/discover" if modern=>write(&mut writer,success(id,json!({"supportedVersions":[MODERN,LEGACY],"capabilities":capabilities,"instructions":guidance}),true)).await?,
+                    "server/discover" if modern=>{
+                        write(&mut writer,success(id,json!({"supportedVersions":[MODERN,LEGACY],"capabilities":capabilities,"instructions":guidance}),true)).await?;
+                        // Stateless MCP hosts do not emit notifications/initialized.
+                        // Their successful discovery is the transport-ready edge.
+                        if claude&&channel_task.is_none(){channel_task=Some(tokio::spawn(claude_channel::watch(tools.clone(),channel_tx.clone(),channel_state.clone())));}
+                    },
                     "ping"=>write(&mut writer,success(id,json!({}),modern)).await?,
                     "tools/list"=>{
                         if params.get("cursor").is_some_and(|v|!v.is_null()){write(&mut writer,error(id,-32602,"No further tool page")).await?;continue;}
@@ -454,7 +459,22 @@ mod tests {
         send(&mut cw,json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"peerwork_context","arguments":{}}})).await;
         let context=receive(&mut cr).await;assert_eq!(context["result"]["structuredContent"]["state"],"NOT_CONFIGURED");
         assert_eq!(context["result"]["structuredContent"]["host_channel"]["host_acceptance"],"NOT_ATTESTED");
-        drop(cw);assert!(tokio::time::timeout(Duration::from_secs(2),task).await.unwrap().unwrap().is_ok());
+        drop(cw);drop(cr);assert!(tokio::time::timeout(Duration::from_secs(2),task).await.unwrap().unwrap().is_ok());
+    }
+    #[tokio::test]
+    async fn claude_stateless_discovery_needs_no_legacy_initialize_notification() {
+        let root=crate::test_support::protected_test_dir();let directory=root.path().join("local");
+        drop(crate::participant_connect::Connect::open(&directory).unwrap());
+        let (server,client)=tokio::io::duplex(65536);let (sr,sw)=tokio::io::split(server);let (cr,mut cw)=tokio::io::split(client);let mut cr=BufReader::new(cr);
+        let task=tokio::spawn(serve_claude_local(directory,None,None,BufReader::new(sr),sw));
+        send(&mut cw,modern(1,"server/discover",json!({}))).await;
+        let discovered=receive(&mut cr).await;
+        assert_eq!(discovered["result"]["capabilities"]["experimental"]["claude/channel"],json!({}));
+        send(&mut cw,modern(2,"tools/call",json!({"name":"peerwork_context","arguments":{}}))).await;
+        let context=receive(&mut cr).await;
+        assert_eq!(context["result"]["structuredContent"]["host_channel"]["transport"],"MCP_STDIO_CHANNEL");
+        assert_eq!(context["result"]["structuredContent"]["host_channel"]["notifications_written"],0);
+        drop(cw);drop(cr);assert!(tokio::time::timeout(Duration::from_secs(2),task).await.unwrap().unwrap().is_ok());
     }
     #[tokio::test]
     async fn modern_discovery_is_stateless_and_needs_no_running_engine() {
