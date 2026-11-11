@@ -197,6 +197,13 @@ pub enum CatalogAcceptedResult {
 }
 
 impl KernelAcceptedResult {
+    /// A renewed transport envelope can recover an older committed author.
+    /// Out-of-band pins must name that accepted source, not the latest packet.
+    pub(crate) fn accepted_author_intent_digest(&self)->Option<String>{
+        if self.outcome_state()!="ACCEPTED"{return None;}
+        let result:serde_json::Value=serde_json::from_str(self.structure_result_json.as_deref()?).ok()?;
+        Some(peerwork_core::crypto::sha256_hex(result["author_intent"].as_str()?.as_bytes()))
+    }
     /// Non-secret out-of-band bootstrap commitment derived only from the
     /// verified original Owner result. It is not added to signed service data.
     pub fn browser_approval_reference(&self)->Option<String>{
@@ -1126,6 +1133,7 @@ mod tests {
         let applied_json:serde_json::Value=serde_json::from_str(applied.structure_result_json.as_deref().unwrap()).unwrap();
         assert_eq!(applied_json["state"],json!({"count":1}));assert_eq!(applied_json["status"],"APPLIED");
         assert_eq!(sha256_hex(applied_json["author_intent"].as_str().unwrap().as_bytes()),action.intent_digest,"the result preserves the original committed authorization");
+        assert_eq!(applied.accepted_author_intent_digest().as_deref(),Some(action.intent_digest.as_str()),"share references pin the committed author despite a renewed local envelope");
         let read=client.prepare_command(&identity,&command(84,"structure.instance.get",json!({"profile":"backend-structure-v1"}),Some(&workspace),Some(&instance),Some(&protocol),None),None).unwrap();
         let read=client.submit_saved(&read.command_id,identity.key_id(),&cancel).await.unwrap();
         let current:serde_json::Value=serde_json::from_str(read.structure_result_json.as_deref().unwrap()).unwrap();assert_eq!(current["state"],json!({"count":1}));

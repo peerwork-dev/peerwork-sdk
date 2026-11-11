@@ -57,12 +57,11 @@ impl KernelClient{
     Err(KernelClientError::Store(JournalError::IntentConflict))=>self.resume_saved_structure_intent(identity,authority,&command_id,Some(&selection.workspace_id),cancel).await?,other=>other?,
    }
   };
-  let accepted=matches!(&out,StructureIntentOutcome::Accepted(result) if result.outcome_state()=="ACCEPTED");
+  let accepted=match &out{StructureIntentOutcome::Accepted(result)if result.outcome_state()=="ACCEPTED"=>Some(result.accepted_author_intent_digest().ok_or(KernelClientError::InvalidResult)?),_=>None};
   let mut value=crate::participant_outcome::outcome(out);
-  if accepted{
-   let original=self.journal.verified_pending(&command_id,identity.key_id(),self.discovery.audience_utf16())?.ok_or(KernelClientError::InvalidResult)?;
+  if let Some(digest)=accepted{
    let secret=Zeroizing::new(base64url(&*seed));
-   value["local"]=json!({"invitation_url":format!("{}/join/{invitation_id}#{}.{}",selection.browser_origin,&*secret,original.proof.intent_digest()),"authority":"OWNER_SIGNED_ONE_USE_ADMISSION","body_keys":"ENCRYPTED_IN_LINK_PACKAGE"});
+   value["local"]=json!({"invitation_url":format!("{}/join/{invitation_id}#{}.{digest}",selection.browser_origin,&*secret),"authority":"OWNER_SIGNED_ONE_USE_ADMISSION","body_keys":"ENCRYPTED_IN_LINK_PACKAGE"});
   }Ok(value)
  }
 }
