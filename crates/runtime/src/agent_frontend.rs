@@ -13,6 +13,8 @@ pub fn help() -> Value {
 "peerwork agent tools",
 "peerwork connect --help",
 "peerwork agent --local PROTECTED_DIRECTORY context|mcp",
+"peerwork agent --local PROTECTED_DIRECTORY --participant HANDLE --workspace WORKSPACE mcp --claude-channel",
+"peerwork agent --profile PROFILE.json mcp --claude-channel",
 "peerwork agent --profile PROFILE.json context",
 "peerwork agent --profile PROFILE.json reachability [--workspace WORKSPACE]",
 "peerwork agent --profile PROFILE.json send --to MEMBER --id OPERATION_ID [--text-file FILE] < message.txt",
