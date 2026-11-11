@@ -223,6 +223,17 @@ impl StructureContentKeys {
         peerwork_core::structure_access::seal_access_keys(request,audience,owner,&keys,&head.key_id).map_err(|_|ContentKeyError::Integrity)
     }
 
+    pub(crate) fn package_invitation(&self,local:&str,workspace:&str,seed:&[u8;32],selected:&[String],audience:&str,owner:&str,body:&mut serde_json::Value)->Result<(),ContentKeyError>{
+        scope(local,workspace)?;let head=self.selected(local,workspace)?;
+        let mut ids=selected.to_vec();ids.push(head.key_id.clone());ids.sort();ids.dedup();
+        if ids.len()>32||ids.iter().any(|id|!token(id)){return Err(ContentKeyError::Selection);}
+        body["key_ids"]=serde_json::json!(ids);body["current_key_id"]=serde_json::json!(head.key_id);
+        let context=peerwork_core::structure_invitation::key_context(audience,workspace,owner,body);
+        let mut keys=Vec::with_capacity(ids.len());for id in ids{keys.push(peerwork_core::structure_access::AccessKeyMaterial::new(id.clone(),load(&self.db,local,workspace,&id)?).map_err(|_|ContentKeyError::Integrity)?);}
+        let mut nonce=[0;12];OsRng.try_fill_bytes(&mut nonce).map_err(|_|ContentKeyError::Entropy)?;
+        body["key_package"]=peerwork_core::structure_invitation::seal_keys(seed,&keys,&context,&nonce).map_err(|_|ContentKeyError::Integrity)?;Ok(())
+    }
+
     /// Import an already authenticated grant atomically. Historical key reads
     /// retain decryption material without changing a newer current selection.
     /// The source signature/Owner/recipient must be verified by core first.

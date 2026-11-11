@@ -21,6 +21,9 @@ use tokio_util::sync::CancellationToken;
 
 #[path = "structure_access_client.rs"]
 mod structure_access_client;
+#[path = "structure_invitation_client.rs"]
+mod structure_invitation_client;
+pub use structure_invitation_client::StructureInvitationSelection;
 pub use structure_access_client::{StructureAccessRequest,StructureAccessApproval,StructureKeyAcceptance};
 #[path = "structure_parent_client.rs"]
 mod structure_parent_client;

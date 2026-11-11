@@ -13,6 +13,7 @@ use serde_json::{json, Value};
 pub(crate) const HELPERS: &[&str] = &[
     "participant.access.approve",
     "participant.access.request",
+    "participant.invitation.create",
     "participant.archive.migrate",
     "participant.archive.sources",
     "participant.keys.accept",
@@ -42,6 +43,7 @@ pub(crate) fn kind(action: &str) -> Option<StructureOperationKind> {
     match action {
         "participant.keys.status" | "participant.time.read" => Some(StructureOperationKind::Read),
         "participant.access.approve"
+        | "participant.invitation.create"
         | "participant.archive.migrate"
         | "participant.keys.coordinate"
         | "participant.keys.rotate"
@@ -62,6 +64,7 @@ pub(crate) fn instance_scoped(action: &str) -> bool {
 pub(crate) enum Selection {
     Request(StructureAccessRequest),
     Approve(StructureAccessApproval),
+    Invitation(crate::kernel_client::StructureInvitationSelection),
     Accept(StructureKeyAcceptance),
     Rotate(StructureContentKeyRotation),
     Coordinate(String),
@@ -159,6 +162,10 @@ pub(crate) fn selection(r: &Invoke, idempotency_key: &str) -> Result<Selection> 
         serde_json::from_value(v).map_err(|_| invalid())
     }
     Ok(match r.action.as_str() {
+        "participant.invitation.create" => {
+            let selected:crate::kernel_client::StructureInvitationSelection=parse(value)?;
+            selected.validate().map_err(|_|invalid())?;Selection::Invitation(selected)
+        }
         "participant.keys.prepare" => {
             if r.body.as_object().is_none_or(|o| !o.is_empty()) {
                 return Err(invalid());

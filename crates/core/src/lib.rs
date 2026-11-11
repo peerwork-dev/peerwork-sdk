@@ -54,6 +54,7 @@ pub mod private_install_recovery;
 pub mod receipt;
 pub mod receipt_wire;
 pub mod structure_context;
+pub mod structure_invitation;
 pub mod replayed_secure_journal;
 #[allow(dead_code)]
 mod secure_chain;

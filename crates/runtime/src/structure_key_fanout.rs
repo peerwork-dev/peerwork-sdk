@@ -87,7 +87,12 @@ impl KernelClient {
      if source_key!=format!("{}:{}",author.actor_id(),author.command_id())||source["intent_digest"]!=author.intent_digest(){return Err(JournalError::InvalidReceipt.into());}
      let mut row=row.as_object().ok_or(KernelClientError::InvalidResult)?.clone();row.remove("source_key");
      let recipient:CurrentKeyRecipient=serde_json::from_value(Value::Object(row)).map_err(|_|KernelClientError::InvalidResult)?;
-     let request=verify_follow_recipient(&author,identity.actor_id(),workspace,&recipient,&audience,self.discovery.receipt_public_key(),time.server_time_ms())?;
+     let request=if author.action_id()=="structure.invitation.redeem"{
+      let issued=&source["invitation_source"];let issuer_proofs=AuthorProofContext::from_json_container(issued).map_err(|_|KernelClientError::InvalidResult)?;
+      let issuer=verify_structure_author_intent_with_proofs(issued["author_intent"].as_str().ok_or(KernelClientError::InvalidResult)?,self.discovery.audience_utf16(),issuer_proofs.as_ref()).map_err(|_|JournalError::InvalidReceipt)?;
+      if issued["intent_digest"]!=issuer.intent_digest()||issued["actor_id"]!=issuer.actor_id(){return Err(JournalError::InvalidReceipt.into());}
+      peerwork_core::structure_key_delivery::verify_follow_invitation_recipient(&author,&issuer,identity.actor_id(),workspace,&recipient,&audience,self.discovery.receipt_public_key())?
+     }else{verify_follow_recipient(&author,identity.actor_id(),workspace,&recipient,&audience,self.discovery.receipt_public_key(),time.server_time_ms())?};
      deliveries.push(keys.seal_current_delivery(identity.key_id(),workspace,&request,&recipient,&audience,identity.actor_id(),epoch,key_id)?);
     }
     let old=keys.delivery_stage(identity.key_id(),workspace,&namespace)?;

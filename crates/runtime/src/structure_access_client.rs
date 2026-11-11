@@ -278,7 +278,14 @@ impl KernelClient {
                 let source=&previous["approval"];
                 let proofs=AuthorProofContext::from_json_container(&previous).map_err(|_|KernelClientError::InvalidResult)?;
                 let original=verify_structure_author_intent_with_proofs(source["author_intent"].as_str().ok_or(KernelClientError::InvalidResult)?,self.discovery.audience_utf16(),proofs.as_ref()).map_err(|_|JournalError::InvalidReceipt)?;
-                if original.actor_id()!=identity.actor_id()||original.workspace_id()!=Some(selection.workspace_id.as_str())||original.action_id()!="structure.access.authorize"||source["intent_digest"]!=original.intent_digest()||binding["recipient_key_id"]!=request.recipient_key_id(){return Err(KernelClientError::InvalidResult);}
+                if source["intent_digest"]!=original.intent_digest()||binding["recipient_key_id"]!=request.recipient_key_id(){return Err(KernelClientError::InvalidResult);}
+                if original.action_id()=="structure.invitation.redeem"{
+                    let issued=&source["invitation_source"];let issuer_proofs=AuthorProofContext::from_json_container(issued).map_err(|_|KernelClientError::InvalidResult)?;
+                    let issuer=verify_structure_author_intent_with_proofs(issued["author_intent"].as_str().ok_or(KernelClientError::InvalidResult)?,self.discovery.audience_utf16(),issuer_proofs.as_ref()).map_err(|_|JournalError::InvalidReceipt)?;
+                    if issued["intent_digest"]!=issuer.intent_digest(){return Err(KernelClientError::InvalidResult);}
+                    let prior=peerwork_core::structure_invitation::verify_authority(&original,&issuer,identity.actor_id(),&selection.workspace_id,&String::from_utf16(self.discovery.audience_utf16()).map_err(|_|KernelClientError::InvalidResult)?,self.discovery.receipt_public_key())?;
+                    if prior.request().actor_id!=request.request().actor_id{return Err(KernelClientError::InvalidResult);}
+                }else if original.actor_id()!=identity.actor_id()||original.workspace_id()!=Some(selection.workspace_id.as_str())||original.action_id()!="structure.access.authorize"{return Err(KernelClientError::InvalidResult);}
                 let membership=binding["membership_id"].as_str().ok_or(KernelClientError::InvalidResult)?;
                 upgrade_from=Some(json!({"membership_id":membership,"authorization_digest":original.intent_digest()}));
                 if !binding["expires_at"].is_null()&&selection.deliver_content_keys {

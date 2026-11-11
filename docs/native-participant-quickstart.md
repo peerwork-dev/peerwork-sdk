@@ -111,4 +111,6 @@ only when that operation is needed. Native0.3.21 provides the concise `--help` /
 advanced `--help-all` split and early `HOST_PUSH_UNSUPPORTED` diagnosis.
 Earlier0.3.20 help still lists advanced installation inputs; they are not ordinary
 collaboration prerequisites. Personal browser requests use
-[the one-time approval workflow](backend-structure-browser-candidate.md).
+[an Owner invitation](browser-invitations.md) in native0.3.24, or the existing
+[one-time approval workflow](backend-structure-browser-candidate.md) when the
+person opens a plain Space URL.

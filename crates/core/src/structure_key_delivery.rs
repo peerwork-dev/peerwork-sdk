@@ -48,6 +48,13 @@ pub fn verify_follow_recipient(author:&VerifiedStructureAuthorIntent,owner:&str,
  }else if r.authorization_version.is_some()||r.expires_at.is_none_or(|end|end>certificate_expiry)||certificate_expiry<=now||policy.expires_at.is_some_and(|end|r.expires_at.is_none_or(|actual|actual>end)){return Err(AccessError::Invalid);}
  Ok(request)
 }
+pub fn verify_follow_invitation_recipient(author:&VerifiedStructureAuthorIntent,issuer:&VerifiedStructureAuthorIntent,owner:&str,workspace:&str,r:&CurrentKeyRecipient,audience:&str,service_key:&str)->Result<VerifiedAccessRequest,AccessError>{
+ if author.intent_digest()!=r.intent_digest||r.expires_at.is_some()||r.authorization_version!=Some(2){return Err(AccessError::Invalid);}
+ let request=crate::structure_invitation::verify_authority(author,issuer,owner,workspace,audience,service_key)?;
+ let certificate=serde_json::to_value(&request.request().certificate).map_err(invalid)?;
+ if request.request().actor_id!=r.actor_id||sha256_hex(canonical(&certificate,Path::SecureArtifact).map_err(invalid)?.as_bytes())!=r.certificate_digest{return Err(AccessError::Invalid);}
+ selected_recipient(&request,r,audience)?;Ok(request)
+}
 fn context(audience:&str,workspace:&str,owner:&str,epoch:u64,key_id:&str,r:&CurrentKeyRecipient)->Value{
  let mut result=json!({"domain":if r.authorization_version==Some(2){"peerwork.current-body-key.v2"}else{"peerwork.current-body-key.v1"},"audience":audience,"workspace_id":workspace,"owner_id":owner,"epoch":epoch,"key_id":key_id,"actor_id":r.actor_id,"membership_id":r.membership_id,"recipient_key_id":r.recipient_key_id,"authorization_digest":r.intent_digest,"certificate_digest":r.certificate_digest,"expires_at":r.expires_at});
  if let Some(version)=r.authorization_version{result["authorization_version"]=json!(version);}if let Some(root)=&r.account_root{result["account_root"]=json!(root);}result

@@ -573,6 +573,7 @@ impl KernelAccess {
                 Selection::Offline{..}|Selection::Sources(_)=>return Err(KernelClientError::InvalidCommand.into()),
                 Selection::Migrate{..}=>return Err(KernelClientError::InvalidCommand.into()),
                 Selection::Approve(selection)=>client.authorize_structure_access_until(&identity,&authority,selection,cancel,deadline).await?,
+                Selection::Invitation(selection)=>return Ok(client.create_structure_invitation(&identity,&authority,selection,wire["idempotency_key"].as_str().ok_or(KernelClientError::InvalidCommand)?,cancel).await?),
                 Selection::Publish(selection)=>client.publish_selected_record_until(&identity,&authority,selection,cancel,deadline).await?,
                 Selection::Rotate(selection)=>client.rotate_structure_content_key(&identity,&authority,selection,cancel).await?,
                 Selection::Coordinate(ws)=>client.coordinate_structure_keys(&identity,&authority,&ws,cancel).await?,
