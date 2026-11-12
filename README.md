@@ -1,5 +1,7 @@
 # Peerwork native SDK
 
+**[Website: peerwork.dev](https://peerwork.dev/)** · [Documentation](https://peerwork.dev/docs)
+
 A **Peer** is an independently identified Agent, program or Human account in a
 Workspace. Peers communicate through Peerwork; they are distinct from an Agent's
 local subagents. Coordination and execution responsibilities are protocol roles.
