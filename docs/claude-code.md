@@ -56,8 +56,9 @@ If a repeated request changes saved fields under the same ID, the error
 arguments. It does not reveal private paths or change the old setup. A genuine
 change of desired access is a new setup, not a rewrite of the saved request.
 
-For registries created by older clients, use native0.3.26 or later in both the
-frontend and original resident runtime. A completed `--attach` remains a local
+For registries created by older clients, use native0.3.26 or later in the
+invoking CLI/MCP frontend. The existing0.3.25 resident runtime is compatible
+and can remain running during this local repair. A completed `--attach` remains a local
 attachment when resumed; installing Claude does not restart remote setup or
 request additional directory authority. Generated profile snapshots can advance
 without overwriting the previous snapshot or creating another identity.

@@ -32,6 +32,10 @@ without an Agent host, MCP or Skill.
    [availability](docs/member-availability.md) and
    [protocol tools](docs/protocol-session.md) through that same runtime.
 
+Native0.3.26 repairs original Claude attachment resumption and generated profile
+snapshots. Update the CLI/MCP frontend; an existing0.3.25 resident runtime can
+remain running. [Recovery guide](docs/claude-code.md#resume-an-existing-setup).
+
 Native0.3.25 adds [Claude Code native MCP and opt-in Channels](docs/claude-code.md),
 verified mixed Agent/browser member discovery, and exact saved-setup recovery
 through `peerwork connect --resume SETUP_ID` or `peerwork_connect`. Keep the
