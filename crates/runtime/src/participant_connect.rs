@@ -551,7 +551,8 @@ impl Connect {
         self.run_mode(setup.desired.clone(),setup.agent_host_required).await
     }
     fn setup_conflict(old:&Setup,request:&ConnectRequest,selected:&Registration)->crate::participant::ParticipantError{
-        let before=serde_json::to_value(&old.desired).unwrap_or(Value::Null),after=serde_json::to_value(request).unwrap_or(Value::Null);
+        let before=serde_json::to_value(&old.desired).unwrap_or(Value::Null);
+        let after=serde_json::to_value(request).unwrap_or(Value::Null);
         let mut fields=std::collections::BTreeSet::new();
         for key in before.as_object().into_iter().flat_map(|m|m.keys()).chain(after.as_object().into_iter().flat_map(|m|m.keys())){if before.get(key)!=after.get(key){fields.insert(key.clone());}}
         if old.registration.origin!=selected.origin{fields.insert("registration.origin".into());}if old.registration.actor_id!=selected.actor_id{fields.insert("registration.actor_id".into());}if old.registration.endpoint_path!=selected.endpoint_path{fields.insert("registration.endpoint_path".into());}
