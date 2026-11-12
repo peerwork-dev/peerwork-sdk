@@ -1977,7 +1977,7 @@ mod tests {
         assert_eq!(serde_json::to_value(reader.profile_for_scope(Some("peer"),None).unwrap().unwrap()).unwrap(),serde_json::to_value(&old).unwrap());
         assert_ne!(reader.ensure_profile("original",&old).unwrap(),path);
         assert_eq!(std::fs::read(root.path().join("profile-original.json")).unwrap(),legacy);
-        assert_eq!(std::fs::read(&path).unwrap(),bytes);assert_eq!(connect.registry.setups.len(),1);assert_eq!(connect.registry.setups["original"].desired,request);
+        assert_eq!(std::fs::read(&path).unwrap(),bytes);assert_eq!(connect.registry.setups.len(),1);assert!(connect.registry.setups["original"].desired==request);
         let mut changed=current.clone();changed.expected_actor="B".repeat(43);crate::onboarding_files::replace(&path,&serde_json::to_vec(&changed).unwrap()).unwrap();
         let error=connect.ensure_profile("original",&current).unwrap_err();assert_eq!(error.code,"DERIVED_PROFILE_CONFLICT");let details=error.details.unwrap();assert_eq!(details["differing_fields"],json!(["expected_actor"]));assert_eq!(details["effect_certainty_scope"],"REMOTE_SUBMISSION");assert!(!details.to_string().contains(root.path().to_str().unwrap()));
     }

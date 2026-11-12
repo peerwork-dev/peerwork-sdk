@@ -58,8 +58,9 @@ def main():
         def run(*words, success=True):
             result = subprocess.run([str(cli), *map(str, words)], cwd=root,
                                     capture_output=True, text=True, encoding='utf-8', timeout=20,env=native_env)
-            assert (result.returncode == 0) == success, 'unexpected native exit status'
-            return json.loads(result.stdout)
+            value=json.loads(result.stdout)
+            assert (result.returncode == 0) == success, {'state':value.get('state'),'error':value.get('error')}
+            return value
 
         # Interface maturity is a property of these bytes. Publication and
         # remote/host readiness cannot be inferred from a compiled help string.
@@ -169,7 +170,7 @@ def main():
             attached=run('connect','--local',attached_registry,'--participant','worker',
                          '--client',endpoint,'--origin','http://127.0.0.1:1',
                          '--actor',created['actor_id'],'--workspace','W'*43,
-                         '--attach','--install','claude','--project',claude_project)
+                         '--attach','--tools-only','--install','claude','--project',claude_project)
             assert attached['state']=='LOCAL_ATTACHED',attached
             resumed=run('connect','--local',attached_registry,'--resume',attached['setup_id'],
                         '--install','claude','--project',claude_project)
