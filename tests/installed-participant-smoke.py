@@ -117,8 +117,8 @@ def main():
                          'state_directory': str(root / 'engine'), 'allow_loopback_http': True,
                          'max_inflight': 1, 'max_pending': 2}],
             'clients': [{'name': 'reader', 'engine': 'one', 'capability': {
-                'operations': ['structure.workspace.get'], 'allow_root': False,
-                'workspace_ids': ['synthetic'], 'instance_ids': None,
+                'operations': ['structure.workspace.get', 'structure.members.read'], 'allow_root': False,
+                'workspace_ids': ['W' * 43], 'instance_ids': None,
                 'protocol_digests': None, 'business_actions': None}}], 'hosts': [],
         })
         capability_request = write('capabilities.json', {'method': 'capabilities'})
@@ -161,6 +161,26 @@ def main():
             found=run('connect','--project',project,'--context')
             assert created['actor_id'] in json.dumps(found)
             assert run('identity','info',identity)==created
+            # Existing tools-only attachment must resume locally after authority
+            # normalization. The configured service is intentionally unreachable:
+            # installing Claude must not restart remote setup or request rights.
+            claude_project=root/'claude project';claude_project.mkdir()
+            attached_registry=root/'attached-original'
+            attached=run('connect','--local',attached_registry,'--participant','worker',
+                         '--client',endpoint,'--origin','http://127.0.0.1:1',
+                         '--actor',created['actor_id'],'--workspace','W'*43,
+                         '--attach','--install','claude','--project',claude_project)
+            assert attached['state']=='LOCAL_ATTACHED',attached
+            resumed=run('connect','--local',attached_registry,'--resume',attached['setup_id'],
+                        '--install','claude','--project',claude_project)
+            assert resumed['state']=='LOCAL_ATTACHED',resumed
+            integration=resumed['integration']
+            assert integration['channel']['start_argv']==[
+                'claude','--dangerously-load-development-channels',
+                'server:'+integration['server_name']]
+            assert integration['channel']['host_acceptance']=='NOT_ATTESTED'
+            assert run('connect','--local',attached_registry,'--resume',attached['setup_id'])['setup_id']==resumed['setup_id']
+            assert run('identity','info',identity)==created
             if os.name!='nt':assert shared.stat().st_mode&0o777==0o775
             assert capability['value']['maturity'] == 'EXPERIMENTAL'
             assert 'availability' not in capability['value']
@@ -188,7 +208,7 @@ def main():
                 process.communicate(timeout=20)
         print(json.dumps({'state': 'PASS', 'scope': 'installed native local process, synthetic identity only',
                           'checks': ['protected Unicode path', 'unconfigured connect discovery', 'unconfigured installed MCP catalog/context', 'identity reopen', 'scoped encrypted IPC',
-                                     'shared project/private user state', 'original installed identity discovery', 'admin denial', 'single owner', 'kill/restart', 'graceful shutdown'],
+                                     'shared project/private user state', 'original installed identity discovery', 'Claude attachment resume and exact activation command', 'admin denial', 'single owner', 'kill/restart', 'graceful shutdown'],
                           'children_terminal': len(stopped), 'runtime_version': json.loads(subprocess.check_output([str(runtime_cli),'version'],text=True))['version'], 'service_or_model': 'NOT_EXERCISED'}))
 
 

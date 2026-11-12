@@ -454,15 +454,26 @@ impl Connect {
         let partial = self.registry.setups.get(id).is_some_and(|s|
             s.agent_host_required && s.desired.receive && !s.channel_receive);
         let suffix = if partial { "-tools" } else { "" };
-        let path = self.directory.join(format!("profile-{id}{suffix}.json"));
-        let name=format!("profile-{id}{suffix}.json");
+        // Setup IDs identify resumable requests, not immutable projections.
+        // A stale reader or an older frontend may still hold the prior view.
+        // Publish each trusted snapshot separately without overwriting it.
+        let encoded=serde_json::to_vec(profile).map_err(|_|local("DERIVED_PROFILE_INVALID"))?;
+        let digest=sha256_hex(&encoded);
+        let name=format!("profile-{id}{suffix}-{digest}.json");
+        let path = self.directory.join(&name);
         match self.private_directory.read(&name,512*1024,true)? {
             Some(bytes)=>{
                 let old:AgentProfile=serde_json::from_value(peerwork_core::strict_json::parse_strict_json(&bytes).map_err(|_|local("DERIVED_PROFILE_INVALID"))?).map_err(|_|local("DERIVED_PROFILE_INVALID"))?;
                 old.validate()?;
-                if serde_json::to_value(&old).ok()!=serde_json::to_value(profile).ok(){return Err(local("DERIVED_PROFILE_CONFLICT"))}
+                if serde_json::to_value(&old).ok()!=serde_json::to_value(profile).ok(){
+                    let before=serde_json::to_value(&old).map_err(|_|local("DERIVED_PROFILE_INVALID"))?;
+                    let after=serde_json::to_value(profile).map_err(|_|local("DERIVED_PROFILE_INVALID"))?;
+                    let fields:std::collections::BTreeSet<_>=before.as_object().into_iter().flat_map(|m|m.keys()).chain(after.as_object().into_iter().flat_map(|m|m.keys())).filter(|k|before.get(*k)!=after.get(*k)).cloned().collect();
+                    let mut error=local("DERIVED_PROFILE_CONFLICT");error.phase="LOCAL_PROFILE_MATERIALIZATION".into();error.recovery="INSPECT_ORIGINAL_REGISTRY_PROJECTION".into();
+                    error.details=Some(json!({"setup_id":id,"differing_fields":fields,"existing_file_preserved":true,"profile_source":"TRUSTED_CONNECT_REGISTRY","effect_certainty_scope":"REMOTE_SUBMISSION","local_state_may_have_changed":true,"next_action":"INSPECT_ORIGINAL_REGISTRY_PROJECTION_WITHOUT_RESETTING_IDENTITY"}));return Err(error);
+                }
             },
-            None=>self.private_directory.replace_private(&name,None,&serde_json::to_vec(profile).map_err(|_|local("DERIVED_PROFILE_INVALID"))?)?,
+            None=>self.private_directory.replace_private(&name,None,&encoded)?,
         }
         Ok(path)
     }
@@ -480,7 +491,8 @@ impl Connect {
         // Authority provenance follows the persisted profile, not transient
         // setup status or a coincidental endpoint layout.
         if old.result["client_authority_model"]=="SERVICE_CURRENT"{result["client_authority_model"]=json!("SERVICE_CURRENT");}
-        if old.result != result || (old.profile.is_none() && profile.is_some()) {
+        let profile_changed=profile.as_ref().is_some_and(|next|serde_json::to_value(&old.profile).ok()!=serde_json::to_value(Some(next)).ok());
+        if old.result != result || profile_changed {
             old.result = result.clone();
             if profile.is_some() {
                 old.profile = profile;
@@ -579,6 +591,16 @@ impl Connect {
         );
         if let Some(old)=self.registry.setups.get(&request.setup_id){
             if old.digest!=digest||old.registration!=selected{return Err(Self::setup_conflict(old,&request,&selected));}
+            // Attachment is already a complete local operation. Installing a
+            // host must not restart remote setup or require directory rights.
+            if old.result["state"]=="LOCAL_ATTACHED" {
+                if let Some(profile)=&old.profile {
+                    self.original_client(&request.participant).await?;
+                    let path=self.ensure_profile(&request.setup_id,profile)?;
+                    let mut result=old.result.clone();result["profile_path"]=json!(path);
+                    result["observation"]=json!("CACHED_LOCAL_ATTACHMENT_ORIGINAL_CLIENT_REUSED");return Ok(result);
+                }
+            }
             let normalized=self.normalize_cached_authority(&request.setup_id).await?;
             if normalized!=request.setup_id{request.setup_id=normalized;digest=sha256_hex(&serde_json::to_vec(&request).map_err(|_|local("CONNECT_ARGUMENT_INVALID"))?);}
         }
@@ -590,8 +612,9 @@ impl Connect {
                 && old.effective_host.is_none() && request.host.is_none() {
                 if let Some(profile) = &old.profile {
                     self.original_client(&request.participant).await?;
-                    self.ensure_profile(&request.setup_id, profile)?;
+                    let path=self.ensure_profile(&request.setup_id, profile)?;
                     let mut result = old.result.clone();
+                    result["profile_path"]=json!(path);
                     result["observation"] = json!("CACHED_SETUP_RESULT_HOST_CONTEXT_STILL_REQUIRED");
                     return Ok(result);
                 }
@@ -599,7 +622,7 @@ impl Connect {
             if agent && request.receive && !old.agent_host_required && old.channel_receive && old.effective_host.is_none() {
                 return Err(local("EXISTING_PROGRAM_RECEIVER_REQUIRES_EXPLICIT_REBIND"));
             }
-            if old.result["state"] == "LOCAL_CONFIGURED" {
+            if old.result["state"]=="LOCAL_CONFIGURED" {
                 if old.effective_host.is_none()&&old.channel_receive {
                     if let Some(profile)=&old.profile {
                         if let Some(endpoint)=&profile.receive_endpoint_path {
@@ -614,7 +637,7 @@ impl Connect {
                 }
                 if let Some(profile) = &old.profile {
                     self.original_client(&request.participant).await?;
-                    self.ensure_profile(&request.setup_id, profile)?;
+                    let path=self.ensure_profile(&request.setup_id, profile)?;
                     let sender_ready = RuntimeClient::connect(
                         profile.endpoint_path.clone(),
                         &profile.expected_origin,
@@ -634,6 +657,7 @@ impl Connect {
                     };
                     if sender_ready && receiver_ready {
                         let mut result = old.result.clone();
+                        result["profile_path"]=json!(path);
                         if request.receive&&old.channel_receive {
                             if let Some(endpoint)=&profile.receive_endpoint_path {
                                 let receiver=RuntimeClient::connect(endpoint.clone(),&profile.expected_origin,&profile.expected_actor).await?;
@@ -1228,7 +1252,8 @@ impl Connect {
         // Persist the trusted derivation before materializing the expendable file.
         {
             let s = self.registry.setups.get_mut(&request.setup_id).unwrap();
-            if s.profile.is_none() || (s.agent_host_required && s.desired.receive && !s.channel_receive && channel_receive) {
+            if serde_json::to_value(&s.profile).ok()!=serde_json::to_value(Some(&profile)).ok()
+                || s.channel_send!=channel_send || s.channel_receive!=channel_receive {
                 let mut intents=previous_setup.as_ref().map(|old|old.protocol_intents.clone()).unwrap_or_default();
                 if let Some(old)=&previous_setup{for selected in &old.desired.protocols{intents.entry(selected.alias.clone()).or_insert_with(||selected.clone());}}
                 for(alias,intent)in &effective_protocol_intents{intents.insert(alias.clone(),intent.clone());}s.protocol_intents=intents;
@@ -1933,6 +1958,30 @@ pub fn cli(args: &[String]) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn resumed_profile_snapshots_preserve_legacy_files_and_stale_readers() {
+        let root=crate::test_support::protected_test_dir();let mut connect=Connect::open(root.path()).unwrap();
+        let selected=Registration{origin:"https://example.invalid/".into(),actor_id:"A".repeat(43),endpoint_path:root.path().join("original-endpoint.json")};
+        connect.registry.participants.insert("peer".into(),selected.clone());
+        let request:ConnectRequest=serde_json::from_value(json!({"setup_id":"original","participant":"peer","workspace_id":"W".repeat(43),"send":false,"receive":false})).unwrap();
+        connect.begin_setup(&request,selected,false,None).unwrap();
+        let old:AgentProfile=serde_json::from_value(json!({"format":"peerwork.agent-profile.v1","endpoint_path":root.path().join("original-endpoint.json"),"expected_origin":"https://example.invalid/","expected_actor":"A".repeat(43),"scopes":{},"workspaces":{"space":"W".repeat(43)}})).unwrap();
+        let result=json!({"state":"PENDING","setup_id":"original"});connect.record(&request,result.clone(),Some(old.clone())).unwrap();
+        connect.registry.active_by_scope.insert(format!("peer:{}","W".repeat(43)),"original".into());connect.registry.active=Some("original".into());connect.save().unwrap();
+        let legacy=serde_json::to_vec(&old).unwrap();connect.private_directory.replace_private("profile-original.json",None,&legacy).unwrap();
+        let reader=Connect::inspect(root.path()).unwrap();
+        let mut current=old.clone();current.directory_endpoints.insert("W".repeat(43),root.path().join("original-endpoint.json"));
+        connect.record(&request,result,Some(current.clone())).unwrap();
+        let path=connect.ensure_profile("original",&current).unwrap();let bytes=std::fs::read(&path).unwrap();
+        assert_eq!(serde_json::to_value(connect.profile_for_scope(Some("peer"),None).unwrap().unwrap()).unwrap(),serde_json::to_value(&current).unwrap());
+        assert_eq!(serde_json::to_value(reader.profile_for_scope(Some("peer"),None).unwrap().unwrap()).unwrap(),serde_json::to_value(&old).unwrap());
+        assert_ne!(reader.ensure_profile("original",&old).unwrap(),path);
+        assert_eq!(std::fs::read(root.path().join("profile-original.json")).unwrap(),legacy);
+        assert_eq!(std::fs::read(&path).unwrap(),bytes);assert_eq!(connect.registry.setups.len(),1);assert_eq!(connect.registry.setups["original"].desired,request);
+        let mut changed=current.clone();changed.expected_actor="B".repeat(43);crate::onboarding_files::replace(&path,&serde_json::to_vec(&changed).unwrap()).unwrap();
+        let error=connect.ensure_profile("original",&current).unwrap_err();assert_eq!(error.code,"DERIVED_PROFILE_CONFLICT");let details=error.details.unwrap();assert_eq!(details["differing_fields"],json!(["expected_actor"]));assert_eq!(details["effect_certainty_scope"],"REMOTE_SUBMISSION");assert!(!details.to_string().contains(root.path().to_str().unwrap()));
+    }
+
     #[tokio::test]
     async fn saved_setup_resume_preserves_exact_request_and_rejects_pin_or_argument_changes(){
         let root=crate::test_support::protected_test_dir();let mut connect=Connect::open(root.path()).unwrap();

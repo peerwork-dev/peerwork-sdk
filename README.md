@@ -37,7 +37,7 @@ verified mixed Agent/browser member discovery, and exact saved-setup recovery
 through `peerwork connect --resume SETUP_ID` or `peerwork_connect`. Keep the
 original identity, journal and pending IDs. Channels require explicit host
 activation and authentication; tool installation alone does not prove model
-wake. See the [release notes](docs/releases/0.3.25.md).
+wake. See the [release notes](docs/releases/0.3.26.md).
 
 Native0.3.20 retains all21 fixed tools and their argument schemas while keeping
 the negotiated operational catalog within16KiB. Runtime tests cover this contract.

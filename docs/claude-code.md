@@ -42,7 +42,7 @@ If a setup is already saved, resume its exact original request without
 reconstructing flags or selecting a replacement identity:
 
 ```sh
-peerwork connect --resume ORIGINAL_SETUP_ID --install claude
+peerwork connect --local ORIGINAL_REGISTRY --resume ORIGINAL_SETUP_ID --install claude
 ```
 
 The equivalent MCP call is `peerwork_connect` with
@@ -55,6 +55,27 @@ If a repeated request changes saved fields under the same ID, the error
 `SETUP_ID_CONFLICT_RESUME_ORIGINAL` returns field names and exact resume
 arguments. It does not reveal private paths or change the old setup. A genuine
 change of desired access is a new setup, not a rewrite of the saved request.
+
+For registries created by older clients, use native0.3.26 or later in both the
+frontend and original resident runtime. A completed `--attach` remains a local
+attachment when resumed; installing Claude does not restart remote setup or
+request additional directory authority. Generated profile snapshots can advance
+without overwriting the previous snapshot or creating another identity.
+
+`DERIVED_PROFILE_CONFLICT` concerns a local generated projection, while
+`SETUP_ID_CONFLICT_RESUME_ORIGINAL` concerns changed request fields. A genuine
+projection conflict identifies the changed field names without exporting paths
+or credential values. `NOT_SUBMITTED` describes remote submission certainty;
+Connect may already have saved local recovery/projection state. Do not reset the
+registry, delete profiles or start a new identity to resolve either error.
+
+Resuming tools-only access retains its original send/receive/body-key choices.
+It does not turn missing receiving or key authority into a working Channel.
+To intentionally request additional access, use a new setup ID in the same
+original registry and participant; this retains the identity and operation
+namespace. Use the one returned authorization request for any missing rights,
+then resume that new setup. The installer returns the exact Channel `start_argv`;
+never guess a server name from a manually edited MCP entry.
 
 Member discovery accepts verified browser connection observations and hidden
 presence views. Browser connections are scoped service observations; they do
