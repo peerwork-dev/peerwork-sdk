@@ -988,3 +988,25 @@ fn selected_relation_pages_bind_direction_scope_and_exact_endpoint_even_with_fre
         changed=result.clone();let other=if direction=="OUTGOING"{"target"}else{"source"};changed["relations"][0][other]["state"]=json!("WITHDRAWN");verify(&changed).unwrap();
     }
 }
+
+#[test]
+fn mixed_member_directory_binds_browser_connections_and_hidden_presence_without_host_claims(){
+ let actor=SigningKey::from_bytes(&[21;32]);let service=SigningKey::from_bytes(&[22;32]);let discovery=terminal_discovery(&service);let kid=key_id(&service.verifying_key().to_bytes());
+ let mut query=command(&actor,"structure.members.read");query["instance_id"]=Value::Null;query["protocol_digest"]=Value::Null;query["body"]=json!({"profile":PROFILE,"view":"COLLABORATION","limit":16});
+ let prepared=prepare_signed_command_wire(&parse_wire_json_bounded(&serde_json::to_vec(&query).unwrap(),40,180000).unwrap(),&actor,&discovery,None).unwrap();
+ let receiving=json!({"state":"UNCONFIRMED","observed_at":10,"execution":"UNKNOWN","reason":"BROWSER_CONNECTION_OBSERVED","connections":{"open_connections":2,"devices":1,"scope":"THIS_SERVICE_PROCESS","assurance":"SERVICE_OBSERVED_OPEN_CONNECTIONS","observed_at":10}});
+ let browser=json!({"actor_id":key_id(&[30;32]),"membership_id":key_id(&[31;32]),"name":"Browser Peer","state":"ACTIVE","access_active":true,"receiving":receiving});
+ let agent=json!({"actor_id":query["actor_id"],"membership_id":key_id(&[32;32]),"name":"Agent Peer","state":"ACTIVE","access_active":true,"receiving":{"state":"QUEUED","observed_at":10,"execution":"BUSY","reason":null}});
+ let hidden=json!({"actor_id":key_id(&[33;32]),"membership_id":key_id(&[34;32]),"name":"Hidden Peer","state":"ACTIVE","access_active":true,"availability":{"state":"UNKNOWN","reason":"HIDDEN_BY_WORKSPACE_POLICY"},"receiving":{"state":"UNCONFIRMED","observed_at":10,"execution":"UNKNOWN","reason":"HIDDEN_BY_WORKSPACE_POLICY"}});
+ let page=json!({"profile":PROFILE,"assurance":"BACKEND_CURRENT_STATE","workspace_id":query["workspace_id"],"instance_id":null,"protocol_digest":null,"members":[browser,agent,hidden],"observed_at":10,"frontier":{"workspace_revision":1},"next_cursor":null});
+ let verify=|r:&Value|verify_http_response_for_prepared(&receipt(&service,&query,prepared.proof().intent_digest(),r),prepared.proof(),&kid);
+ verify(&page).unwrap();
+ let mut reversed=page.clone();reversed["members"].as_array_mut().unwrap().reverse();verify(&reversed).unwrap();
+ for(field,value)in[("observed_at",json!(9)),("devices",json!(3)),("scope",json!("GLOBAL")),("assurance",json!("MODEL_RESPONDED")),("open_connections",json!(-1)),("extra",json!(true))]{let mut wrong=page.clone();wrong["members"][0]["receiving"]["connections"][field]=value;assert!(verify(&wrong).is_err(),"{field}");}
+ for(field,value)in[("state",json!("REALTIME")),("execution",json!("IDLE")),("reason",json!("RECEIVER_NOT_READY"))]{let mut wrong=page.clone();wrong["members"][0]["receiving"][field]=value;assert!(verify(&wrong).is_err(),"{field}");}
+ let mut closed=page.clone();closed["members"][0]["receiving"]["connections"]["open_connections"]=json!(0);closed["members"][0]["receiving"]["connections"]["devices"]=json!(0);closed["members"][0]["receiving"]["reason"]=json!("BROWSER_CONNECTION_UNCONFIRMED");verify(&closed).unwrap();
+ let mut wrong=page.clone();wrong["members"][2]["availability"]["state"]=json!("AVAILABLE");assert!(verify(&wrong).is_err());
+ let mut wrong=page.clone();wrong["members"][2]["availability"]["declared_state"]=json!("AVAILABLE");assert!(verify(&wrong).is_err());
+ let mut duplicate=page.clone();duplicate["members"][2]=duplicate["members"][0].clone();assert!(verify(&duplicate).is_err());
+ let mut tampered:Value=serde_json::from_slice(&receipt(&service,&query,prepared.proof().intent_digest(),&page)).unwrap();tampered["result"]["members"][0]["receiving"]["connections"]["open_connections"]=json!(99);assert!(verify_http_response_for_prepared(&serde_json::to_vec(&tampered).unwrap(),prepared.proof(),&kid).is_err(),"unsigned payload tampering must still fail");
+}

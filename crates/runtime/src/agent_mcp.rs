@@ -114,10 +114,12 @@ impl Tools {
         if let Some(directory)=&self.local {
             let connect=crate::participant_connect::Connect::inspect(directory)?;
             if let AgentRequest::Connect{request}=request {
+                let (request,resume)=connect.resolve_input(request)?;
                 // Selection-only observations remain available while another
                 // setup holds the writer. They cannot sign or create bindings.
                 if self.workspace.as_ref().is_some_and(|ws|ws!=&request.workspace_id){return Err(ParticipantError::local("FRONTEND_WORKSPACE_PIN_MISMATCH","CONNECT"));}
                 if self.handle.as_ref().is_some_and(|pin|!request.participant.is_empty() && pin!=&request.participant){return Err(ParticipantError::local("FRONTEND_IDENTITY_PIN_MISMATCH","CONNECT"));}
+                if resume {drop(connect);return crate::participant_connect::Connect::open(directory)?.resume_selected(&request.setup_id,self.handle.as_deref(),self.workspace.as_deref()).await;}
                 let discovery=connect.discovery_summary();
                 if discovery.candidates.is_empty() {
                     let mut result=crate::participant_connect::Connect::selection_required(&request.setup_id);

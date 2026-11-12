@@ -125,7 +125,7 @@ pub fn cli(args: &[String]) -> Value {
             let request=selection(rest)?;
             return runtime.block_on(async {
                 if !path.exists(){drop(crate::participant_connect::Connect::open(&path)?);}
-                if let AgentRequest::Connect{request}=request {return crate::participant_connect::Connect::open(&path)?.connect_selected(request,handle.as_deref(),workspace.as_deref()).await;}
+                if let AgentRequest::Connect{request}=request {let mut connect=crate::participant_connect::Connect::open(&path)?;let (request,resume)=connect.resolve_input(request)?;return if resume {connect.resume_selected(&request.setup_id,handle.as_deref(),workspace.as_deref()).await}else{connect.connect_selected(request,handle.as_deref(),workspace.as_deref()).await};}
                 if let AgentRequest::ConnectApprove{participant,approval_id,request}=request {return crate::participant_connect::Connect::open(&path)?.approve(&participant,&approval_id,request).await;}
                 let connect=crate::participant_connect::Connect::inspect(&path)?;
                 let profile=connect.profile_for_scope(handle.as_deref(),workspace.as_deref())?;

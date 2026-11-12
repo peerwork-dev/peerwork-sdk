@@ -516,20 +516,24 @@ fn verify_member_directory(result:&WireValue,command:&WireValue,prepared:&Verifi
     }
     let WireValue::Array(members)=result.get("members").ok_or_else(invalid)? else{return Err(invalid());};
     if members.len()>number(body,"limit").unwrap_or(16).min(32) as usize {return Err(invalid());}
-    let mut previous=None;
+    let mut seen=std::collections::BTreeSet::new();
     let view=ascii_field(body,"view").unwrap_or_else(||"BASIC".into());
     for member in members {
         let actor=ascii_field(member,"actor_id").filter(|v|valid_token(v)).ok_or_else(invalid)?;
-        if previous.as_ref().is_some_and(|old:&String|old>=&actor)
+        // The signed service cursor owns SQL collation/order. Bind every row
+        // and reject duplicates without inventing a byte-order wire contract.
+        if !seen.insert(actor.clone())
             || ascii_field(member,"membership_id").is_none_or(|v|!valid_token(&v))
             || body.get("actor_id").and_then(WireValue::as_string).is_some_and(|wanted|wanted!=actor)
             || body.get("membership_id").and_then(WireValue::as_string).is_some() && member.get("membership_id")!=body.get("membership_id")
             || ascii_field(member,"state")!=Some(ascii_field(body,"state").unwrap_or_else(||"ACTIVE".into()))
             || !matches!(member.get("access_active"),Some(WireValue::Bool(_))) {return Err(invalid());}
         if let Some(availability)=member.get("availability"){
-            verify_availability(availability,&actor,matches!(member.get("access_active"),Some(WireValue::Bool(true))),number(result,"observed_at").ok_or_else(invalid)?)?;
+            if ascii_field(availability,"reason").as_deref()==Some("HIDDEN_BY_WORKSPACE_POLICY") {
+                let WireValue::Object(fields)=availability else{return Err(invalid());};
+                if actor==prepared.actor_id()||fields.len()!=2||ascii_field(availability,"state").as_deref()!=Some("UNKNOWN")||fields.iter().any(|(key,_)|!["state","reason"].iter().any(|name|key.iter().copied().eq(name.encode_utf16()))){return Err(invalid());}
+            } else {verify_availability(availability,&actor,matches!(member.get("access_active"),Some(WireValue::Bool(true))),number(result,"observed_at").ok_or_else(invalid)?)?;}
         }
-        previous=Some(actor);
         match member.get("name") {
             Some(WireValue::Null)=>(),
             Some(value)=>{let name=value.as_string().filter(|v|!v.is_empty()&&v.encode_utf16().count()<=80&&v.len()<=256&&v.trim()==v&&!valid_token(v)&&!v.chars().any(char::is_control)).ok_or_else(invalid)?;
@@ -544,7 +548,18 @@ fn verify_member_directory(result:&WireValue,command:&WireValue,prepared:&Verifi
                 || number(receiving,"observed_at")!=number(result,"observed_at")
                 || !matches!(ascii_field(receiving,"execution").as_deref(),Some("IDLE"|"BUSY"|"WAITING_APPROVAL"|"UNKNOWN"|"OFFLINE")) {return Err(invalid());}
             let WireValue::Object(fields)=receiving else{return Err(invalid());};
-            if fields.iter().any(|(key,_)|!["state","observed_at","execution","reason"].iter().any(|name|key.iter().copied().eq(name.encode_utf16()))){return Err(invalid());}
+            if fields.iter().any(|(key,_)|!["state","observed_at","execution","reason","connections"].iter().any(|name|key.iter().copied().eq(name.encode_utf16()))){return Err(invalid());}
+            if let Some(connections)=receiving.get("connections"){
+                let WireValue::Object(fields)=connections else{return Err(invalid());};
+                let open=number(connections,"open_connections").filter(|n|*n<=9_007_199_254_740_991).ok_or_else(invalid)?;
+                let devices=number(connections,"devices").ok_or_else(invalid)?;
+                let reason=if open>0{"BROWSER_CONNECTION_OBSERVED"}else{"BROWSER_CONNECTION_UNCONFIRMED"};
+                if fields.len()!=5||fields.iter().any(|(key,_)|!["open_connections","devices","scope","assurance","observed_at"].iter().any(|name|key.iter().copied().eq(name.encode_utf16())))
+                    ||devices>open||(open==0)!=(devices==0)||number(connections,"observed_at")!=number(result,"observed_at")
+                    ||ascii_field(connections,"scope").as_deref()!=Some("THIS_SERVICE_PROCESS")||ascii_field(connections,"assurance").as_deref()!=Some("SERVICE_OBSERVED_OPEN_CONNECTIONS")
+                    ||ascii_field(receiving,"state").as_deref()!=Some("UNCONFIRMED")||ascii_field(receiving,"execution").as_deref()!=Some("UNKNOWN")||ascii_field(receiving,"reason").as_deref()!=Some(reason){return Err(invalid());}
+            }
+            if ascii_field(receiving,"reason").as_deref()==Some("HIDDEN_BY_WORKSPACE_POLICY")&&(actor==prepared.actor_id()||ascii_field(receiving,"state").as_deref()!=Some("UNCONFIRMED")||ascii_field(receiving,"execution").as_deref()!=Some("UNKNOWN")){return Err(invalid());}
         }
         if view=="DELIVERY" {
             match member.get("delivery") {

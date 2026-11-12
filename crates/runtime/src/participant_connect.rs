@@ -101,6 +101,13 @@ pub struct ConnectRequest {
     #[serde(default)]
     pub host: Option<String>,
 }
+
+#[derive(Clone,Serialize,Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResumeSetup {pub resume_setup_id:String}
+#[derive(Clone,Serialize,Deserialize)]
+#[serde(untagged)]
+pub enum ConnectInput {Resume(ResumeSetup),Configure(ConnectRequest)}
 #[derive(Clone,Copy,Serialize,Deserialize,PartialEq,Eq)]
 #[serde(rename_all="SCREAMING_SNAKE_CASE")]
 pub enum ReceiveMode { Push, Inbox }
@@ -531,6 +538,25 @@ impl Connect {
     pub async fn run(&mut self, request: ConnectRequest) -> Result<Value> {
         self.run_mode(request, false).await
     }
+    pub fn resolve_input(&self,input:ConnectInput)->Result<(ConnectRequest,bool)>{
+        match input {ConnectInput::Configure(request)=>Ok((request,false)),ConnectInput::Resume(resume)=>{
+            if !identifier(&resume.resume_setup_id){return Err(local("CONNECT_ARGUMENT_INVALID"));}
+            Ok((self.registry.setups.get(&resume.resume_setup_id).ok_or_else(||local("SETUP_NOT_FOUND"))?.desired.clone(),true))
+        }}
+    }
+    pub async fn resume_selected(&mut self,id:&str,participant:Option<&str>,workspace:Option<&str>)->Result<Value>{
+        let setup=self.registry.setups.get(id).ok_or_else(||local("SETUP_NOT_FOUND"))?;
+        if participant.is_some_and(|p|p!=setup.desired.participant){return Err(local("FRONTEND_IDENTITY_PIN_MISMATCH"));}
+        if workspace.is_some_and(|w|w!=setup.desired.workspace_id){return Err(local("FRONTEND_WORKSPACE_PIN_MISMATCH"));}
+        self.run_mode(setup.desired.clone(),setup.agent_host_required).await
+    }
+    fn setup_conflict(old:&Setup,request:&ConnectRequest,selected:&Registration)->crate::participant::ParticipantError{
+        let before=serde_json::to_value(&old.desired).unwrap_or(Value::Null),after=serde_json::to_value(request).unwrap_or(Value::Null);
+        let mut fields=std::collections::BTreeSet::new();
+        for key in before.as_object().into_iter().flat_map(|m|m.keys()).chain(after.as_object().into_iter().flat_map(|m|m.keys())){if before.get(key)!=after.get(key){fields.insert(key.clone());}}
+        if old.registration.origin!=selected.origin{fields.insert("registration.origin".into());}if old.registration.actor_id!=selected.actor_id{fields.insert("registration.actor_id".into());}if old.registration.endpoint_path!=selected.endpoint_path{fields.insert("registration.endpoint_path".into());}
+        let mut error=local("SETUP_ID_CONFLICT_RESUME_ORIGINAL");error.phase="CONNECT_SETUP".into();error.recovery="RESUME_ORIGINAL_SETUP".into();error.details=Some(json!({"setup_id":request.setup_id,"differing_fields":fields,"existing_configuration_preserved":true,"original_pending_operations_preserved":true,"resume":{"tool":"peerwork_connect","arguments":{"request":{"resume_setup_id":request.setup_id}}}}));error
+    }
     /// Agent entry must never activate a program receiver while its requested
     /// host is unknown. Named existing destinations remain named, not evidence
     /// that the invoking model session is that destination.
@@ -551,13 +577,13 @@ impl Connect {
                 .as_slice(),
         );
         if let Some(old)=self.registry.setups.get(&request.setup_id){
-            if old.digest!=digest||old.registration!=selected{return Err(local("SETUP_ID_CONFLICT_RESUME_ORIGINAL"));}
+            if old.digest!=digest||old.registration!=selected{return Err(Self::setup_conflict(old,&request,&selected));}
             let normalized=self.normalize_cached_authority(&request.setup_id).await?;
             if normalized!=request.setup_id{request.setup_id=normalized;digest=sha256_hex(&serde_json::to_vec(&request).map_err(|_|local("CONNECT_ARGUMENT_INVALID"))?);}
         }
         if let Some(old) = self.registry.setups.get(&request.setup_id) {
             if old.digest != digest || old.registration != selected {
-                return Err(local("SETUP_ID_CONFLICT_RESUME_ORIGINAL"));
+                return Err(Self::setup_conflict(old,&request,&selected));
             }
             if old.result["blocker"]["code"] == "HOST_CONTEXT_REQUIRED"
                 && old.effective_host.is_none() && request.host.is_none() {
@@ -1459,6 +1485,8 @@ pub fn schema() -> Value {
     schema["properties"]["request"]["properties"]["request_membership"] = json!({"type":"boolean","default":false,"description":"Explicitly request admission if workspace access is not verified. Returns one public request covering membership and the requested rights; Owner approval is still required."});
     schema["properties"]["request"]["properties"]["receive_mode"] = json!({"type":"string","enum":["PUSH","INBOX"],"description":"PUSH (Agent default) requires an actual supported host destination. INBOX explicitly receives for MCP inbox/wait without requiring host push; it never claims automatic model wake or replaces an existing host binding. Requires receive=true."});
     schema["properties"]["request"]["properties"]["host"] = json!({"type":"string","description":"Existing host-user-approved named destination. Omission does not identify the current session; unknown Agent receive stays pending. No commands, sockets or session paths are accepted."});
+    schema["properties"]["request"].as_object_mut().unwrap().remove("required");
+    schema["properties"]["request"]["properties"]["resume_setup_id"]=json!({"type":"string","description":"Resume the saved original setup with this field alone; do not repeat defaults or scopes."});
     schema
 }
 
@@ -1487,6 +1515,7 @@ pub fn cli(args: &[String]) -> Value {
             .contains(&flag.as_str());
             if ![
                 "--local",
+                "--resume",
                 "--participant",
                 "--workspace",
                 "--id",
@@ -1589,6 +1618,7 @@ pub fn cli(args: &[String]) -> Value {
             "peerwork connect ORIGINAL_ATTACHMENT_ARGUMENTS --binding-recovery RETRY_REJECTED_OR_ABORT --decision-id STABLE_DECISION_ID",
             "peerwork connect --local ORIGINAL_REGISTRY --participant HANDLE --workspace WORKSPACE --codex --codex-chat TITLE --runtime-config ORIGINAL_DIRECT_RUNTIME.json --admin ORIGINAL_ADMIN.json --install codex",
             "peerwork connect --local ORIGINAL_REGISTRY --participant HANDLE --workspace WORKSPACE --management protocol.register,protocol.adopt,access.approve",
+            "peerwork connect --local DIRECTORY --resume ORIGINAL_SETUP_ID --install claude",
             "peerwork connect --local DIRECTORY --context",
             "peerwork connect --local ORIGINAL_DIRECTORY --context --confirm-original",
             "peerwork connect --local DIRECTORY --participant OWNER_HANDLE --id APPROVAL_ID --approve-request -",
@@ -1665,6 +1695,14 @@ pub fn cli(args: &[String]) -> Value {
         let mut connect = Connect::open(&directory)?;
         if values.contains_key("--context") {
             return Ok(connect.context());
+        }
+        if let Some(id)=values.get("--resume"){
+            if values.keys().any(|k|!["--resume","--local","--project","--participant","--install"].contains(&k.as_str())){return Err(local("SETUP_RESUME_USES_SAVED_REQUEST_ONLY"));}
+            let saved=connect.registry.setups.get(id).ok_or_else(||local("SETUP_NOT_FOUND"))?.desired.clone();
+            let runtime=tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().map_err(|_|local("EXECUTOR_FAILED"))?;
+            let mut result=runtime.block_on(connect.resume_selected(id,values.get("--participant").map(String::as_str),None))?;
+            if let Some(host)=values.get("--install"){result["integration"]=connect.install(&saved.participant,&saved.workspace_id,Installation{host:host.clone(),project,executable:std::env::current_exe().map_err(|_|local("EXECUTABLE_UNAVAILABLE"))?})?;}
+            return Ok(result);
         }
         bootstrap::runtime_inputs(&connect,&mut values)?;
         let required = |key: &str| {
@@ -1894,6 +1932,21 @@ pub fn cli(args: &[String]) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn saved_setup_resume_preserves_exact_request_and_rejects_pin_or_argument_changes(){
+        let root=crate::test_support::protected_test_dir();let mut connect=Connect::open(root.path()).unwrap();
+        let selected=Registration{origin:"https://example.invalid/".into(),actor_id:"A".repeat(43),endpoint_path:root.path().join("original-endpoint.json")};
+        connect.registry.participants.insert("peer".into(),selected.clone());
+        let request:ConnectRequest=serde_json::from_value(json!({"setup_id":"original","participant":"peer","workspace_id":"W".repeat(43),"send":false,"receive":false,"require_body_keys":true})).unwrap();let request=connect.normalize_agent_request(request).unwrap();
+        connect.begin_setup(&request,selected,true,None).unwrap();let original=serde_json::to_value(&connect.registry.setups["original"]).unwrap();
+        let mut changed=request.clone();changed.send=true;let error=connect.run_agent(changed).await.unwrap_err();assert_eq!(error.code,"SETUP_ID_CONFLICT_RESUME_ORIGINAL");let detail=error.details.unwrap();assert_eq!(detail["differing_fields"],json!(["send"]));assert_eq!(detail["resume"]["arguments"],json!({"request":{"resume_setup_id":"original"}}));assert!(!detail.to_string().contains(root.path().to_str().unwrap()));
+        let input:ConnectInput=serde_json::from_value(json!({"resume_setup_id":"original"})).unwrap();let (resolved,resume)=connect.resolve_input(input).unwrap();assert!(resume);assert!(resolved.require_body_keys);assert!(!resolved.send);assert!(resolved==request);
+        assert!(serde_json::from_value::<ConnectInput>(json!({"resume_setup_id":"original","receive":true})).is_err());
+        assert_eq!(connect.resume_selected("original",Some("other"),None).await.unwrap_err().code,"FRONTEND_IDENTITY_PIN_MISMATCH");
+        assert_eq!(connect.resume_selected("original",None,Some(&"X".repeat(43))).await.unwrap_err().code,"FRONTEND_WORKSPACE_PIN_MISMATCH");
+        assert_eq!(serde_json::to_value(&connect.registry.setups["original"]).unwrap(),original);
+    }
+
     #[tokio::test]
     async fn queued_only_agy_push_stops_before_runtime_or_permission_work() {
         for (adapter,receive,mode,expected) in [
