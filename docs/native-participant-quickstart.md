@@ -47,7 +47,7 @@ Codex shared-daemon path and scoped cross-user bridge are described in the
 
 ## Claude Code: native MCP and opt-in Channels
 
-Development builds after0.3.24 add:
+Native0.3.25 and later support:
 
 ```sh
 peerwork connect --workspace WORKSPACE_ID --join --body-keys --install claude

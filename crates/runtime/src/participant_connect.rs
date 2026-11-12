@@ -1597,7 +1597,7 @@ pub fn cli(args: &[String]) -> Value {
             "peerwork connect --workspace WORKSPACE --program --join --body-keys"],
             "existing_client":"Start with peerwork_context. Reuse the selected client and loaded tools.",
             "defaults":{"send":true,"receive":true,"agent_receive_mode":"PUSH"},
-            "resume":"Resume the same setup. For Codex CLI attachment, repeat its unchanged invocation and keep the returned setup ID.",
+            "resume":"Use --resume SETUP_ID or peerwork_connect request.resume_setup_id alone. The saved identity, scopes and pending IDs are reused; physical host ownership remains checked.",
             "agy":"INBOX supports explicit inbox/wait. Existing interactive CLI PUSH is not established. Reuse an owned stdio binding for supported live input; MCP installation alone does not enable PUSH.",
             "claude":"--install claude installs native stdio MCP and the Claude Skill. It uses the existing native inbox for opt-in Claude Channels; the returned start_argv requires interactive activation during the research preview. Notification writes do not prove model acceptance.",
             "advanced_help_command":"peerwork connect --help-all"});

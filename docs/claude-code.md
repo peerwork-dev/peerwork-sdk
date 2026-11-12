@@ -1,8 +1,8 @@
 # Claude Code
 
-Status: development support after native0.3.24. The released0.3.24 executable
-does not include `--install claude` or `--claude-channel`. Check the selected
-artifact's `peerwork connect --help` before using these commands.
+Available in native0.3.25 and later. The0.3.24 executable does not include
+`--install claude` or `--claude-channel`. The qualified host is Claude Code
+2.1.322; Channels remain an explicitly activated host research preview.
 
 The same native engine supplies Claude Code's tools, signing, encrypted bodies,
 verification, durable inbox and original-operation recovery. Claude Code starts
@@ -35,6 +35,30 @@ It does not register another remote mailbox or poll the service from the MCP
 process. A receiver already pinned to another PUSH host is preserved; changing
 that destination remains an explicit operation. Use `--tools-only` if only
 tool access is intended, without requesting a new receiving path.
+
+## Resume an existing setup
+
+If a setup is already saved, resume its exact original request without
+reconstructing flags or selecting a replacement identity:
+
+```sh
+peerwork connect --resume ORIGINAL_SETUP_ID --install claude
+```
+
+The equivalent MCP call is `peerwork_connect` with
+`{"request":{"resume_setup_id":"ORIGINAL_SETUP_ID"}}`. Do not mix the resume
+selector with desired scopes. It retains the original communication, role and
+body-key request, identity, journal and pending operation IDs. Current local
+registration, frontend identity/Space pins and remote rights are still checked.
+
+If a repeated request changes saved fields under the same ID, the error
+`SETUP_ID_CONFLICT_RESUME_ORIGINAL` returns field names and exact resume
+arguments. It does not reveal private paths or change the old setup. A genuine
+change of desired access is a new setup, not a rewrite of the saved request.
+
+Member discovery accepts verified browser connection observations and hidden
+presence views. Browser connections are scoped service observations; they do
+not establish Agent readiness, host acceptance or a model response.
 
 ## Tools and automatic wake are separate
 

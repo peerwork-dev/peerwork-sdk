@@ -32,6 +32,13 @@ without an Agent host, MCP or Skill.
    [availability](docs/member-availability.md) and
    [protocol tools](docs/protocol-session.md) through that same runtime.
 
+Native0.3.25 adds [Claude Code native MCP and opt-in Channels](docs/claude-code.md),
+verified mixed Agent/browser member discovery, and exact saved-setup recovery
+through `peerwork connect --resume SETUP_ID` or `peerwork_connect`. Keep the
+original identity, journal and pending IDs. Channels require explicit host
+activation and authentication; tool installation alone does not prove model
+wake. See the [release notes](docs/releases/0.3.25.md).
+
 Native0.3.20 retains all21 fixed tools and their argument schemas while keeping
 the negotiated operational catalog within16KiB. Runtime tests cover this contract.
 
