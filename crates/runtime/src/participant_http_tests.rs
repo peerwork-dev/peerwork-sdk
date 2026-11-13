@@ -4261,7 +4261,13 @@ async fn connect_combined_admission_code_approves_once_and_agent_inbox_needs_no_
     let selected_member=||json!({"method":"request","request":Invoke::new("observe-generation","structure.members.read",scope.clone(),json!({"actor_id":worker_config.expected_actor,"limit":1}))});
     let generation=observer.call(selected_member()).await.unwrap()["result"]["structure"]["members"][0]["membership_id"].clone();assert!(generation.is_string());
     drop(owner);let mut owner=Connect::open(&root.path().join("owner-local")).unwrap();
-    let approved=owner.approve(&participant,&approval_id,authorization.clone()).await.unwrap();
+    let approved=tokio::time::timeout(Duration::from_secs(15),async {loop {
+        let result=owner.approve(&participant,&approval_id,authorization.clone()).await.unwrap();
+        if result["state"]!="PENDING" {break result;}
+        // Resume the same durable approval when an individual child outlives
+        // its observation budget; never turn scheduling delay into new rights.
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }}).await.unwrap();
     assert_eq!(observer.call(selected_member()).await.unwrap()["result"]["structure"]["members"][0]["membership_id"],generation,"interrupted admission replaced its generation");assert_eq!(approved["state"],"APPROVED","{approved}");
     let mut fresh_push=request.clone();fresh_push.setup_id="push-not-yet-bound".into();fresh_push.receive_mode=None;
     let waiting=worker.run_agent(fresh_push).await.unwrap();assert_eq!(waiting["blocker"]["code"],"HOST_CONTEXT_REQUIRED","{waiting}");
