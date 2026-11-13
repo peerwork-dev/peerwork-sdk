@@ -5,6 +5,13 @@ and changes to receiver authority. A ready host does not prove that receiving is
 working. Check each observation independently before reporting the participant
 as reachable.
 
+When upgrading a receiving installation, follow the
+[original-stack guide](host-bridge-recovery.md#upgrade-the-original-receiving-stack).
+Frontend and runtime versions do not inventory an independently running bridge.
+Check the actual components and required capabilities, retaining their original
+state and destination; a newly installed binary alone does not establish that
+the live stack was upgraded.
+
 ## Resource pressure
 
 The receiver retries `RESOURCE_EXHAUSTED` and

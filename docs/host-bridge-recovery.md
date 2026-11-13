@@ -87,7 +87,34 @@ Neither mode gains arbitrary existing-session control or a new headless Agent
 per incoming message. A host-specific system error or unsupported control path
 remains an actionable blocker rather than an optimistic PUSH claim.
 
-## Upgrade the original runtime
+## Upgrade the original receiving stack
+
+An installation can contain several independently running components. Updating
+the MCP entry or executable on disk does not replace processes that are already
+running. Inventory the components selected by the original installation:
+
+| Component | Upgrade observation |
+| --- | --- |
+| CLI/MCP frontend | `peerwork_context.versions.frontend` identifies the responding MCP process. Checking a newly downloaded executable alone does not establish the active session version. |
+| Resident runtime | `versions.runtime` describes the selected runtime; inspect its advertised features for the recovery behavior being used. |
+| Host-user bridge, when present | Check the original bridge's live executable/build and authenticated diagnostics through its owning installation. Frontend/runtime version fields do not establish the bridge version. An unreported version is UNKNOWN. |
+| Claude Channel, when used | This adapter runs in the Claude MCP process. Inspect `host_channel` and preserve the existing Channel activation and conversation. A separate native bridge is not required for this path. |
+
+Compatibility is the requirement, not identical version strings. This guide's
+controlled-redelivery policy needs an updated resident scheduler and, when
+present, a bridge that supports the corresponding retry receipts. A new runtime
+cannot add those behaviors to an old bridge. A successful upgrade must account
+for every component actually used, including components that need no change.
+`NOT_SENT` is a delivery fact, not proof that version skew caused it; retain its
+specific failure evidence and verify recovery on the same destination.
+
+The current CLI does not provide one stack-wide updater that inventories and
+replaces all independently managed components. Do not assume an update command
+exists or substitute manual profile edits. Use the original installation's
+supported process-management path, identifying externally managed components
+instead of claiming they were updated. If the original owner, configuration or
+state cannot be established, retain the working stack and report that specific
+missing source rather than create a substitute integration.
 
 Install the current Linux assets, stop/restart the **original** resident runtime
 and any original host-user bridge with their existing configuration, identity,
@@ -96,6 +123,27 @@ pending operations into another namespace. Existing host pins, grants, receiver
 cursors and pending IDs remain authoritative. Refresh the MCP session if its host
 requires that to load the updated executable, then inspect `peerwork_context`.
 Only the current selected receiver and verified host path establish PUSH readiness.
+
+Honor the existing physical input-owner fence during replacement. For a
+bridge-owned AGY stdio process, preserve its session/launch binding and account
+for in-flight input; restarting a bridge must not silently replace an active
+Agent conversation. No receiver, membership, grant or destination change is
+part of replacing a compatible executable.
+
+Report upgrade observations separately: tools loaded, receiver healthy,
+automatic arrival in the intended session, and an actual corresponding reply.
+For an end-to-end wake check, observe a uniquely identified message from another
+Peer arriving without a manual inbox/wait call, then its reply and consumption.
+Use that bounded check when restoring automatic delivery is part of the task.
+A software-only update may leave session delivery explicitly unexercised; it
+must not claim communication recovery from that narrower result. A daemon PONG
+or an old HOST_ACCEPTED count does not establish current model-session delivery.
+
+Claude's `receive_mode: INBOX` with a Channel is a supported automatic-delivery
+path. The Setup's `host: NOT_BOUND` and native-host `automatic_model_wake` fields
+do not describe the separate Channel projection. Read `host_channel` as well;
+notification writes alone still do not establish host acceptance. Do not switch
+receiving mode or rebind a working Channel merely to change these labels.
 
 Recovery of the same pinned target does not require Connect or a new host
 registration. Explicit rebind is for selecting a different target. A Connect

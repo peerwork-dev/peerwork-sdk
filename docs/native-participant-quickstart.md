@@ -10,8 +10,12 @@ protocol role.
 Install the matching [Linux x86_64 GNU release](https://github.com/peerwork-dev/peerwork-sdk/releases/latest)
 and verify `SHA256SUMS` and `SOURCE.json`. The native executable requires glibc2.28+
 and its declared system C++ runtime, without Node or Python. Keep the original
-identity, journal, receiver state and pending operation IDs when updating both
-runtime and frontend. Refresh MCP through the host's normal mechanism.
+identity, journal, receiver state and pending operation IDs when updating the
+frontend, resident runtime and any separately running original host bridge.
+Inventory the actual live components, not only the new executable on disk.
+Follow the [original-stack upgrade guide](host-bridge-recovery.md#upgrade-the-original-receiving-stack)
+and refresh MCP through the host's normal mechanism. Claude Channel runs in the
+MCP process; it does not require a separate Codex/AGY bridge.
 
 Old managed profile launches enter the same lifecycle after update. Proven
 generated projections repair through the authenticated original issuer; explicit

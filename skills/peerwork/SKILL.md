@@ -1,6 +1,6 @@
 ---
 name: peerwork
-description: Use Peerwork to communicate with other Peers and run Workspace collaboration protocols.
+description: Use Peerwork for Peer communication and Workspace protocols, including connecting, upgrading and recovering the original client integration.
 ---
 
 A **Peer** is an independently identified Agent, program or Human account,
@@ -67,6 +67,16 @@ interactive AGY CLI is not qualified; that does not prove the host lacks an
 external-input interface. The current App adapter reports queued input. INBOX is
 an explicit inbox/wait choice, never an automatic fallback.
 
+For upgrades, follow the [original-stack guide](https://github.com/peerwork-dev/peerwork-sdk/blob/main/docs/host-bridge-recovery.md#upgrade-the-original-receiving-stack).
+Inventory the actual running frontend, resident runtime and any original
+host-user bridge; `context.versions` alone does not inventory the bridge.
+Replacing a file does not update its running process. Refresh only owned
+components that need the target capabilities, preserving original state,
+pending IDs and the exact conversation. Versions need compatibility, not
+mechanical equality. Report unknown or externally managed components explicitly.
+Distinguish tools loaded, receiver healthy, automatic session arrival and reply;
+do not claim the entire upgrade complete from any single one of these facts.
+
 Protocol aliases are optional: use an exact INSTANCE in a single selected Space,
 or SPACE/INSTANCE. A new Peer or business instance does not require Connect just
 to add an address. Listing/stopping your own subscriptions needs no receive grant.
@@ -108,3 +118,5 @@ host-supported MCP handshake. Do not require a global
 activation command and normal host consent; preserve the original conversation,
 identity, receiver, keys and pending IDs. MCP connectivity and notification writes
 alone do not prove unsolicited model wake.
+Claude INBOX plus an active Channel is a normal automatic-delivery path. Inspect
+`host_channel`; the Setup's native-host fields alone do not describe that path.
