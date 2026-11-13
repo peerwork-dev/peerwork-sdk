@@ -190,7 +190,7 @@ async fn workspace_client_uses_current_grants_without_local_role_refresh(){
     let denied=call(&tools,"act",update("permission-before",first.clone(),2)).await;assert_eq!(denied["state"],"REJECTED_NO_EFFECT","{denied}");assert_eq!(denied["details"]["reason"],"ACTION_NOT_GRANTED","{denied}");
     // An action list is a remote permission request, not a local delegation.
     let mut permission_request=request.clone();permission_request.setup_id="request-update".into();permission_request.protocols[0].actions=vec!["ticket.update".into()];
-    let pending=connect.run(permission_request.clone()).await.unwrap();assert_eq!(pending["blocker"]["code"],"OWNER_APPROVAL_REQUIRED","{pending}");
+    let pending=connect.run(permission_request.clone()).await.unwrap();assert_eq!(pending["blocker"]["code"],"AUTHORIZATION_REQUIRED","{pending}");
     let again=connect.run(permission_request.clone()).await.unwrap();assert_eq!(again["details"]["authorization_request"],pending["details"]["authorization_request"]);
     let approved=connect.approve("owner","approve-update-once",serde_json::from_value(pending["details"]["authorization_request"].clone()).unwrap()).await.unwrap();assert_eq!(approved["state"],"APPROVED","{approved}");
     assert_eq!(connect.run(permission_request.clone()).await.unwrap()["state"],"LOCAL_CONFIGURED");

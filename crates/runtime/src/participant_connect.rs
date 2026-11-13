@@ -516,6 +516,13 @@ impl Connect {
             "blocker":{"stage":stage,"code":code,"affected_scope":{"workspace_id":r.workspace_id},"next_actor":actor,"next_action":action},
             "details":details,"existing_configuration_preserved":true}), None)
     }
+    fn pending_unsupported_host(&mut self,request:&ConnectRequest)->Result<Value>{
+        self.pending(request,"HOST_BINDING","HOST_PUSH_UNSUPPORTED","HOST_USER",
+            "SELECT_SUPPORTED_LIVE_HOST_OR_EXPLICIT_INBOX",json!({"host_mode":"TOOL_ONLY",
+            "automatic_model_wake":"NOT_SUPPORTED","retryable":false,"owner_exchange_required":false,
+            "remote_changes_submitted":false,"existing_receiver_preserved":true,
+            "message":"AGY App supports queued input. Select a supported host for PUSH or explicitly choose INBOX. Existing tools remain available. More Workspace rights cannot enable PUSH."}))
+    }
     fn begin_setup(&mut self, request:&ConnectRequest, registration:Registration, agent:bool, effective_host:Option<String>)->Result<()> {
         if self.registry.setups.len()>=64 {return Err(local("SETUP_LIMIT"));}
         let digest=sha256_hex(serde_json::to_vec(request).map_err(|_|local("CONNECT_ARGUMENT_INVALID"))?.as_slice());
@@ -697,10 +704,14 @@ impl Connect {
             self.registry.setups.get_mut(&request.setup_id).unwrap().agent_host_required = true;
             self.save()?;
         }
+        let unsupported_host = agent && request.receive && request.host.as_ref().or(self.registry.setups[&request.setup_id].effective_host.as_ref())
+            .and_then(|name|self.registry.hosts.get(name)).filter(|host|host.participant==request.participant)
+            .is_some_and(|host|host.adapter["kind"]=="agy-app"||host.adapter["kind"]=="bridge"&&host.adapter["destination"]["host"]=="ANTIGRAVITY_APP");
         let client = match self.original_client(&request.participant).await
         {
             Ok(c) => c,
             Err(e) => {
+                if unsupported_host {return self.pending_unsupported_host(&request);}
                 return self.pending(
                     &request,
                     "LOCAL_RUNTIME",
@@ -729,6 +740,10 @@ impl Connect {
             workspace_id: Some(request.workspace_id.clone()),
             ..Scope::default()
         };
+        let communication_requested=request.send||request.receive||!request.contacts.is_empty();
+        // Signed reads share the service's trusted clock. Refresh before the
+        // first request, including a resumed setup after the old window expired.
+        let now=if (communication_requested||request.require_body_keys)&&parent.operations.contains("participant.time.read") {trusted_time(&client,&scope).await?}else{0};
         let workspace = match read(&client, "structure.workspace.get", scope.clone(), json!({})).await {
             Ok(value)=>value,
             Err(error) if request.request_membership && (matches!(error.code.as_str(),"FORBIDDEN"|"UNVERIFIED_AUTHORIZATION_RESPONSE") || error.details.as_ref().is_some_and(|d|d["http_status"]==403))=>{
@@ -758,18 +773,7 @@ impl Connect {
         // Existing membership opens the already-authorized tool surface before
         // optional roles, keys or host attachment are resolved on this Setup.
         self.establish_baseline(&request, &selected, &parent, &client, membership).await?;
-        if agent&&request.receive {
-            let selected_host=request.host.as_ref().or(self.registry.setups[&request.setup_id].effective_host.as_ref())
-                .and_then(|name|self.registry.hosts.get(name)).filter(|host|host.participant==request.participant);
-            if selected_host.is_some_and(|host|host.adapter["kind"]=="agy-app"
-                ||host.adapter["kind"]=="bridge"&&host.adapter["destination"]["host"]=="ANTIGRAVITY_APP") {
-                return self.pending(&request,"HOST_BINDING","HOST_PUSH_UNSUPPORTED","HOST_USER",
-                    "SELECT_SUPPORTED_LIVE_HOST_OR_EXPLICIT_INBOX",json!({"host_mode":"TOOL_ONLY",
-                    "automatic_model_wake":"NOT_SUPPORTED","retryable":false,"owner_exchange_required":false,
-                    "remote_changes_submitted":false,"existing_receiver_preserved":true,
-                    "message":"AGY App supports queued input. For live PUSH, select a supported host; otherwise explicitly choose INBOX. Keep existing tools and receiver. Retrying or requesting more Workspace rights cannot enable live PUSH."}));
-            }
-        }
+        if unsupported_host {return self.pending_unsupported_host(&request);}
         Self::check_requested_actions(&parent,&request.protocols)?;
         let management_actions=crate::agent_tools::management::workspace_actions(&request.management)?;
         let missing_management:Vec<_>=management_actions.difference(&parent.operations).cloned().collect();
@@ -777,7 +781,6 @@ impl Connect {
             let mut error=local("LOCAL_SCOPE_DENIED");error.phase="AUTHORIZATION".into();error.recovery="REVIEW_EXPLICIT_LOCAL_CAPABILITY".into();
             error.details=Some(json!({"missing_operations":missing_management,"next_actor":"LOCAL_RUNTIME_OWNER","remote_permission_checked":false,"remote_grants_changed":false}));return Err(error);
         }
-        let communication_requested=request.send||request.receive||!request.contacts.is_empty();
         let mut required=vec!["structure.workspace.get","structure.members.read"];
         if communication_requested||request.require_body_keys{required.push("participant.time.read");}
         if communication_requested{required.push("structure.communication.grant.get");}
@@ -791,7 +794,6 @@ impl Connect {
             let mut error=denied.unwrap_or_else(||local("LOCAL_SCOPE_DENIED"));error.phase="AUTHORIZATION".into();error.recovery="REVIEW_EXPLICIT_LOCAL_CAPABILITY".into();
             let mut details=error.details.take().unwrap_or(json!({}));details["missing_operations"]=json!(missing);details["next_actor"]=json!("LOCAL_RUNTIME_OWNER");details["remote_permission_checked"]=json!(false);error.details=Some(details);return Err(error);
         }
-        let now = if communication_requested||request.require_body_keys {trusted_time(&client, &scope).await?} else {0};
         let grants = if communication_requested {read(
             &client,
             "structure.communication.grant.get",
