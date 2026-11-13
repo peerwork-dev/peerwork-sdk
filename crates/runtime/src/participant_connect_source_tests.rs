@@ -98,13 +98,13 @@ async fn raw_profile_owner_adoption_unifies_mcp_local_and_original_operation_rec
     // Same actor/Origin is insufficient when the namespace was substituted.
     let original_descriptor=std::fs::read(&profile.endpoint_path).unwrap();
     let adopted_descriptor=std::fs::read(&current.endpoint_path).unwrap();
-    write_private(&profile.endpoint_path,&adopted_descriptor).unwrap();
+    std::fs::write(&profile.endpoint_path,&adopted_descriptor).unwrap();
     assert_eq!(source.call(AgentRequest::Context).await.unwrap_err().code,"ORIGINAL_RUNTIME_BINDING_CHANGED");
-    write_private(&profile.endpoint_path,&original_descriptor).unwrap();
+    std::fs::write(&profile.endpoint_path,&original_descriptor).unwrap();
     assert!(source.call(AgentRequest::Context).await.is_ok());
-    write_private(&current.endpoint_path,&original_descriptor).unwrap();
+    std::fs::write(&current.endpoint_path,&original_descriptor).unwrap();
     assert_eq!(source.call(AgentRequest::Context).await.unwrap_err().code,"ORIGINAL_RUNTIME_BINDING_CHANGED");
-    write_private(&current.endpoint_path,&adopted_descriptor).unwrap();
+    std::fs::write(&current.endpoint_path,&adopted_descriptor).unwrap();
     assert!(source.call(AgentRequest::Context).await.is_ok());
     service.config(json!({"offline":true})).await;
     let recovered=source.call(AgentRequest::parse("status",json!({"workspace":ws,"operation_id":"original-name"})).unwrap()).await.unwrap();

@@ -299,19 +299,26 @@ async fn launch_config(config: RuntimeConfig, selected: Registration) -> Result<
     let path = config.state_directory.join("config.json");
     launch_at(config, selected, path).await
 }
+fn verify_existing_launch_config(path: &Path, expected: &RuntimeConfig) -> Result<()> {
+    // An original owner may omit supported default fields. Compare the same
+    // strict, typed configuration the runtime loads, without rewriting its file.
+    let original: RuntimeConfig = serde_json::from_value(
+        crate::communication_store::private_json(path, 65536)
+            .map_err(|_| local("RUNTIME_CONFIG_NOT_PRIVATE"))?,
+    ).map_err(|_| local("RUNTIME_CONFIG_INVALID"))?;
+    if serde_json::to_value(&original).map_err(|_| local("RUNTIME_CONFIG_INVALID"))?
+        != serde_json::to_value(expected).map_err(|_| local("RUNTIME_CONFIG_INVALID"))? {
+        return Err(local("LOCAL_BINDING_CONFLICT"));
+    }
+    Ok(())
+}
 async fn launch_at(config: RuntimeConfig, selected: Registration, config_path: PathBuf) -> Result<(Registration, PathBuf)> {
     let runtime_dir = config.state_directory.clone();
     create_private_state_directory(&runtime_dir)
         .map_err(|_| local("RUNTIME_DIRECTORY_NOT_PRIVATE"))?;
     let wire = serde_json::to_vec(&config).map_err(|_| local("RUNTIME_CONFIG_INVALID"))?;
     match std::fs::symlink_metadata(&config_path) {
-        Ok(_) => {
-            let old = crate::communication_store::private_json(&config_path, 65536)
-                .map_err(|_| local("RUNTIME_CONFIG_NOT_PRIVATE"))?;
-            if old != serde_json::to_value(&config).map_err(|_| local("RUNTIME_CONFIG_INVALID"))? {
-                return Err(local("LOCAL_BINDING_CONFLICT"));
-            }
-        }
+        Ok(_) => verify_existing_launch_config(&config_path, &config)?,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             write_private(&config_path, &wire).map_err(|_| local("RUNTIME_CONFIG_NOT_PRIVATE"))?
         }
@@ -637,6 +644,38 @@ mod tests {
     }
 
     use super::*;
+    #[test]
+    fn original_launch_config_accepts_omitted_defaults_without_rewriting_or_ignoring_changes() {
+        let root = crate::test_support::protected_test_dir();
+        // Match owner-written legacy JSON, rather than serializing a Rust value
+        // which already materializes every default before this comparison.
+        let original = json!({"format":"peerwork.participant-runtime.v1",
+            "state_directory":root.path().join("runtime"),
+            "engines":[{"name":"original","origin":"https://example.invalid/",
+                "expected_actor":"actor","identity_path":root.path().join("identity"),
+                "state_directory":root.path().join("engine"),
+                "journal_path":root.path().join("journal.sqlite"),
+                "transport":{"request_timeout_ms":10000}}],"clients":[]});
+        let path = root.path().join("original-runtime.json");
+        let bytes = serde_json::to_vec(&original).unwrap();
+        write_private(&path, &bytes).unwrap();
+        let config: RuntimeConfig = serde_json::from_value(original.clone()).unwrap();
+        verify_existing_launch_config(&path, &config).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        let mut changed = config.clone();
+        changed.engines[0].journal_path = Some(root.path().join("another-journal.sqlite"));
+        assert_eq!(verify_existing_launch_config(&path, &changed).unwrap_err().code, "LOCAL_BINDING_CONFLICT");
+        changed = config.clone();
+        changed.engines[0].max_pending += 1;
+        assert_eq!(verify_existing_launch_config(&path, &changed).unwrap_err().code, "LOCAL_BINDING_CONFLICT");
+        let mut unknown = original;
+        unknown["engines"][0]["unrecognized_authority"] = json!(true);
+        let unknown_path = root.path().join("unknown-runtime.json");
+        write_private(&unknown_path, &serde_json::to_vec(&unknown).unwrap()).unwrap();
+        assert_eq!(verify_existing_launch_config(&unknown_path, &config).unwrap_err().code, "RUNTIME_CONFIG_INVALID");
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        assert!(!config.state_directory.exists());
+    }
     #[test]
     fn selected_existing_engine_keeps_journal_authority_and_transport() {
         let root = crate::test_support::protected_test_dir();
