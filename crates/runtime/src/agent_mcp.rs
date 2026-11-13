@@ -488,9 +488,14 @@ mod tests {
         let expected: Vec<_> = agent_tools::catalog().into_iter().collect();
         assert_eq!(tools, &expected);
         assert!(tools.iter().all(|tool| tool["_meta"]["antigravity/alwaysLoad"] == true));
-        let bytes=serde_json::to_vec(tools).unwrap().len();
+        // Setup tools remain visible on every transport. Bound the same ordinary
+        // collaboration catalog as agent_tools, independently of setup schemas.
+        let operational: Vec<_> = tools.iter().filter(|tool| !matches!(
+            tool["name"].as_str(), Some("peerwork_connect" | "peerwork_connect_approve")
+        )).collect();
+        let bytes = serde_json::to_vec(&operational).unwrap().len();
         assert!(bytes <= 16 * 1024,
-            "fixed eager entry points must stay within16KiB, not expand into per-protocol action catalogs: {bytes} bytes");
+            "operational eager entry points must stay within 16 KiB, not expand into per-protocol action catalogs: {bytes} bytes");
         // Invalid JSON and duplicate object fields cannot become tool inputs.
         cw.write_all(b"{bad json}\n{\"jsonrpc\":\"2.0\",\"id\":3,\"id\":4,\"method\":\"ping\"}\n")
             .await

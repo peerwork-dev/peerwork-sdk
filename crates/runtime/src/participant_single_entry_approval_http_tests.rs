@@ -30,7 +30,7 @@ async fn action_only_approval_preserves_upgraded_context_existing_roles_and_orig
         memberships.push(structure(&owner.invoke(request,Duration::from_secs(5)).await.unwrap())["membership_id"].clone());
     }
     let mut maintenance=fixture["writer2"].clone();maintenance["actor_id"]=json!(maintainer.expected_actor);maintenance["capabilities"]=json!(["workspace.protocol.maintain"]);
-    let mut existing_role=fixture["writer2"].clone();existing_role["actor_id"]=json!(target.expected_actor);existing_role["actions"]=json!([]);
+    let mut existing_role=fixture["writer2"].clone();existing_role["actor_id"]=json!(target.expected_actor);existing_role["actions"]=json!(["ticket.revise"]);
     let initial=Scope{workspace_id:scope.workspace_id.clone(),instance_id:Some(instance.clone()),protocol_digest:adopted["protocol_digest"].as_str().map(str::to_owned)};
     let upgrade=owner.invoke(Invoke::new("context-upgrade","structure.protocol.upgrade",initial.clone(),json!({"bundle":fixture["v2"],"grants":[maintenance,existing_role]})),Duration::from_secs(10)).await.unwrap();
     assert_eq!(upgrade.state,"ACCEPTED","{upgrade:?}");let upgraded=structure(&upgrade);
@@ -47,7 +47,7 @@ async fn action_only_approval_preserves_upgraded_context_existing_roles_and_orig
     let approved=connect.approve("maintainer","exact-context-approval",AuthorizationRequest::from_input(input.clone()).unwrap()).await.unwrap();
     assert_eq!(approved["state"],"APPROVED","{approved}");
     let grant=selected(&owner,"structure.grant.get",&selected_scope,json!({"actor_id":target.expected_actor,"execution_context_id":context,"view":"SUMMARY"})).await;
-    assert_eq!(grant["grant"]["execution_context_id"],context);assert_eq!(grant["grant"]["actions"],json!(["ticket.create"]));
+    assert_eq!(grant["grant"]["execution_context_id"],context);assert_eq!(grant["grant"]["actions"],json!(["ticket.create","ticket.revise"]));
     assert_eq!(grant["grant"]["protocol_roles"],fixture["writer2"]["protocol_roles"]);
     let old=selected(&owner,"structure.grant.get",&initial,json!({"actor_id":target.expected_actor,"execution_context_id":instance,"view":"SUMMARY"})).await;
     assert!(old["grant"].is_null(),"new role delta must not write the old execution: {old}");

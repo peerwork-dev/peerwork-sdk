@@ -5,6 +5,18 @@ use crate::agent_tools::AgentRequest;
 use crate::communication_runtime as ipc;
 use tokio::io::{AsyncBufReadExt,AsyncWriteExt};
 
+fn without_observation_times(mut value:Value)->Value {
+    match &mut value {
+        Value::Object(fields)=>{
+            fields.remove("observed_at");fields.remove("evaluated_at");
+            for field in fields.values_mut(){*field=without_observation_times(field.take());}
+        },
+        Value::Array(items)=>for item in items {*item=without_observation_times(item.take());},
+        _=>(),
+    }
+    value
+}
+
 #[tokio::test(flavor="multi_thread",worker_threads=4)]
 #[ignore="requires isolated TEST PostgreSQL, product build and real HTTP"]
 async fn raw_profile_owner_adoption_unifies_mcp_local_and_original_operation_recovery() {
@@ -17,6 +29,10 @@ async fn raw_profile_owner_adoption_unifies_mcp_local_and_original_operation_rec
     let metadata=selected(&owner,"structure.workspace.get",&scope,json!({})).await;
     owner.close().await.unwrap();
     let mut legacy=Capability::owner();legacy.mailbox_ids=Some(["M".repeat(43)].into());
+    // SUMMARY member discovery is intentionally available to mailbox-limited
+    // clients. Model a genuine retained operation ceiling, not a restriction
+    // that the shared discovery view no longer needs to cross.
+    legacy.operations.remove("structure.members.read");
     let mut runtime=ipc::RuntimeConfig{format:"peerwork.participant-runtime.v1".into(),state_directory:root.path().join("runtime"),hosts:vec![],
         engines:vec![ipc::EngineConfig{name:"original".into(),origin:config.origin.clone(),expected_actor:config.expected_actor.clone(),identity_path:config.identity_path.clone(),state_directory:config.state_directory.clone(),journal_path:Some(config.journal_path.clone()),authority:config.authority.clone(),allow_loopback_http:true,transport:config.transport.clone(),max_inflight:8,max_pending:64,max_stored_bytes:32*1024*1024,migration_sources:vec![]}],
         clients:vec![ipc::ClientConfig{name:"legacy".into(),engine:"original".into(),capability:legacy.clone()}]};
@@ -59,7 +75,8 @@ async fn raw_profile_owner_adoption_unifies_mcp_local_and_original_operation_rec
     assert_eq!(serde_json::to_vec(&profile).unwrap(),original_profile);
     let raw=source.call(AgentRequest::parse("reachability",json!({"workspace":ws})).unwrap()).await.unwrap();
     let local=crate::agent_lifecycle::Lifecycle::local(directory.clone(),None,Some(ws.clone())).call(AgentRequest::parse("reachability",json!({"workspace":ws})).unwrap()).await.unwrap();
-    assert_eq!(raw,local);
+    assert!(raw["observed_at"].as_u64().is_some());assert!(local["observed_at"].as_u64().is_some());
+    assert_eq!(without_observation_times(raw),without_observation_times(local));
     // Both MCP protocol frontends reuse the original unchanged profile source.
     for protocol in ["2025-11-25","2026-07-28"] {
         let(server,client)=tokio::io::duplex(1024*1024);let(sr,sw)=tokio::io::split(server);let(cr,mut cw)=tokio::io::split(client);let mut cr=tokio::io::BufReader::new(cr);
