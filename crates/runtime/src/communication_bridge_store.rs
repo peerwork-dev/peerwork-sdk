@@ -3,6 +3,8 @@
 use super::*;
 #[path = "communication_bridge_gc.rs"]
 mod retirement;
+#[path="communication_bridge_storage.rs"]
+mod storage;
 use aes_gcm::{
     aead::{Aead, KeyInit, Payload},
     Aes256Gcm, Nonce,
@@ -12,7 +14,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use zeroize::Zeroizing;
 const MAX_BYTES: usize = 32 * 1024 * 1024;
 const MAX_ROWS: usize = 4096;
-const RESERVE: usize = 16384;
+const RESERVE: usize = 4096 + 28 + 512;
 pub(super) struct Store {
     db: Connection,
     key: Zeroizing<[u8; 32]>,
@@ -78,11 +80,16 @@ impl Store {
             CREATE UNIQUE INDEX IF NOT EXISTS bridge_single_open ON bridge_calls(state) WHERE state='CALL_OPEN';
             CREATE TABLE IF NOT EXISTS bridge_inputs(call_id TEXT PRIMARY KEY,source_key TEXT NOT NULL,sequence INTEGER NOT NULL,delivery_id TEXT NOT NULL,state TEXT NOT NULL);
             CREATE UNIQUE INDEX IF NOT EXISTS bridge_single_input ON bridge_inputs(source_key,sequence) WHERE state NOT IN ('NOT_SENT','SUPERSEDED');
-            CREATE TABLE IF NOT EXISTS bridge_retirements(scope_key TEXT PRIMARY KEY,through_sequence INTEGER NOT NULL,proof BLOB NOT NULL);").map_err(|_|"BRIDGE_STATE_FAILED")?;
+            CREATE TABLE IF NOT EXISTS bridge_retirements(scope_key TEXT PRIMARY KEY,through_sequence INTEGER NOT NULL,proof BLOB NOT NULL);
+            CREATE TABLE IF NOT EXISTS bridge_generations(source_key TEXT NOT NULL,sequence INTEGER NOT NULL,attempt INTEGER NOT NULL,call_id TEXT NOT NULL,proof BLOB NOT NULL,PRIMARY KEY(source_key,sequence));
+            CREATE TABLE IF NOT EXISTS bridge_closed_ranges(scope_key TEXT NOT NULL,lo INTEGER NOT NULL,hi INTEGER NOT NULL,proof BLOB NOT NULL,PRIMARY KEY(scope_key,lo));").map_err(|_|"BRIDGE_STATE_FAILED")?;
         tx.execute("INSERT OR IGNORE INTO bridge_meta VALUES(1,?1,0,0)", [pin])
             .map_err(|_| "BRIDGE_STATE_FAILED")?;
         tx.commit().map_err(|_| "BRIDGE_STATE_FAILED")?;
         db.execute_batch("DROP INDEX IF EXISTS bridge_single_input; CREATE UNIQUE INDEX bridge_single_input ON bridge_inputs(source_key,sequence) WHERE state NOT IN ('NOT_SENT','SUPERSEDED');").map_err(|_|"BRIDGE_STATE_FAILED")?;
+        let columns=db.prepare("PRAGMA table_info(bridge_calls)").map_err(|_|"BRIDGE_STATE_FAILED")?.query_map([],|r|r.get::<_,String>(1)).map_err(|_|"BRIDGE_STATE_FAILED")?.collect::<std::result::Result<Vec<_>,_>>().map_err(|_|"BRIDGE_STATE_FAILED")?;
+        if !columns.iter().any(|c|c=="storage_version") {db.execute_batch("ALTER TABLE bridge_calls ADD COLUMN storage_version INTEGER NOT NULL DEFAULT 0").map_err(|_|"BRIDGE_STATE_FAILED")?;}
+        db.execute_batch("CREATE INDEX IF NOT EXISTS bridge_storage_migration ON bridge_calls(storage_version,call_id)").map_err(|_|"BRIDGE_STATE_FAILED")?;
         let old: String = db
             .query_row("SELECT pin FROM bridge_meta WHERE id=1", [], |r| r.get(0))
             .map_err(|_| "BRIDGE_STATE_FAILED")?;
@@ -157,6 +164,7 @@ impl Store {
         peerwork_core::strict_json::parse_strict_json(&plain).map_err(|_| "BRIDGE_STATE_INVALID")
     }
     pub fn capacity(&self) -> R<bool> {
+        self.compact_page()?;
         let (bytes, rows): (usize, usize) = self
             .db
             .query_row(
@@ -165,7 +173,7 @@ impl Store {
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .map_err(|_| "BRIDGE_STATE_FAILED")?;
-        Ok(bytes + 65536 + RESERVE <= MAX_BYTES && rows < MAX_ROWS)
+        Ok(bytes + 16384 + 28 + RESERVE <= MAX_BYTES && rows < MAX_ROWS)
     }
     pub fn get(&self, binding: &Value, message: &str, digest: &str) -> R<Option<Value>> {
         let id = binding["call_id"]
@@ -173,6 +181,7 @@ impl Store {
             .ok_or("BRIDGE_REQUEST_INVALID")?;
         let row:Option<(String,String,String,Vec<u8>,String,Option<Vec<u8>>)>=self.db.query_row("SELECT scope_hash,message_id,frame_digest,proof,state,outcome FROM bridge_calls WHERE call_id=?1",[id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).optional().map_err(|_|"BRIDGE_STATE_FAILED")?;
         let Some((hash, old_message, old_digest, proof, state, outcome)) = row else {
+            if self.obsolete(binding)? {return Err("HOST_EVIDENCE_RETIRED");}
             return Ok(None);
         };
         if hash != digest_value(binding) || old_message != message || old_digest != digest {
@@ -205,6 +214,10 @@ impl Store {
     pub fn retry_available(&self, binding:&Value, message:&str, digest:&str, previous:Option<&Value>) -> R<()> {
         if let Some(previous)=previous {
             let mut expected=binding.clone();expected["call_id"]=previous["call_id"].clone();
+            if let Some(attempt)=binding["attempt"].as_u64() {
+                if previous["attempt"].as_u64().is_some_and(|old|attempt<=old) {return Err("HOST_INPUT_CONFLICT");}
+                if previous.get("attempt").is_some() {expected["attempt"]=previous["attempt"].clone();}else{expected.as_object_mut().unwrap().remove("attempt");}
+            }
             if &expected!=previous || binding["call_id"]==previous["call_id"] { return Err("HOST_INPUT_CONFLICT"); }
             let value=self.get(previous,message,digest)?.ok_or("HOST_RETRY_ORIGINAL_NOT_FOUND")?;
             if !matches!(value["state"].as_str(),Some("RESULT_UNKNOWN"|"HOST_QUEUED"|"HOST_ACCEPTED")) {return Err("HOST_INPUT_CONFLICT");}
@@ -217,7 +230,7 @@ impl Store {
         let id = binding["call_id"]
             .as_str()
             .ok_or("BRIDGE_REQUEST_INVALID")?;
-        if self.retired(binding)? {
+        if self.retired(binding)? || self.obsolete(binding)? {
             return Err("HOST_EVIDENCE_RETIRED");
         }
         self.retry_available(binding,message,digest,previous)?;
@@ -226,13 +239,19 @@ impl Store {
             "PROOF",
             &json!({"binding":binding,"message_id":message,"frame_digest":digest}),
         )?;
-        let frame = frame.map(|f| self.seal(id, "FRAME", f)).transpose()?;
-        let allocation = proof.len() + frame.as_ref().map_or(0, Vec::len) + RESERVE;
+        // The Runtime owns the frozen input. The bridge needs only the exact
+        // authenticated binding/digest and outcome to fence a duplicate call.
+        let allocation=proof.len()+RESERVE;
+        self.compact_page()?;
         let no_send = if frame.is_none() {
             Some(self.seal(id,"OUTCOME",&json!({"state":"NOT_SENT","code":"HOST_CONFIRMED_NOT_SENT","proof":"BOUND_HOST_RECONCILIATION"}))?)
         } else {
             None
         };
+        let generation=if let Some(attempt)=binding["attempt"].as_u64() {
+            let source_key=digest_value(&super::source_scope(binding));
+            Some((source_key.clone(),attempt,self.seal(&source_key,"GENERATION",binding)?))
+        }else{None};
         let tx = self.db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|_| "BRIDGE_STATE_FAILED")?;
         let (bytes, rows): (usize, usize) = tx
             .query_row(
@@ -249,14 +268,14 @@ impl Store {
             if changed!=1 {return Err("HOST_RETRY_CONFLICT");}
         }
         tx.execute(
-            "INSERT INTO bridge_calls VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+            "INSERT INTO bridge_calls(call_id,scope_hash,message_id,frame_digest,proof,frame,state,outcome,allocation,storage_version) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,1)",
             params![
                 id,
                 digest_value(binding),
                 message,
                 digest,
                 proof,
-                frame,
+                Option::<Vec<u8>>::None,
                 if no_send.is_some() {
                     "NOT_SENT"
                 } else {
@@ -268,6 +287,9 @@ impl Store {
         )
         .map_err(|_| "BRIDGE_STATE_FAILED")?;
 
+        if let Some((source_key,attempt,proof))=generation {
+            tx.execute("INSERT INTO bridge_generations VALUES(?1,?2,?3,?4,?5) ON CONFLICT(source_key,sequence) DO UPDATE SET attempt=excluded.attempt,call_id=excluded.call_id,proof=excluded.proof",params![source_key,binding["sequence"].as_u64(),attempt,id,proof]).map_err(|_|"BRIDGE_STATE_FAILED")?;
+        }
         tx.execute(
             "INSERT INTO bridge_inputs VALUES(?1,?2,?3,?4,?5)",
             params![
@@ -298,6 +320,8 @@ impl Store {
         let id = binding["call_id"]
             .as_str()
             .ok_or("BRIDGE_REQUEST_INVALID")?;
+        let exists:bool=self.db.query_row("SELECT EXISTS(SELECT 1 FROM bridge_calls WHERE call_id=?1)",[id],|r|r.get(0)).map_err(|_|"BRIDGE_STATE_FAILED")?;
+        if !exists && (self.retired(binding)? || self.obsolete(binding)?) {return Ok(());}
         let sealed = self.seal(id, "OUTCOME", value)?;
         if sealed.len() > 4096 {
             return Err("BRIDGE_OUTCOME_INVALID");
@@ -318,6 +342,7 @@ impl Store {
             params![id, value["state"].as_str().ok_or("BRIDGE_OUTCOME_INVALID")?],
         )
         .map_err(|_| "BRIDGE_STATE_FAILED")?;
+        storage::account(&tx,id)?;
         tx.commit().map_err(|_| "BRIDGE_STATE_FAILED")?;
         Ok(())
     }

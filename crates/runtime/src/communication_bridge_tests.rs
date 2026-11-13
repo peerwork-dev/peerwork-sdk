@@ -1254,3 +1254,5 @@ IFS= read -r line
     assert_eq!(std::fs::read_to_string(root.path().join("starts.txt")).unwrap().lines().count(),1);
     assert_eq!(std::fs::read_to_string(root.path().join("inputs.txt")).unwrap().lines().count(),1);
 }
+
+include!("communication_bridge_retention_tests.rs");

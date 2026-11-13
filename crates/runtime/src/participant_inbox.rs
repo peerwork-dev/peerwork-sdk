@@ -966,6 +966,15 @@ impl InboxStore {
                 return Err(invalid());
             }
             if consumed {
+                // Preserve exact service-confirmed completion before the receipt
+                // retry window is trimmed. Local consume_requested is not proof.
+                tx.execute("UPDATE inbox_host_calls SET consumed_confirmed=1,delivery_state='CONSUMED' WHERE workspace=?1 AND mailbox=?2 AND sequence=?3 AND delivery_id=?4", params![workspace,mailbox,seq,id]).map_err(db_error)?;
+                let calls=tx.prepare("SELECT call_id,payload_key FROM inbox_host_calls WHERE workspace=?1 AND mailbox=?2 AND sequence=?3 AND delivery_id=?4").map_err(db_error)?.query_map(params![workspace,mailbox,seq,id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,Option<String>>(1)?))).map_err(db_error)?.collect::<std::result::Result<Vec<_>,_>>().map_err(db_error)?;
+                for (call,key) in calls {
+                    tx.execute("UPDATE inbox_host_calls SET frame=X'',payload_key=NULL,storage_version=1 WHERE call_id=?1",[&call]).map_err(db_error)?;
+                    host_ledger::storage::account(&tx,&call)?;
+                    if let Some(key)=key {host_ledger::storage::collect_payload(&tx,&key)?;}
+                }
                 tx.execute(
                     "INSERT INTO inbox_consumed VALUES(?1,?2,?3,?4)",
                     params![workspace, mailbox, seq, id],

@@ -383,14 +383,14 @@ fn validate_query(bindings: &[BridgeGrant], destination: &Value, method: &str, q
             || q.body_hash.is_some()
             || (method == "retire"
                 && q.through_sequence
-                    .is_none_or(|n| n == 0 || n > 9_007_199_254_740_991))
+                    .is_none_or(|n| n > 9_007_199_254_740_991))
             || (method == "health" && (q.through_sequence.is_some() || q.calls.is_some()))
             || (method == "retire"
                 && q.calls.as_ref().is_none_or(|v| {
                     v.len() > 32
                         || v.iter().any(|c| {
                             c.as_object().is_none_or(|o| {
-                                o.len() != 6
+                                (o.len() != 6 && o.len() != 7 && o.len() != 8)
                                     || o.keys().any(|k| {
                                         ![
                                             "call_id",
@@ -399,16 +399,17 @@ fn validate_query(bindings: &[BridgeGrant], destination: &Value, method: &str, q
                                             "outcome_digest",
                                             "state",
                                             "report_version",
+                                            "retirement",
+                                            "attempt",
                                         ]
                                         .contains(&k.as_str())
                                     })
                             }) || c["call_id"].as_str().is_none_or(|v| !token(v))
                                 || !hash(&c["frame_digest"])
                                 || !hash(&c["outcome_digest"])
-                                || !matches!(
-                                    c["state"].as_str(),
-                                    Some("HOST_ACCEPTED" | "NOT_SENT")
-                                )
+                                || (c.get("retirement").is_some() && !matches!(c["retirement"].as_str(),Some("SERVICE_CONFIRMED_CONSUMED"|"SUPERSEDED")))
+                                || !matches!(c["state"].as_str(),Some("HOST_ACCEPTED"|"NOT_SENT"|"RESULT_UNKNOWN"|"HOST_QUEUED"))
+                                || (c.get("retirement").is_none() && !matches!(c["state"].as_str(),Some("HOST_ACCEPTED"|"NOT_SENT")))
                                 || c["report_version"]
                                     .as_u64()
                                     .is_none_or(|n| n == 0 || n > 9_007_199_254_740_991)
@@ -440,7 +441,8 @@ fn validate_query(bindings: &[BridgeGrant], destination: &Value, method: &str, q
         "source_digest",
     ];
     if b.as_object()
-        .is_none_or(|o| o.len() != names.len() || o.keys().any(|k| !names.contains(&k.as_str())))
+        .is_none_or(|o| (o.len() != names.len() && o.len() != names.len()+1) || o.keys().any(|k| !names.contains(&k.as_str()) && k!="attempt"))
+        || (b.get("attempt").is_some() && b["attempt"].as_u64().is_none_or(|n|n==0 || n>i32::MAX as u64))
         || b["format"] != "peerwork.host-call.v1"
         || !bindings.iter().any(|g| g.matches(b))
         || b["destination_digest"] != digest_value(destination)
@@ -973,6 +975,7 @@ async fn serve_limit(mut config:BridgeConfig,cancel:KernelCancellationToken,read
             }
             if let Some(receipt)=recovered_pending.take() {
                 let saved=(||->R<()>{
+                    if store.retired(&receipt["binding"])? || store.obsolete(&receipt["binding"])? {return Ok(());}
                     let original=store.get(&receipt["binding"],receipt["message_id"].as_str().ok_or("BRIDGE_STATE_INVALID")?,receipt["frame_digest"].as_str().ok_or("BRIDGE_STATE_INVALID")?)?.ok_or("BRIDGE_STATE_INVALID")?;
                     if matches!(original["state"].as_str(),Some("RESULT_UNKNOWN"|"HOST_ACCEPTED")){store.finish(&receipt["binding"],&receipt["outcome"])?;}
                     Ok(())

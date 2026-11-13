@@ -1,5 +1,6 @@
 //! Service-confirmed application consumption and exact confirmed host facts
-//! authorize bounded local retirement. Unknown/queued calls are never collected.
+//! authorize bounded local retirement. Completed notifications may retire even
+//! when an old host result was unknown; retirement never invents that result.
 use super::*;
 impl InboxStore {
     pub(super) fn host_retired(
@@ -17,7 +18,7 @@ impl InboxStore {
             Ok((0, 0, false))
         }
     }
-    fn host_consumed_frontier(&self, options: &WatchOptions) -> Result<u64> {
+    pub(super) fn host_consumed_frontier(&self, options: &WatchOptions) -> Result<u64> {
         let cursor = self
             .pins(&options.workspace_id, &options.mailbox_id)?
             .ok_or_else(invalid)?
@@ -25,133 +26,90 @@ impl InboxStore {
         let first:Option<u64>=self.db.query_row("SELECT sequence FROM inbox_items WHERE workspace=?1 AND mailbox=?2 ORDER BY sequence LIMIT 1",params![options.workspace_id,options.mailbox_id],|r|r.get(0)).optional().map_err(db_error)?;
         Ok(first.map_or(cursor, |n| cursor.min(n.saturating_sub(1))))
     }
+    pub(super) fn host_sequence_closed(&self, namespace: &str, options: &WatchOptions, sequence: u64) -> Result<bool> {
+        let scope = self.host_access_scope(namespace,options)?.to_string();
+        self.db.query_row("SELECT EXISTS(SELECT 1 FROM inbox_host_closed WHERE scope=?1 AND lo<=?2 AND hi>=?2)",params![scope,sequence],|r|r.get(0)).map_err(db_error)
+    }
     pub fn host_retirement_plan(
-        &self,
-        identity: &KernelIdentity,
-        namespace: &str,
-        options: &WatchOptions,
+        &self, identity: &KernelIdentity, namespace: &str, options: &WatchOptions,
     ) -> Result<Option<Value>> {
         self.host_evidence_scope(namespace,options)?;
+        self.host_compact_page(identity,namespace,options)?;
         let host=options.host_destination.as_deref().ok_or_else(invalid)?.to_owned();
-        let through = self.host_consumed_frontier(options)?;
-        let previous = self.host_retired(options, &host)?;
-        if through < previous.0 {
-            return Err(failure("HOST_RETIREMENT_FRONTIER_REGRESSED"));
+        let through=self.host_consumed_frontier(options)?;
+        let previous=self.host_retired(options,&host)?;
+        if through<previous.0 {return Err(failure("HOST_RETIREMENT_FRONTIER_REGRESSED"));}
+        // Bounded upgrade recovery: exact retained acknowledgements and the
+        // verified contiguous prefix authorize old completed rows too.
+        let ids=self.db.prepare("SELECT call_id FROM inbox_host_calls c WHERE workspace=?1 AND mailbox=?2 AND host=?3 AND report_pending=0 AND state<>'CALL_OPEN' AND (delivery_state='SUPERSEDED' OR consumed_confirmed=1 OR sequence<=?4 OR EXISTS(SELECT 1 FROM inbox_consumed a WHERE a.workspace=c.workspace AND a.mailbox=c.mailbox AND a.sequence=c.sequence AND a.delivery_id=c.delivery_id)) ORDER BY sequence,call_id LIMIT 32").map_err(db_error)?.query_map(params![options.workspace_id,options.mailbox_id,host,through],|r|r.get::<_,String>(0)).map_err(db_error)?.collect::<std::result::Result<Vec<_>,_>>().map_err(db_error)?;
+        let mut calls=Vec::new();
+        for id in ids {
+            let call=self.host_call(identity,&id)?;
+            self.host_original_scope(namespace,options,&call)?;
+            let superseded:bool=self.db.query_row("SELECT delivery_state='SUPERSEDED' AND consumed_confirmed=0 AND sequence>?2 AND NOT EXISTS(SELECT 1 FROM inbox_consumed a WHERE a.workspace=inbox_host_calls.workspace AND a.mailbox=inbox_host_calls.mailbox AND a.sequence=inbox_host_calls.sequence AND a.delivery_id=inbox_host_calls.delivery_id) FROM inbox_host_calls WHERE call_id=?1",params![id,through],|r|r.get(0)).map_err(db_error)?;
+            calls.push(json!({"attempt":call.attempt,"call_id":id,"sequence":call.scope["sequence"],"frame_digest":call.frame_digest,"state":call.state,"outcome_digest":sha256_hex(call.outcome.as_ref().unwrap_or(&Value::Null).to_string().as_bytes()),"report_version":call.report_version,"retirement":if superseded{"SUPERSEDED"}else{"SERVICE_CONFIRMED_CONSUMED"}}));
         }
-        let mut calls = Vec::new();
-        for state in ["HOST_ACCEPTED", "NOT_SENT"] {
-            let ids=self.db.prepare("SELECT call_id FROM inbox_host_calls INDEXED BY inbox_host_gc_binding WHERE workspace=?1 AND mailbox=?2 AND report_pending=0 AND state=?3 AND sequence<=?4 AND host=?5 ORDER BY sequence,call_id LIMIT 32").map_err(db_error)?.query_map(params![options.workspace_id,options.mailbox_id,state,through,host],|r|r.get::<_,String>(0)).map_err(db_error)?.collect::<std::result::Result<Vec<_>,_>>().map_err(db_error)?;
-            for id in ids {
-                let call = self.host_call(identity, &id)?;
-                if call.scope["namespace"] != namespace
-                    || call.scope["membership_id"] != options.membership_id
-                    || call.scope["destination_digest"] != host
-                    || call.state != state
-                {
-                    return Err(failure("HOST_EVIDENCE_SCOPE_MISMATCH"));
-                }
-                calls.push(json!({"call_id":id,"sequence":call.scope["sequence"],"frame_digest":call.frame_digest,"state":call.state,"outcome_digest":sha256_hex(call.outcome.as_ref().ok_or_else(invalid)?.to_string().as_bytes()),"report_version":call.report_version}));
-            }
-        }
-        calls.sort_by(|a, b| {
-            (&a["sequence"].as_u64(), a["call_id"].as_str())
-                .cmp(&(&b["sequence"].as_u64(), b["call_id"].as_str()))
-        });
-        calls.truncate(32);
-        if through == 0 || (through == previous.0 && calls.is_empty() && !previous.2) {
-            return Ok(None);
-        }
-        Ok(Some(
-            json!({"binding":self.host_access_scope(namespace,options)?,"through_sequence":through,"calls":calls}),
-        ))
+        if calls.is_empty() && (through==0 || (through==previous.0 && !previous.2)) {return Ok(None);}
+        Ok(Some(json!({"binding":self.host_access_scope(namespace,options)?,"through_sequence":through,"calls":calls})))
     }
     pub fn host_retirement_commit(
-        &mut self,
-        identity: &KernelIdentity,
-        namespace: &str,
-        options: &WatchOptions,
-        plan: &Value,
+        &mut self, identity: &KernelIdentity, namespace: &str, options: &WatchOptions, plan: &Value,
     ) -> Result<()> {
         self.host_evidence_scope(namespace,options)?;
         let host=options.host_destination.as_deref().ok_or_else(invalid)?.to_owned();
-        if plan["binding"] != self.host_access_scope(namespace, options)? {
-            return Err(failure("HOST_RETIREMENT_SCOPE_MISMATCH"));
-        }
-        let through = plan["through_sequence"]
-            .as_u64()
-            .filter(|n| *n > 0 && *n <= 9_007_199_254_740_991)
-            .ok_or_else(invalid)?;
-        if through > self.host_consumed_frontier(options)? {
-            return Err(failure("HOST_RETIREMENT_NOT_CONSUMED"));
-        }
-        let previous = self.host_retired(options, &host)?;
-        let calls = plan["calls"]
-            .as_array()
-            .filter(|v| v.len() <= 32)
-            .ok_or_else(invalid)?;
-        let mut selected = Vec::new();
-        let mut ids = std::collections::BTreeSet::new();
+        let access=self.host_access_scope(namespace,options)?;
+        if plan["binding"]!=access {return Err(failure("HOST_RETIREMENT_SCOPE_MISMATCH"));}
+        let through=plan["through_sequence"].as_u64().filter(|n|*n<=9_007_199_254_740_991).ok_or_else(invalid)?;
+        if through>self.host_consumed_frontier(options)? {return Err(failure("HOST_RETIREMENT_NOT_CONSUMED"));}
+        let previous=self.host_retired(options,&host)?;
+        let calls=plan["calls"].as_array().filter(|v|v.len()<=32).ok_or_else(invalid)?;
+        let mut selected=Vec::new();let mut ids=std::collections::BTreeSet::new();
         for entry in calls {
-            let id = entry["call_id"].as_str().ok_or_else(invalid)?;
-            let sequence = entry["sequence"]
-                .as_u64()
-                .filter(|n| *n > 0 && *n <= through)
-                .ok_or_else(invalid)?;
-            if !ids.insert(id) {
-                return Err(invalid());
-            }
-            let row:Option<(u64,u64,bool)>=self.db.query_row("SELECT allocation,report_version,report_pending=0 FROM inbox_host_calls WHERE call_id=?1",[id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(db_error)?;
-            let Some((allocation, version, reported)) = row else {
-                if sequence > previous.0 {
-                    return Err(failure("HOST_RETIREMENT_NOT_FOUND"));
-                }
+            let id=entry["call_id"].as_str().ok_or_else(invalid)?;
+            let sequence=entry["sequence"].as_u64().filter(|n|*n>0&&*n<=9_007_199_254_740_991).ok_or_else(invalid)?;
+            if !ids.insert(id) {return Err(invalid());}
+            let row:Option<(u64,u64,bool,bool)>=self.db.query_row("SELECT allocation,report_version,report_pending=0,consumed_confirmed=1 OR EXISTS(SELECT 1 FROM inbox_consumed a WHERE a.workspace=inbox_host_calls.workspace AND a.mailbox=inbox_host_calls.mailbox AND a.sequence=inbox_host_calls.sequence AND a.delivery_id=inbox_host_calls.delivery_id) FROM inbox_host_calls WHERE call_id=?1",[id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional().map_err(db_error)?;
+            let Some((allocation,version,reported,consumed))=row else {
+                let obsolete:bool=self.db.query_row("SELECT EXISTS(SELECT 1 FROM inbox_host_attempts WHERE workspace=?1 AND mailbox=?2 AND sequence=?3 AND attempt>?4)",params![options.workspace_id,options.mailbox_id,sequence,entry["attempt"].as_u64()],|r|r.get(0)).map_err(db_error)?;
+                if !obsolete && sequence>previous.0 && !self.host_sequence_closed(namespace,options,sequence)? {return Err(failure("HOST_RETIREMENT_NOT_FOUND"));}
                 continue;
             };
-            let call = self.host_call(identity, id)?;
-            if !reported
-                || entry["report_version"] != version
-                || call.report_version != version
-                || call.scope["sequence"] != sequence
-                || call.scope["namespace"] != namespace
-                || call.scope["workspace_id"] != options.workspace_id
-                || call.scope["mailbox_id"] != options.mailbox_id
-                || call.scope["membership_id"] != options.membership_id
-                || call.scope["destination_digest"] != host
-                || call.frame_digest != entry["frame_digest"]
-                || call.state != entry["state"]
-                || !matches!(call.state.as_str(), "HOST_ACCEPTED" | "NOT_SENT")
-                || sha256_hex(
-                    call.outcome
-                        .as_ref()
-                        .ok_or_else(invalid)?
-                        .to_string()
-                        .as_bytes(),
-                ) != entry["outcome_digest"]
-            {
+            let call=self.host_call(identity,id)?;self.host_original_scope(namespace,options,&call)?;
+            let superseded:bool=self.db.query_row("SELECT delivery_state='SUPERSEDED' AND EXISTS(SELECT 1 FROM inbox_host_attempts a WHERE a.workspace=inbox_host_calls.workspace AND a.mailbox=inbox_host_calls.mailbox AND a.sequence=inbox_host_calls.sequence AND a.attempt>inbox_host_calls.attempt) FROM inbox_host_calls WHERE call_id=?1",[id],|r|r.get(0)).map_err(db_error)?;
+            let completed=consumed || sequence<=through;
+            let retiring_superseded=entry["retirement"]=="SUPERSEDED" && superseded;
+            if !reported || (!completed && !retiring_superseded) || (!retiring_superseded && entry["retirement"]!="SERVICE_CONFIRMED_CONSUMED") || entry["attempt"]!=call.attempt
+                || entry["report_version"]!=version || call.scope["sequence"]!=sequence || call.frame_digest!=entry["frame_digest"]
+                || call.state!=entry["state"] || call.state=="CALL_OPEN"
+                || sha256_hex(call.outcome.as_ref().unwrap_or(&Value::Null).to_string().as_bytes())!=entry["outcome_digest"] {
                 return Err(failure("HOST_RETIREMENT_CONFLICT"));
             }
-            selected.push((id.to_owned(), allocation, sequence));
+            selected.push((id.to_owned(),allocation,sequence,completed));
         }
-        let tx = self.db.unchecked_transaction().map_err(db_error)?;
+        let scope=access.to_string();
+        let tx=self.db.unchecked_transaction().map_err(db_error)?;
         tx.execute("INSERT INTO inbox_host_retired_v2 VALUES(?1,?2,?3,?4,0,1) ON CONFLICT(workspace,mailbox,host) DO UPDATE SET through_sequence=max(through_sequence,excluded.through_sequence),lane_pending=1",params![options.workspace_id,options.mailbox_id,host,through]).map_err(db_error)?;
-        for (id, allocation, _) in &selected {
-            tx.execute("DELETE FROM inbox_host_facts WHERE call_id=?1", [id])
-                .map_err(db_error)?;
-            tx.execute("DELETE FROM inbox_host_calls WHERE call_id=?1", [id])
-                .map_err(db_error)?;
-            tx.execute(
-                "UPDATE inbox_host_meta SET allocated=allocated-?1,rows=rows-1 WHERE id=1",
-                [allocation],
-            )
-            .map_err(db_error)?;
+        for (id,allocation,sequence,completed) in &selected {
+            if *completed {
+            // Merge only neighboring ranges; one old live hole cannot retain
+            // completed payloads or produce an unbounded per-call tombstone log.
+            let neighbors=tx.prepare("SELECT lo,hi FROM inbox_host_closed WHERE scope=?1 AND lo<=?2+1 AND hi>=?2-1 ORDER BY lo LIMIT 2").map_err(db_error)?.query_map(params![scope,sequence],|r|Ok((r.get::<_,u64>(0)?,r.get::<_,u64>(1)?))).map_err(db_error)?.collect::<std::result::Result<Vec<_>,_>>().map_err(db_error)?;
+            let lo=neighbors.iter().map(|r|r.0).min().unwrap_or(*sequence).min(*sequence);
+            let hi=neighbors.iter().map(|r|r.1).max().unwrap_or(*sequence).max(*sequence);
+            for (start,_) in neighbors {tx.execute("DELETE FROM inbox_host_closed WHERE scope=?1 AND lo=?2",params![scope,start]).map_err(db_error)?;}
+            tx.execute("INSERT INTO inbox_host_closed VALUES(?1,?2,?3)",params![scope,lo,hi]).map_err(db_error)?;
+            }
+            let payload:Option<String>=tx.query_row("SELECT payload_key FROM inbox_host_calls WHERE call_id=?1",[id],|r|r.get(0)).map_err(db_error)?;
+            tx.execute("DELETE FROM inbox_host_facts WHERE call_id=?1",[id]).map_err(db_error)?;
+            tx.execute("DELETE FROM inbox_host_calls WHERE call_id=?1",[id]).map_err(db_error)?;
+            if let Some(key)=payload {storage::collect_payload(&tx,&key)?;}
+            tx.execute("UPDATE inbox_host_meta SET allocated=allocated-?1,rows=rows-1 WHERE id=1",[allocation]).map_err(db_error)?;
         }
-        let sequences = selected
-            .iter()
-            .map(|v| v.2)
-            .collect::<std::collections::BTreeSet<_>>();
+        let sequences=selected.iter().map(|v|v.2).collect::<std::collections::BTreeSet<_>>();
         for sequence in sequences {
             let live:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM inbox_host_calls WHERE workspace=?1 AND mailbox=?2 AND sequence=?3)",params![options.workspace_id,options.mailbox_id,sequence],|r|r.get(0)).map_err(db_error)?;
             if !live {
+                tx.execute("DELETE FROM inbox_host_attempts WHERE workspace=?1 AND mailbox=?2 AND sequence=?3",params![options.workspace_id,options.mailbox_id,sequence]).map_err(db_error)?;
                 tx.execute("DELETE FROM inbox_host_ready WHERE workspace=?1 AND mailbox=?2 AND sequence=?3",params![options.workspace_id,options.mailbox_id,sequence]).map_err(db_error)?;
                 tx.execute("DELETE FROM inbox_host_lanes WHERE workspace=?1 AND mailbox=?2 AND sequence=?3",params![options.workspace_id,options.mailbox_id,sequence]).map_err(db_error)?;
             }
@@ -176,7 +134,7 @@ impl InboxStore {
 mod tests {
     use super::*;
     #[test]
-    fn consumed_confirmed_calls_retire_in_bounded_pages_but_uncertainty_and_late_facts_survive() {
+    fn completed_calls_retire_in_bounded_pages_while_pending_reports_survive() {
         let directory = crate::test_support::protected_test_dir();
         let identity = KernelIdentity::create(&directory.path().join("identity")).unwrap();
         let path = directory.path().join("inbox");
@@ -415,7 +373,7 @@ mod tests {
                 .query_row("SELECT rows FROM inbox_host_meta", [], |r| r
                     .get::<_, u64>(0))
                 .unwrap(),
-            3
+            1
         );
         assert_eq!(
             store
@@ -439,13 +397,13 @@ mod tests {
             store
                 .host_status(&identity, namespace, &options, &references[70])
                 .unwrap()["host"],
-            "RESULT_UNKNOWN"
+            "LOCAL_EVIDENCE_RETIRED"
         );
         assert_eq!(
             store
                 .host_status(&identity, namespace, &options, &references[71])
                 .unwrap()["host"],
-            "HOST_QUEUED"
+            "LOCAL_EVIDENCE_RETIRED"
         );
         assert_eq!(
             store
@@ -453,47 +411,9 @@ mod tests {
                 .unwrap()["reporting"],
             "BLOCKED"
         );
-        // A late acceptance after a retirement frontier remains verifiable and
-        // uploads before this call can become eligible for physical collection.
-        store
-            .host_finish(
-                &identity,
-                namespace,
-                &options,
-                &originals[71],
-                HostOutcome::HostAccepted {
-                    receipt: "late-turn".into(),
-                },
-            )
-            .unwrap();
-        assert!(store
-            .host_retirement_plan(&identity, namespace, &options)
-            .unwrap()
-            .is_none());
-        let late = store.host_call(&identity, &originals[71].call_id).unwrap();
-        store
-            .host_reported(
-                &options.workspace_id,
-                &options.mailbox_id,
-                &late.call_id,
-                late.report_version,
-            )
-            .unwrap();
-        let plan = store
-            .host_retirement_plan(&identity, namespace, &options)
-            .unwrap()
-            .unwrap();
-        assert_eq!(plan["calls"].as_array().unwrap().len(), 1);
-        store
-            .host_retirement_commit(&identity, namespace, &options, &plan)
-            .unwrap();
-        assert_eq!(
-            store
-                .db
-                .query_row("SELECT rows FROM inbox_host_meta", [], |r| r
-                    .get::<_, u64>(0))
-                .unwrap(),
-            2
-        );
+        // A late input result cannot reopen an exactly consumed notification.
+        store.host_finish(&identity,namespace,&options,&originals[71],HostOutcome::HostAccepted{receipt:"late-turn".into()}).unwrap();
+        assert_eq!(store.host_status(&identity,namespace,&options,&references[71]).unwrap()["host"],"LOCAL_EVIDENCE_RETIRED");
+        assert!(store.host_retirement_plan(&identity,namespace,&options).unwrap().is_none());
     }
 }
