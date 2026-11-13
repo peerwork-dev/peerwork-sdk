@@ -719,7 +719,55 @@ fn verify_structure_grant(result:&WireValue,command:&WireValue,prepared:&Verifie
         }
         return Ok(());
     }
+    if ascii_field(query,"view").as_deref()==Some("SUMMARY") {
+        return verify_grant_summary(result,query,command.get("instance_id").ok_or_else(invalid)?,prepared.protocol_digest().ok_or_else(invalid)?);
+    }
     verify_structure_grant_value(result.get("grant").ok_or_else(invalid)?,result,command,prepared,proofs)
+}
+/// SUMMARY is signed backend current-state metadata, explicitly requested by
+/// the caller. It is not an author proof and never substitutes for PROOF.
+fn verify_grant_summary(result:&WireValue,query:&WireValue,instance:&WireValue,protocol:&str)->Result<(),VerifyWireReceiptError>{
+    let invalid=||VerifyWireReceiptError::Mismatch;
+    let context=execution_context(query.get("execution_context_id"),instance)?;
+    if result.get("instance_id")!=Some(instance)||ascii_field(result,"protocol_digest").as_deref()!=Some(protocol)
+        ||execution_context(result.get("execution_context_id"),instance)?!=context{return Err(invalid());}
+    let grant=result.get("grant").ok_or_else(invalid)?;
+    if matches!(grant,WireValue::Null){return Ok(());}
+    if query.get("actor_id").is_none()||query.get("actor_id")!=grant.get("actor_id")||grant.get("source").is_some()
+        ||ascii_field(grant,"protocol_digest").as_deref()!=Some(protocol)
+        ||execution_context(grant.get("execution_context_id"),instance)?!=context
+        ||["grant_id","actor_id","membership_id"].iter().any(|key|ascii_field(grant,key).is_none_or(|value|!valid_token(&value)))
+        ||number(grant,"grant_revision").is_none_or(|revision|revision==0||revision>9_007_199_254_740_991)
+        ||!matches!(ascii_field(grant,"state").as_deref(),Some("ACTIVE"|"REVOKED"))
+        ||!matches!(grant.get("effective"),Some(WireValue::Bool(_)))
+        ||ascii_field(grant,"state").as_deref()==Some("REVOKED")&&grant.get("effective")==Some(&WireValue::Bool(true))
+        ||!matches!(grant.get("expires_at"),Some(WireValue::Null))&&number(grant,"expires_at").is_none_or(|value|value>9_007_199_254_740_991){return Err(invalid());}
+    for key in ["actions","protocol_roles","capabilities"] {
+        let Some(WireValue::Array(values))=grant.get(key)else{return Err(invalid());};
+        let strings=values.iter().map(|value|value.as_string().filter(|text|!text.is_empty()&&text.encode_utf16().count()<=120).ok_or_else(invalid)).collect::<Result<std::collections::BTreeSet<_>,_>>()?;
+        if strings.len()!=values.len(){return Err(invalid());}
+    }
+    Ok(())
+}
+#[cfg(test)]
+mod grant_summary_tests {
+    use super::*;
+    use serde_json::{json,Value};
+    fn wire(value:Value)->WireValue {parse_wire_json_bounded(&serde_json::to_vec(&value).unwrap(),20,16384).unwrap()}
+    #[test]
+    fn summary_binds_the_exact_current_metadata_without_claiming_an_author_proof(){
+        let instance=wire(json!("I".repeat(43)));let protocol="a".repeat(64);
+        let query=wire(json!({"view":"SUMMARY","actor_id":"A".repeat(43)}));
+        let value=json!({"instance_id":"I".repeat(43),"execution_context_id":"I".repeat(43),"protocol_digest":protocol,
+            "grant":{"grant_id":"G".repeat(43),"actor_id":"A".repeat(43),"membership_id":"M".repeat(43),"grant_revision":1,"state":"ACTIVE","effective":true,"expires_at":null,"execution_context_id":"I".repeat(43),"protocol_digest":protocol,"actions":["claim"],"protocol_roles":["WORKER"],"capabilities":[]}});
+        verify_grant_summary(&wire(value.clone()),&query,&instance,&protocol).unwrap();
+        for (path,replacement) in [("/grant/actor_id",json!("B".repeat(43))),("/grant/protocol_digest",json!("b".repeat(64))),("/grant/execution_context_id",json!("X".repeat(43))),("/grant/grant_revision",json!(0)),("/grant/state",json!("REVOKED")),("/grant/actions",json!(["claim","claim"]))] {
+            let mut changed=value.clone();*changed.pointer_mut(path).unwrap()=replacement;
+            assert!(verify_grant_summary(&wire(changed),&query,&instance,&protocol).is_err(),"{path}");
+        }
+        let mut authored=value;authored["grant"]["source"]=json!({"author_intent":"not-an-author-proof"});
+        assert!(verify_grant_summary(&wire(authored),&query,&instance,&protocol).is_err());
+    }
 }
 fn exact_actor_ids(values:&[WireValue])->Result<Vec<String>,VerifyWireReceiptError>{
     let invalid=||VerifyWireReceiptError::Mismatch;if values.is_empty()||values.len()>32{return Err(invalid());}

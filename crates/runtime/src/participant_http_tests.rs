@@ -4487,7 +4487,7 @@ async fn connect_send_only_accepts_body_keys_without_mailbox_and_preserves_lease
     let sender=ipc::RuntimeClient::connect(profile.endpoint_path.clone(),&service.origin,&worker_config.expected_actor).await.unwrap();
     let caps=sender.call(json!({"method":"capabilities"})).await.unwrap();
     let operations=caps["capability"]["operations"].as_array().unwrap();
-    assert!(!operations.iter().any(|v|v.as_str().unwrap().starts_with("structure.mailbox.")&&v!="structure.mailbox.get"));
+    assert!(operations.iter().any(|v|v=="structure.mailbox.claim"),"ordinary tools retain the original parent's operations; not configuring receive is not a local ACL");
     assert!(sender.call(json!({"method":"bindings"})).await.unwrap().as_array().unwrap().is_empty());
     let tools=AgentTools::open(profile.clone()).await.unwrap();
     let sent=tools.call(AgentRequest::parse("send",json!({"contact":"owner","operation_id":"sender-message","text":"E2EE without a receiver","wait_ms":5000})).unwrap()).await.unwrap();
