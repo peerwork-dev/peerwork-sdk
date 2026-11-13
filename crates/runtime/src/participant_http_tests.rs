@@ -4500,7 +4500,7 @@ async fn connect_send_only_accepts_body_keys_without_mailbox_and_preserves_lease
     assert!(boxes["result"]["structure"]["mailboxes"].as_array().unwrap().is_empty(),"send-only created a mailbox: {boxes}");
     assert_eq!(service.counts().await["actions"]["structure.communication.grant.set"],2,"key-only approval rewrote communication authority");
     let mut upgrade=request;upgrade.setup_id="receive-upgrade".into();upgrade.receive=true;
-    let pending=worker.run(upgrade.clone()).await.unwrap();assert_eq!(pending["blocker"]["code"],"AUTHORIZATION_REQUIRED","{pending}");
+    let pending=worker.run(upgrade.clone()).await.unwrap();assert_eq!(pending["blocker"]["code"],"OWNER_APPROVAL_REQUIRED","{pending}");
     let handoff=pending["details"]["authorization_request"].clone();assert_eq!(handoff["body_keys_required"],false);
     assert_eq!(handoff["missing"],json!([{"kind":"COMMUNICATION_RECEIVE"}]));
     service.config(json!({"drop_action":"structure.communication.grant.set"})).await;
