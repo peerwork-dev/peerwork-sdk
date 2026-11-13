@@ -65,9 +65,18 @@ interactive AGY CLI is not qualified; that does not prove the host lacks an
 external-input interface. The current App adapter reports queued input. INBOX is
 an explicit inbox/wait choice, never an automatic fallback.
 
+Protocol aliases are optional: use an exact INSTANCE in a single selected Space,
+or SPACE/INSTANCE. A new Peer or business instance does not require Connect just
+to add an address. Listing/stopping your own subscriptions needs no receive grant.
+An incomplete requested role/key/host objective leaves already-authorized tools
+available; it does not attest full receiving or PUSH. Context reports unavailable
+receiver observations as UNKNOWN. Do not infer an empty inbox or an offline Peer.
+
 Existing Workspace rights require no Owner exchange. For missing rights, relay
 the returned public authorization request and continue the same setup after
-approval. Local scope/host failures require the named local authority, not another
+approval. A business-role-only delta may go to an authorized protocol maintainer;
+key/admission changes retain their actual authority. Local scope/host failures
+require the named local authority, not another
 Workspace approval. Keep original identity, journal, receiver and pending IDs.
 
 For browser approval, describe `access.approve`. Honor the exact request's

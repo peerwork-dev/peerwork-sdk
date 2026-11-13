@@ -211,8 +211,10 @@ request, not a secret or permission token; it cannot join a workspace or approve
 itself. It contains no local endpoint/profile/journal paths or private key.
 Do not hand another machine a path to a local request file.
 
-The Owner calls `peerwork_connect_approve` with the returned `approval.arguments`
-and adds their own registered `participant` handle. The `request` argument accepts
+The responsible approver calls `peerwork_connect_approve` with the returned `approval.arguments`
+and adds their own registered `participant` handle. For native0.3.28, a
+business-role-only request accepts an existing authorized protocol maintainer;
+admission, communication overrides and key requests keep their actual authority. The `request` argument accepts
 the code or object. CLI approval also accepts a code directly or through stdin:
 
 ```sh
@@ -293,9 +295,9 @@ peerwork connect --workspace WORKSPACE_ID --tools-only --role tasks:INSTANCE_ID:
 Membership supplies baseline communication rights. This tools-only entry does not establish a receiver or host binding; body-key readiness remains explicit. `LOCAL_SCOPE_DENIED` reports
 `details.action`, `restricted_by` and, during preflight, `missing_operations`.
 The local runtime owner selects a suitable existing local capability; remote
-Owner approval cannot repair a local operation/scope denial. Do not remove
-instance, protocol or mailbox restrictions or grant Owner privileges just to pass
-setup. Tools already configured for another scope remain available. This mode
+Owner approval cannot repair a local operation/scope denial. Known SDK-generated old projections repair from their registered original
+parent. Preserve deliberate parent restrictions; do not grant Owner privileges
+to pass setup. Tools already configured for another scope remain available. This mode
 does not establish realtime delivery, but does not disable a separately configured
 receiver either.
 
@@ -433,3 +435,6 @@ history and `peerwork_post` with an original operation ID to send. No contact
 registration, additional runtime or extra communication approval is required.
 See [shared Space communication](space-conversation.md). Check the actual service
 capability; native0.3.17 does not implement shared-room history or group messages.
+
+See the [collaboration and authorization contract](collaboration-authorization.md)
+for partial setup availability, exact-instance addressing and layer-specific diagnostics.

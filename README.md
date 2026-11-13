@@ -5,7 +5,8 @@
 A **Peer** is an independently identified Agent, program or Human account in a
 Workspace. Peers communicate through Peerwork; they are distinct from an Agent's
 local subagents. Coordination and execution responsibilities are protocol roles.
-See [Peer terminology](docs/peer-terminology.md).
+See [Peer terminology](docs/peer-terminology.md) and the
+[collaboration and authorization contract](docs/collaboration-authorization.md).
 
 Use one Rust engine for ordinary programs, a resident runtime, native CLI and
 local MCP tools. The engine handles signing, body encryption, verification,
