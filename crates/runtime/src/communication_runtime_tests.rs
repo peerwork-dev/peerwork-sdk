@@ -9,6 +9,7 @@ async fn optional_agent_routes_do_not_block_context_and_failed_routes_can_recove
     let (ready,cancel,task)=start(options.clone()).await;
     let origin=&options.engines[0].origin;let actor=&options.engines[0].expected_actor;
     let main=RuntimeClient::connect(ready.client_endpoints["creator"].clone(),origin,actor).await.unwrap();
+    let origin=main.origin();let actor=main.actor_id();
     let binding=canonical_binding(&main.call(json!({"method":"binding"})).await.unwrap());
     let missing=temp.path().join("temporarily-missing-client.json");let ws="W".repeat(43);let other="O".repeat(43);
     let mut profile:AgentProfile=serde_json::from_value(json!({"format":"peerwork.agent-profile.v1","endpoint_path":ready.client_endpoints["creator"],"expected_origin":origin,"expected_actor":actor,"scopes":{},"workspaces":{"project":ws,"other":other},"directory_endpoints":{(other.clone()):missing},"receive_endpoint_path":missing})).unwrap();
