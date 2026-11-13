@@ -46,7 +46,7 @@ impl AgentTools {
             }
             if let Some(actor)=actor {
                 let resolved=if token(&actor){actor}else{
-                    let result=self.members(Some(&workspace),Some(&actor),None,2).await?;
+                    let result=self.members(Some(&workspace),Some(&actor),None,None,2).await?;
                     let rows=result["members"].as_array().filter(|v|v.len()==1).ok_or_else(||invalid("SELECT_EXACT_MEMBER_ACTOR"))?;
                     rows[0]["actor_id"].as_str().ok_or_else(||invalid("MEMBER_OBSERVATION_INVALID"))?.to_owned()
                 };selected["actor_id"]=json!(resolved);
