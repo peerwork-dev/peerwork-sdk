@@ -89,7 +89,7 @@ async fn raw_profile_owner_adoption_unifies_mcp_local_and_original_operation_rec
             cw.write_all(b"{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n").await.unwrap();
         }
         let mut params=json!({"name":"peerwork_reachability","arguments":{"workspace":ws}});
-        if protocol=="2026-07-28" {params["_meta"]=json!({"io.modelcontextprotocol/protocolVersion":protocol});}
+        if protocol=="2026-07-28" {params["_meta"]=json!({"io.modelcontextprotocol/protocolVersion":protocol,"io.modelcontextprotocol/clientCapabilities":{}});}
         cw.write_all(format!("{}\n",json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":params})).as_bytes()).await.unwrap();
         let mut line=String::new();cr.read_line(&mut line).await.unwrap();let reply:Value=serde_json::from_str(&line).unwrap();assert!(reply["error"].is_null(),"{reply}");assert_ne!(reply["result"]["isError"],true,"{reply}");
         drop(cw);drop(cr);frontend.await.unwrap().unwrap();
