@@ -60,6 +60,7 @@ async fn raw_profile_owner_adoption_unifies_mcp_local_and_original_operation_rec
     let handle=connect.adopt_from_owner(&profile,config_path.clone()).await.unwrap();
     assert_eq!(connect.adopt_from_owner(&profile,config_path).await.unwrap(),handle);
     let current=connect.profile_for_scope(Some(&handle),Some(&ws)).unwrap().unwrap();
+    assert_eq!(current.expected_origin,old.origin());
     assert!(current.recovery_views.values().any(|view|view.workspace_id==ws));
     assert!(current.recovery_views.values().any(|view|view.workspace_id==other_ws));
     assert!(connect.profile_for_scope(Some(&handle),None).unwrap().is_some());
@@ -73,6 +74,7 @@ async fn raw_profile_owner_adoption_unifies_mcp_local_and_original_operation_rec
     assert_eq!(old.call(json!({"method":"binding"})).await.unwrap(),original_binding);
     assert_eq!(old.call(json!({"method":"capabilities"})).await.unwrap()["capability"],serde_json::to_value(legacy).unwrap());
     assert_eq!(serde_json::to_vec(&profile).unwrap(),original_profile);
+    assert_eq!(source.call(AgentRequest::parse("reachability",json!({})).unwrap()).await.unwrap_err().code,"SELECT_ONE_CONFIGURED_WORKSPACE");
     let raw=source.call(AgentRequest::parse("reachability",json!({"workspace":ws})).unwrap()).await.unwrap();
     let local=crate::agent_lifecycle::Lifecycle::local(directory.clone(),None,Some(ws.clone())).call(AgentRequest::parse("reachability",json!({"workspace":ws})).unwrap()).await.unwrap();
     assert!(raw["observed_at"].as_u64().is_some());assert!(local["observed_at"].as_u64().is_some());

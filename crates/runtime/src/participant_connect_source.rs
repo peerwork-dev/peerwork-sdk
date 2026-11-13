@@ -111,6 +111,10 @@ impl Connect {
         let mut next=profile.clone();
         if endpoint!=profile.endpoint_path {
             next.endpoint_path=endpoint.clone();
+            // Runtime bindings use canonical Origins. Preserve the source file
+            // and its digest, but bind the new recovery-bearing view to the
+            // authenticated canonical spelling rather than a caller's URL text.
+            next.expected_origin=original.origin().to_owned();
             if !profile.scopes.is_empty() && next.receive_endpoint_path.is_none(){next.receive_endpoint_path=Some(profile.endpoint_path.clone());}
             for path in next.directory_endpoints.values_mut().chain(next.protocol_endpoints.values_mut()) {
                 if *path==profile.endpoint_path {*path=endpoint.clone();}
