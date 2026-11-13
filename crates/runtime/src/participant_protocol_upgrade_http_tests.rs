@@ -5,7 +5,7 @@ use crate::{communication_runtime as ipc,participant_connect::{Connect,Registrat
 use tokio::io::AsyncWriteExt;
 fn fixtures()->Value {
     let output=std::process::Command::new(std::env::var("PEERWORK_TEST_NODE").expect("explicit fixture Node"))
-        .arg(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/protocol-upgrade-fixtures.mjs")).output().unwrap();
+        .arg(std::env::var_os("PEERWORK_SDK_REFERENCE_ROOT").map(PathBuf::from).unwrap_or_else(||PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")).join("tests/protocol-upgrade-fixtures.mjs")).output().unwrap();
     assert!(output.status.success(),"{}",String::from_utf8_lossy(&output.stderr));serde_json::from_slice(&output.stdout).unwrap()
 }
 #[tokio::test(flavor="multi_thread",worker_threads=4)]

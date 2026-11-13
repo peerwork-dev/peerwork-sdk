@@ -56,6 +56,8 @@ async fn managed_mcp_and_cli_repair_generated_directory_clients_without_replacin
     let service=Service::start();let root=crate::test_support::protected_test_dir();let config=configuration(root.path(),&service.origin);
     let owner=ParticipantClient::open(config.clone()).await.unwrap();
     let ws=mutate(&owner,"directory-space","structure.workspace.create",&Scope::default(),json!({"name":"Directory recovery"})).await["workspace_id"].as_str().unwrap().to_owned();
+    let key=install_synthetic_key(&config,&ws,&[85;32],None);
+    mutate(&owner,"directory-key","structure.content-key.set",&Scope{workspace_id:Some(ws.clone()),..Default::default()},json!({"key_id":key,"expected_epoch":0,"expected_head_revision":null})).await;
     owner.close().await.unwrap();
     let runtime=ipc::RuntimeConfig{format:"peerwork.participant-runtime.v1".into(),state_directory:root.path().join("runtime"),hosts:vec![],engines:vec![ipc::EngineConfig{name:"original".into(),origin:config.origin.clone(),expected_actor:config.expected_actor.clone(),identity_path:config.identity_path.clone(),state_directory:config.state_directory.clone(),journal_path:Some(config.journal_path.clone()),authority:config.authority.clone(),allow_loopback_http:true,transport:config.transport.clone(),max_inflight:8,max_pending:64,max_stored_bytes:32*1024*1024,migration_sources:vec![]}],clients:vec![ipc::ClientConfig{name:"owner".into(),engine:"original".into(),capability:Capability::owner()}]};
     let stop=crate::KernelCancellationToken::new();let(tx,rx)=tokio::sync::oneshot::channel();let daemon=tokio::spawn(ipc::serve(runtime,stop.clone(),tx));let ready=rx.await.unwrap().unwrap();
@@ -88,6 +90,22 @@ async fn managed_mcp_and_cli_repair_generated_directory_clients_without_replacin
     let args=vec!["--local".into(),registry.to_string_lossy().into_owned(),"--participant".into(),"owner".into(),"--workspace".into(),ws.clone(),"reachability".into()];
     let found=tokio::task::spawn_blocking(move||crate::agent_frontend::cli(&args)).await.unwrap();assert_eq!(found["members"].as_array().unwrap().len(),1,"{found}");
     assert_eq!(service.counts().await["workspaces"],baseline["workspaces"]);assert_eq!(service.counts().await["actions"]["structure.member.set"],baseline["actions"]["structure.member.set"]);
+    // A generated old sender may permit discovery but freeze recipients. Its
+    // denial must repair through the registered original parent, not request
+    // Owner approval or silently mutate the old capability.
+    let mut sender_cap=Capability::owner();sender_cap.allow_root=false;sender_cap.workspace_ids=Some([ws.clone()].into());sender_cap.mailbox_ids=Some(["M".repeat(43)].into());
+    let derived=original.call(json!({"method":"derive","name":"historical-recipient-snapshot","capability":sender_cap})).await.unwrap();
+    let sender_path=PathBuf::from(derived["endpoint_path"].as_str().unwrap());
+    let store=crate::secure_state::SecureStateStore::open(&registry.join("connect.state")).unwrap();
+    let mut state:Value=serde_json::from_slice(&historical).unwrap();
+    let mut sender_profile=profile.clone();sender_profile.endpoint_path=sender_path.clone();sender_profile.directory_endpoints.clear();
+    state["setups"][&active]["profile"]=json!(sender_profile);state["setups"][&active]["sender_capability"]=json!(sender_cap);
+    store.write_exact(&serde_json::to_vec(&state).unwrap()).unwrap();drop(store);
+    let args=vec!["--local".into(),registry.to_string_lossy().into_owned(),"--participant".into(),"owner".into(),"--workspace".into(),ws.clone(),"call".into(),"send".into(),json!({"workspace":ws,"to":config.expected_actor,"operation_id":"new-recipient-after-install","text":"Repair generated routing automatically","wait_ms":5000}).to_string()];
+    let sent=tokio::task::spawn_blocking(move||crate::agent_frontend::cli(&args)).await.unwrap();assert_eq!(sent["state"],"ACCEPTED","{sent}");
+    let unchanged=ipc::RuntimeClient::connect(sender_path,&service.origin,&config.expected_actor).await.unwrap();
+    assert_eq!(unchanged.call(json!({"method":"capabilities"})).await.unwrap()["capability"],json!(sender_cap));
+    assert!(service.counts().await["actions"]["structure.communication.grant.set"].is_null());
     drop(old);drop(original);stop.cancel();daemon.await.unwrap().unwrap();
 }
 #[tokio::test(flavor="multi_thread",worker_threads=2)]
