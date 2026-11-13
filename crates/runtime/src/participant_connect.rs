@@ -772,6 +772,12 @@ impl Connect {
             .ok_or_else(|| local("WORKSPACE_OBSERVATION_INVALID"))?;
         // Existing membership opens the already-authorized tool surface before
         // optional roles, keys or host attachment are resolved on this Setup.
+        // A new Setup can continue a known generated old active projection.
+        // Historical remote action requests do not establish local delegation;
+        // only the authenticated original parent's actual capability does.
+        if let Some(active)=self.registry.active_by_scope.get(&format!("{}:{}",request.participant,request.workspace_id)).cloned() {
+            self.normalize_cached_authority(&active).await?;
+        }
         self.establish_baseline(&request, &selected, &parent, &client, membership).await?;
         if unsupported_host {return self.pending_unsupported_host(&request);}
         Self::check_requested_actions(&parent,&request.protocols)?;

@@ -153,7 +153,7 @@ async fn workspace_client_uses_current_grants_without_local_role_refresh(){
     let runtime=ipc::RuntimeConfig{format:"peerwork.participant-runtime.v1".into(),state_directory:root.path().join("runtime"),hosts:vec![],engines:vec![ipc::EngineConfig{name:"original".into(),origin:config.origin.clone(),expected_actor:config.expected_actor.clone(),identity_path:config.identity_path.clone(),state_directory:config.state_directory.clone(),journal_path:Some(config.journal_path.clone()),authority:config.authority.clone(),allow_loopback_http:true,transport:config.transport.clone(),max_inflight:8,max_pending:64,max_stored_bytes:32*1024*1024,migration_sources:vec![]}],clients:vec![ipc::ClientConfig{name:"owner".into(),engine:"original".into(),capability:Capability::owner()}]};
     let stop=crate::KernelCancellationToken::new();let(tx,rx)=tokio::sync::oneshot::channel();let daemon=tokio::spawn(ipc::serve(runtime,stop.clone(),tx));let ready=rx.await.unwrap().unwrap();
     let mut connect=Connect::open(&root.path().join("registry")).unwrap();connect.register("owner",Registration{origin:service.origin.clone(),actor_id:config.expected_actor.clone(),endpoint_path:ready.client_endpoints["owner"].clone()}).await.unwrap();
-    let request:ConnectRequest=serde_json::from_value(json!({"participant":"owner","workspace_id":ws,"send":false,"receive":false,"protocols":[{"alias":"tickets","instance_id":instance,"role":"WORKER"}]})).unwrap();
+    let request:ConnectRequest=serde_json::from_value(json!({"participant":"owner","workspace_id":ws,"send":false,"receive":false,"protocols":[{"alias":"tickets","instance_id":instance,"role":"WORKER","actions":["ticket.create"]}]})).unwrap();
     assert_eq!(connect.run(request.clone()).await.unwrap()["state"],"LOCAL_CONFIGURED");
     let profile=connect.profile_for_scope(Some("owner"),Some(&ws)).unwrap().unwrap();
     assert_eq!(profile.protocol_endpoints["tickets"],profile.endpoint_path);assert_eq!(profile.directory_endpoints[&ws],profile.endpoint_path);assert!(profile.management_views.is_empty());
@@ -179,6 +179,9 @@ async fn workspace_client_uses_current_grants_without_local_role_refresh(){
     let old_path=PathBuf::from(state["setups"][&active]["result"]["profile_path"].as_str().unwrap());crate::onboarding_files::replace(&old_path,&serde_json::to_vec(&historical).unwrap()).unwrap();
     store.write_exact(&serde_json::to_vec(&state).unwrap()).unwrap();drop(store);
     let mut connect=Connect::open(&registry).unwrap();
+    let mut continuation=request.clone();continuation.setup_id="continue-old-generated-active".into();
+    let continued=connect.run(continuation).await.unwrap();assert_eq!(continued["state"],"LOCAL_CONFIGURED","{continued}");
+    assert_eq!(continued["client_authority_model"],"SERVICE_CURRENT");
     connect.refresh_protocol_alias(Some("owner"),Some(&ws),"tickets",None).await.unwrap();
     assert!(!connect.profile_for_scope(Some("owner"),Some(&ws)).unwrap().unwrap().recovery_views.is_empty(),"protocol refresh first must retain old sender recovery");
     let normalized=connect.run(request.clone()).await.unwrap();assert_eq!(normalized["state"],"LOCAL_CONFIGURED","{normalized}");assert_eq!(normalized["client_authority_model"],"SERVICE_CURRENT");

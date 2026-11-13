@@ -10,7 +10,7 @@ impl Connect {
         Ok(Self::generated_authority_candidate(setup))
     }
     fn generated_authority_candidate(setup:&Setup)->bool {
-        setup.result["client_authority_model"]!="SERVICE_CURRENT" && !Self::explicit_setup(setup)
+        setup.result["client_authority_model"]!="SERVICE_CURRENT"
             && setup.profile.as_ref().is_some_and(|profile|!profile.protocol_endpoints.keys().any(|alias|!setup.protocol_intents.contains_key(alias)&&!setup.desired.protocols.iter().any(|p|p.alias==*alias)))
     }
     pub(super) async fn establish_baseline(&mut self, request:&ConnectRequest, selected:&Registration, parent:&Capability, client:&RuntimeClient, membership:&str)->Result<()> {

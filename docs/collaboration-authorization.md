@@ -42,7 +42,10 @@ they lack that operation. This deliberately changes the old mixed-client behavio
 previous SDKs inferred a metadata denial from any local mailbox list.
 
 Known SDK-generated historical projections can be repaired automatically from
-the authenticated registered original parent. Old namespaces remain available
+the authenticated registered original parent. Historical Connect action lists
+are remote grant requests, not evidence of local signer delegation. This repair
+also applies when a new Setup continues a known generated old active profile.
+Old namespaces remain available
 for exact recovery. An explicitly restricted parent is not broadened, and an
 arbitrary external profile cannot borrow another endpoint's broader authority.
 
