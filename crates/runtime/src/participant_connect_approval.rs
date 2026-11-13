@@ -11,6 +11,9 @@ pub enum Delta {
     BusinessRole {
         instance_id: String,
         protocol_digest: String,
+        #[serde(default, skip_serializing_if="Option::is_none")]
+        execution_context_id: Option<String>,
+        #[serde(default)]
         role: String,
         actions: Vec<String>,
     },
@@ -89,13 +92,15 @@ impl AuthorizationRequest {
             if let Delta::BusinessRole {
                 instance_id,
                 protocol_digest,
+                execution_context_id,
                 role,
                 actions,
             } = delta
             {
                 if !token(instance_id)
                     || !(crate::participant_migration::digest(protocol_digest)||(admission&&protocol_digest.is_empty()))
-                    || role.is_empty()
+                    || execution_context_id.as_ref().is_some_and(|id|!token(id))
+                    || (role.is_empty() && actions.is_empty())
                     || role.len() > 128
                     || actions.len() > 64
                     || actions.iter().any(|s| s.is_empty() || s.len() > 128)
@@ -168,16 +173,25 @@ impl Connect {
             // Resolve and validate requested role scopes before any admission.
             // A malformed role request must not leave a new membership behind.
             for delta in &mut continuation.missing {
-                if let Delta::BusinessRole{instance_id,protocol_digest,role,actions}=delta {
-                    let resolved=read(&client,"structure.instance.resolve",scope.clone(),json!({"instance_id":instance_id})).await?;
-                    let actual=resolved["instance"]["protocol_digest"].as_str().ok_or_else(||local("PROTOCOL_RESOLUTION_FAILED"))?;
+                if let Delta::BusinessRole{instance_id,protocol_digest,execution_context_id,role,actions}=delta {
+                    let mut query=json!({"instance_id":instance_id});
+                    if let Some(context)=execution_context_id.as_ref(){query["execution_context_id"]=json!(context);}
+                    let resolved=read(&client,"structure.instance.resolve",scope.clone(),query).await?;
+                    let binding=&resolved[if execution_context_id.is_some(){"binding"}else{"default_binding"}];
+                    let actual=binding["protocol_digest"].as_str().or_else(||resolved["instance"]["protocol_digest"].as_str()).ok_or_else(||local("PROTOCOL_RESOLUTION_FAILED"))?;
                     if !protocol_digest.is_empty()&&protocol_digest!=actual{return Err(local("PROTOCOL_RESOLUTION_FAILED"));}
                     *protocol_digest=actual.into();
                     let selected=Scope{workspace_id:scope.workspace_id.clone(),instance_id:Some(instance_id.clone()),protocol_digest:Some(protocol_digest.clone())};
-                    let bound=read(&client,"structure.protocol.resolve",selected,json!({"view":"inspect","include_resources":false})).await?;
-                    let definition=&bound["bundle_header"]["roles"][role.as_str()];
-                    if !definition.is_object(){return Err(local("PROTOCOL_ROLE_NOT_FOUND"));}
-                    let declared:std::collections::BTreeSet<String>=definition["tools"].as_array().into_iter().flatten().filter_map(|t|t["action"].as_str().map(str::to_owned)).collect();
+                    let mut query=json!({"view":"inspect","include_resources":false});
+                    if let Some(context)=execution_context_id.as_ref(){query["execution_context_id"]=json!(context);}
+                    let bound=read(&client,"structure.protocol.resolve",selected,query).await?;
+                    let declared:std::collections::BTreeSet<String>=if role.is_empty(){
+                        bound["bundle_header"]["manifest"]["actions"].as_array().into_iter().flatten().filter_map(|action|action["id"].as_str().map(str::to_owned)).collect()
+                    }else{
+                        let definition=&bound["bundle_header"]["roles"][role.as_str()];
+                        if !definition.is_object(){return Err(local("PROTOCOL_ROLE_NOT_FOUND"));}
+                        definition["tools"].as_array().into_iter().flatten().filter_map(|t|t["action"].as_str().map(str::to_owned)).collect()
+                    };
                     if actions.is_empty(){*actions=declared.into_iter().collect();}
                     else if actions.iter().any(|a|!declared.contains(a)){return Err(local("ACTION_NOT_DECLARED_FOR_ROLE"));}
                 }
@@ -313,7 +327,7 @@ impl Connect {
                         "send":send||(effective&&grant["can_send"]==true),"receive":receive||(effective&&grant["can_receive"]==true),"expires_at":expiry})));
             }
             let mut groups: BTreeMap<
-                (String, String),
+                (String, String, Option<String>),
                 (
                     std::collections::BTreeSet<String>,
                     std::collections::BTreeSet<String>,
@@ -323,18 +337,19 @@ impl Connect {
                 if let Delta::BusinessRole {
                     instance_id,
                     protocol_digest,
+                    execution_context_id,
                     role,
                     actions,
                 } = delta
                 {
                     let group = groups
-                        .entry((instance_id.clone(), protocol_digest.clone()))
+                        .entry((instance_id.clone(), protocol_digest.clone(), execution_context_id.clone()))
                         .or_default();
-                    group.0.insert(role.clone());
+                    if !role.is_empty(){group.0.insert(role.clone());}
                     group.1.extend(actions.iter().cloned());
                 }
             }
-            for (index, ((instance_id, protocol_digest), (requested_roles, requested_actions))) in
+            for (index, ((instance_id, protocol_digest, execution_context_id), (requested_roles, requested_actions))) in
                 groups.into_iter().enumerate()
             {
                 let s = Scope {
@@ -342,11 +357,13 @@ impl Connect {
                     instance_id: Some(instance_id.clone()),
                     protocol_digest: Some(protocol_digest.clone()),
                 };
+                let mut query=json!({"actor_id":request.actor_id,"view":"SUMMARY"});
+                if let Some(context)=&execution_context_id {query["execution_context_id"]=json!(context);}
                 let old = read(
                     &client,
                     "structure.grant.get",
                     s.clone(),
-                    json!({"actor_id":request.actor_id,"view":"SUMMARY"}),
+                    query,
                 )
                 .await?;
                 let grant = &old["grant"];
@@ -367,9 +384,10 @@ impl Connect {
                     Default::default()
                 };
                 allowed.extend(requested_actions);
-                steps.push(Invoke::new(format!("approve-{approval_id}-role-{index}"),"structure.grant.set",s,
-                        json!({"actor_id":request.actor_id,"membership_id":request.membership_id,"expected_grant_revision":grant["grant_revision"],
-                            "actions":allowed,"protocol_roles":roles,"capabilities":if effective{grant["capabilities"].as_array().cloned().unwrap_or_default()}else{Vec::new()},"expires_at":expiry})));
+                let mut body=json!({"actor_id":request.actor_id,"membership_id":request.membership_id,"expected_grant_revision":grant["grant_revision"],
+                    "actions":allowed,"protocol_roles":roles,"capabilities":if effective{grant["capabilities"].as_array().cloned().unwrap_or_default()}else{Vec::new()},"expires_at":expiry});
+                if let Some(context)=execution_context_id {body["execution_context_id"]=json!(context);}
+                steps.push(Invoke::new(format!("approve-{approval_id}-role-{index}"),"structure.grant.set",s,body));
             }
             if request.body_keys_required {
                 steps.push(Invoke::new(format!("approve-{approval_id}-keys"),"participant.access.approve",scope,
@@ -428,6 +446,24 @@ impl Connect {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn business_action_request_retains_exact_context_without_inventing_a_role() {
+        let mut input=json!({"format":"peerwork.connect-authorization-request.v1","setup_id":"browser-action",
+            "origin":"https://example.invalid/","workspace_id":"W".repeat(43),"actor_id":"A".repeat(43),
+            "membership_id":"M".repeat(43),"owner_id":"O".repeat(43),"body_keys_required":false,
+            "missing":[{"kind":"BUSINESS_ROLE","instance_id":"I".repeat(43),"protocol_digest":"a".repeat(64),
+                "execution_context_id":"C".repeat(43),"actions":["review"]}]});
+        let request=AuthorizationRequest::from_input(input.clone()).unwrap();
+        let restored=AuthorizationRequest::from_input(json!(request.to_code().unwrap())).unwrap();
+        let encoded=serde_json::to_value(restored).unwrap();
+        assert_eq!(encoded["missing"][0]["execution_context_id"],"C".repeat(43));
+        assert_eq!(encoded["missing"][0]["role"],"");
+        input["missing"][0]["execution_context_id"]=json!("invalid-context");
+        assert!(AuthorizationRequest::from_input(input.clone()).is_err());
+        input["missing"][0]["execution_context_id"]=json!("C".repeat(43));
+        input["missing"][0]["actions"]=json!([]);
+        assert!(AuthorizationRequest::from_input(input).is_err());
+    }
     #[test]
     fn public_request_code_roundtrips_and_is_not_an_authorization() {
         let input=json!({"format":"peerwork.connect-authorization-request.v2","setup_id":"join-worker",

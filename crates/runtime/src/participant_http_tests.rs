@@ -4857,3 +4857,6 @@ async fn unified_events_native_subscriptions_watch_consumption_and_exact_stop() 
     assert_eq!(service.counts().await["journal_reads"],0);
     drop(watch);drop(tools);worker.close().await.unwrap();owner.close().await.unwrap();
 }
+
+#[path="participant_single_entry_approval_http_tests.rs"]
+mod single_entry_approval;
