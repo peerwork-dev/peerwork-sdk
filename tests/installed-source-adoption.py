@@ -61,7 +61,6 @@ def main():
         try:
             service=subprocess.Popen([env.get('PEERWORK_TEST_NODE','node'),str(Path(__file__).resolve().parent/'participant-service.mjs')],cwd=root,env=env,text=True,stdout=subprocess.PIPE,stderr=(root/'service.log').open('a'));processes.append(service)
             origin=line(service)['origin'];identity=root/'identity.state';created=run('identity','create',identity)
-            full=run('runtime','--help')
             # Fixture setup uses an original full client, then freezes the actual
             # tested original client with the restrictive old configuration.
             capability={'operations':['structure.workspace.create','structure.workspace.get','structure.member.name.set','structure.members.read'],'allow_root':True,'workspace_ids':None,'instance_ids':None,'protocol_digests':None,'business_actions':None}
@@ -101,7 +100,18 @@ def main():
                     process.terminate()
                     try:process.wait(timeout=15)
                     except subprocess.TimeoutExpired:process.kill();process.wait(timeout=10)
-            # An adopted candidate is intentionally detached from its initial CLI;
-            # the original authenticated admin endpoint above owns its shutdown.
+            # An adopted candidate is detached from its initial CLI. Wait for
+            # its original ownership fence before deleting synthetic state.
+            fence=root/'runtime/runtime.state'
+            if fence.exists():
+                import fcntl
+                end=time.monotonic()+20
+                while True:
+                    with fence.open('rb') as stream:
+                        try:fcntl.flock(stream,fcntl.LOCK_EX|fcntl.LOCK_NB)
+                        except BlockingIOError:
+                            assert time.monotonic()<end,'synthetic adopted runtime did not release ownership'
+                        else:break
+                    time.sleep(.05)
 
 if __name__=='__main__':main()
