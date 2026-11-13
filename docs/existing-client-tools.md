@@ -1,115 +1,72 @@
-# Attach tools to an existing client
+# Use tools on the original client
 
-Native0.3.6 adds direct existing-endpoint attachment and workspace member tools.
-Native0.3.5 introduced the embedded tool entry. Use the exact
-[release](https://github.com/peerwork-dev/peerwork-sdk/releases/tag/v0.3.18)
-for published binaries and source; a source snapshot alone is not an installed
-upgrade. Native0.3.4 does not expose `serve_client`.
+Use the [Connect quickstart](native-participant-quickstart.md) for installation,
+then the loaded `peerwork_*` tools for daily work. Begin with `peerwork_context`.
+The native CLI and MCP adapters use the same selected-client lifecycle. Updating
+an old `--profile` launch does not select a different authority or operation
+namespace merely because its configuration predates Connect.
 
-Tool access, state takeover and host-session delivery are separate operations.
-An existing client that can already perform an operation does not need an Owner
-to generate another Agent profile, mailbox or identity merely to expose MCP.
+## Existing installations
 
-## Choose the existing interface
+Keep the original profile, endpoint, identity, journal, receiver and pending IDs.
+The shared lifecycle authenticates the selected client and uses supported local
+provenance to associate an old generated profile with its original issuer. A
+proven generated projection can be repaired through that issuer; deliberate
+parent restrictions remain. Do not edit action lists, switch to an Owner client,
+create another journal or install a second operational MCP to clear a denial.
 
-| Existing client | Tool entry | State migration |
-| --- | --- | --- |
-| Native resident runtime with a protected client endpoint/profile | `peerwork agent --profile ORIGINAL_PROFILE.json mcp` | None; reuse the original endpoint and its namespace. |
-| Already-open Rust `ParticipantClient` in the owning program | `agent_mcp::serve_client` | None; attach to that exact client. |
-| Unrelated custom engine/listener without a reusable native interface | Add an explicit supported adapter in its owning program | Not automatically required. A readable signing key alone does not establish a reusable client interface. |
+If the original issuer or its policy cannot be established, follow the returned
+local-source continuation. An endpoint cannot widen its own authority, and a
+readable key/path is not evidence of a reusable client. This is distinct from a
+missing Workspace permission. Already-held remote rights need no Owner exchange.
 
-Do not stop a working client or import its history just to install tools.
-Replacing its execution engine is a separate, explicitly selected transition.
-Existing remote rights require zero Owner exchanges. Missing rights still use
-the normal request/approval path; MCP itself confers no remote permission.
-
-## Reuse an existing endpoint without discovery reads (native0.3.6)
-
-A locally working native endpoint can generate the protected profile directly:
+`ORIGINAL_ISSUER_SELECTION_REQUIRED` means the missing facts are the original
+issuer/runtime configuration and an explicit local policy. The authorized local
+owner selects one existing source using the returned continuation:
 
 ```sh
-peerwork connect --local PRIVATE_REGISTRY --participant peer-1 \
-  --client ORIGINAL_ENDPOINT.json --origin https://api.peerwork.dev \
-  --actor ORIGINAL_ACTOR_ID --workspace WORKSPACE_ID --attach \
-  --protocol tasks:INSTANCE_ID:PROTOCOL_DIGEST --install codex
+peerwork connect --profile ORIGINAL_PROFILE --runtime-config ORIGINAL_RUNTIME_CONFIG --adopt-policy inherit-engine
 ```
 
-Use `--install agy` for AGY; omit `--protocol` for workspace metadata tools.
-Separate multiple known bindings with commas. This selects known aliases; it
-claims no role or remote permission. `--attach` performs local authenticated
-binding checks, generates the profile; adding `--install` registers the fixed tools. It does not
-run workspace, communication-grant or mailbox discovery; grants remain checked
-when a tool executes. An existing active setup is preserved rather than silently
-replaced. Repeating the same attachment is safe.
+Or, when the original issuer endpoint is already known:
 
-Use the endpoint owned by the original runtime and OS user. A Node/Python
-wrapper around the official native CLI is not inherently an unsupported client:
-identify its actual engine, journal and namespace first. Automatic `connect`
-bootstrap and explicit `peerwork runtime run` have separate path checks. A
-bootstrap refusal does not prove the explicit native entry is unusable. If only
-one-shot native CLI calls exist, have the original local owner start the official
-runtime with the exact original identity/journal/transport, then select its
-endpoint. Starting that runtime is not evidence that an unrelated operation
-namespace was inherited. Keep raw kernel command IDs in their original recovery
-path; never turn them into new Participant operation IDs.
+```sh
+peerwork connect --profile ORIGINAL_PROFILE --issuer ORIGINAL_ISSUER_ENDPOINT --adopt-policy inherit-issuer
+```
 
-`LOCAL_ATTACHED` means a profile was generated over the original endpoint.
-Registration, an independent MCP probe, tools loaded in the current host session,
-and live receiving are separate observations. Refresh the host configuration
-when needed, then actually call `peerwork_context`. No Owner-issued profile,
-new mailbox, Rust rewrite, copied credentials or shared-parent chmod is needed.
+These are explicit local source-policy changes, not Workspace approval or routine
+MCP arguments. Without a policy choice the old source limits remain. An older
+runtime missing `source-client-adoption-v1` may require the same-config upgrade
+identified by the continuation, keeping the original state. Existing host launch
+commands can retain their profile selection and reuse the saved association.
 
-## Upgrade both runtime and tool frontend
+The frontend and resident runtime are separate processes. Inspect their actual
+capabilities in `peerwork_context`; update the original runtime when the requested
+capability requires it. Reload the MCP connection using the host's supported
+mechanism. A changed executable path or standalone probe does not prove that an
+existing process or intended session adopted the update. Preserve its state and
+host destination when updating.
 
-The resident runtime and the MCP frontend are separate processes. Updating the
-runtime does not update an already running MCP frontend or the host's cached tool
-list. Point the host's MCP launch command at the selected published binary as
-well, retaining the original profile/endpoint and OS user. Reload that MCP
-connection using the host's supported mechanism and call `peerwork_context` in
-the intended session. A standalone probe does not prove that session reloaded.
+Current host installers use the shared lifecycle. Older `--local` and `--profile`
+launch spellings are compatibility selectors for that lifecycle, not separate
+business workflows. Use `peerwork connect --help-all` only for an explicitly
+selected custom installation or local issuer decision.
 
-Workspace member tools require a frontend from native0.3.6 or later; availability
-tools require native0.3.8 or later. Do not stop the resident receiver, migrate its
-journal or create an identity merely to refresh the tools. If an existing scoped
-endpoint denies `structure.members.read`, its local runtime owner must configure
-the intended read capability; remote Workspace permissions remain independently
-checked. Do not switch to a broader Owner client as a workaround.
+## Embedded programs
 
-## Discover management and version mismatches
-
-Native0.3.13 adds the `peerwork_manage` tool over the
-existing client. It reuses native workspace/protocol/access/key/migration and
-publication producers; no second signer or journal is created. The0.3.12
-fixed MCP catalog does not include it. Inspect [tool coverage](agent-tools.md)
-before changing an application or generating a wrapper.
-
-The0.3.13 frontend reports its own version and the runtime-reported SDK version
-in `peerwork_context.versions`. An older runtime may report `NOT_REPORTED`; this
-is not a reason to restart it blindly. Upgrade the frontend for new tool schemas;
-upgrade the selected resident engine only when the requested native capability
-is actually missing. Host refresh and actual-session invocation remain separate.
-
-## Already-open Rust client
-
-The program that owns the original client can expose the normal fixed MCP tools:
+A program that already owns a `ParticipantClient` can expose tools directly:
 
 ```rust
 use peerwork_runtime::{
     agent_mcp,
     agent_tools::AgentSelection,
-    participant::{ParticipantClient, Result, Scope},
+    participant::{ParticipantClient, Result},
 };
 
 async fn expose_existing_client(original: ParticipantClient,
-                               workspace: String,
-                               instance: String,
-                               protocol_digest: String) -> Result<()> {
+                               workspace: String) -> Result<()> {
     let mut selection = AgentSelection::for_client(&original);
-    selection.protocols.insert("tasks".into(), Scope {
-        workspace_id: Some(workspace),
-        instance_id: Some(instance),
-        protocol_digest: Some(protocol_digest),
-    });
+    selection.workspaces.insert("project".into(), workspace);
     agent_mcp::serve_client(
         original,
         selection,
@@ -119,64 +76,29 @@ async fn expose_existing_client(original: ParticipantClient,
 }
 ```
 
-Integrate this once in the owning program's MCP mode. Peers then use the fixed
-`peerwork_*` tools; they do not write an SDK script per message. The program must
-reserve stdout for MCP JSONL. The API also accepts another owned reader/writer;
-it does not create a remote listening socket or install a harness automatically.
+The program keeps its original client, capability and operation namespace. It
+needs no daemon, Connect registry, copied signing key or history migration to
+attach tools. `AgentTools::from_client` supplies the equivalent in-process view;
+normal programs may use the full typed Participant API directly, including
+operation results, bounded watches, inbox, consumption and shutdown.
 
-`AgentSelection` contains only pinned actor/Origin and local workspace, contact
-and protocol aliases. It contains no key/state/journal paths or endpoint token.
-It is not a grant. Pass a suitably restricted **original** client. Do not call
-`restrict` simply to attach tools: `restrict` intentionally creates a child
-operation namespace. An already restricted client is attached unchanged.
+Do not call `restrict` merely to attach tools: it intentionally creates a child
+operation namespace with narrower authority. An existing restricted client stays
+restricted. Closing MCP stops that transport's observation, not its owning client
+or admitted durable operations. The program owns final client shutdown.
 
-The entry validates the actor/Origin, retains the client's capabilities and
-revocation state, and shares its live engine and original operation namespace.
-It does not reopen the signer, copy/replay history, create an installation ledger,
-create a mailbox or derive another operation namespace. Original status/recovery
-uses the same operation ID. Unknown effects remain unknown; reconnecting tools
-never authorizes resubmitting a replacement intent.
+Only expose setup tools when the selected lifecycle can actually perform setup.
+Unsupported custom clients need an adapter in their owning application; do not
+invent their operation namespace or infer identity absence from failed discovery.
 
-For an in-process tool API without MCP, use
-`AgentTools::from_client(original, selection)` and `AgentTools::call`.
-Both embedded and resident tools share the same client-request implementation.
-Closing/cancelling MCP ends that tool transport's observation; it does not close
-the original client or cancel its admitted durable operations. The owning program
-retains responsibility for the engine's final shutdown.
+## Recovery and host delivery
 
-Connected MCP entries list executable tools. `peerwork_connect` and
-`peerwork_connect_approve` are exposed only by the separate local-registry
-onboarding entry, where those operations can actually be performed.
+Use `peerwork_status` or `peerwork_recover` with the exact returned
+`recovery_arguments`. Original operations remain in their original namespace
+across profile/runtime updates. Old raw Kernel command IDs retain their Kernel
+recovery path; never turn them into new Participant operation IDs.
 
-## Interpret discovery correctly
-
-`NO_SUPPORTED_LOCAL_CLIENT_FOUND` replaces the misleading
-`NO_LOCAL_IDENTITY_FOUND` discovery state in native0.3.5. Its diagnostic says:
-
-```json
-{
-  "meaning": "NO_SUPPORTED_LOCAL_CLIENT_DISCOVERED",
-  "identity_existence": "NOT_DETERMINED",
-  "tools_require_state_migration": false
-}
-```
-
-It means the bounded supported providers found no candidate. It does not mean
-that a key is absent, that identity creation is required, or that history must
-be migrated before tools can be used. The next options distinguish selecting
-an existing native endpoint, attaching to an open Rust client, and adapting an
-unsupported custom client. Do not invent an installation record or a namespace.
-
-If the old client has no reusable native endpoint or `ParticipantClient`, this
-release does not claim automatic compatibility. Adapt that client's actual
-interface or plan an engine replacement separately, preserving its original
-recovery path and unresolved operations. Selecting a newly configured engine is
-not proof that another client's pending operations have been transferred.
-
-## Host delivery remains separate
-
-Serving MCP makes tools available when the host loads them. It does not identify
-the current Codex thread, attach an AGY conversation, activate mailbox receiving,
-wake an idle model or prove online reachability. Configure and qualify the
-supported host interface only when those capabilities are requested. Ordinary
-tool use must remain available without them.
+Tools loaded in a host do not prove receiving, exact-session input acceptance or
+a model reply. Keep an already-working PUSH binding. Same-target delivery repair
+belongs to its original receiver/host lifecycle; changing the actual destination
+is explicit. See [host recovery](host-bridge-recovery.md).

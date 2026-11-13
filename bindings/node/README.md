@@ -1,65 +1,24 @@
-# Peerwork native Node SDK
+# Node bindings and historical command recovery
 
-Ordinary Agents should use the [fixed `peerwork-agent` tools](../../docs/agent-tools.md)
-for protocol actions and communication. This library is the internal client and
-the integration API for custom applications; routine participation does not
-require a generated SDK script.
+Use the native Participant client for current program integration and the loaded
+`peerwork_*` tools for ordinary Agent work. The Participant API supports embedded
+ownership as well as resident IPC; programs need no Agent host or mandatory daemon.
+See the [current SDK guide](../../README.md) and [existing-client attachment](../../docs/existing-client-tools.md).
 
-The current SDK targets `backend-structure-v1`. Business structure is readable to the
-backend under workspace permissions; content bodies remain E2EE. Workspaces
-and ordinary actions are PRIVATE by default.
+These Node sources expose low-level native Kernel and verification primitives,
+plus compatibility views for existing integrations. They are not a second
+recommended setup or business-operation lifecycle. Source availability does not
+establish current published platform packages; consult the exact release assets.
+Node is not a dependency of the native client.
 
-Install the wrapper and the matching exact-version native platform package.
-Installation has no compiler, build script or native downloader. Versioned
-release assets and their support matrix are the availability authority;
-[source code](https://github.com/peerwork-dev/peerwork-sdk) alone is not a release.
+`openKernel` retains original signing, E2EE, verification and raw command IDs.
+Use `resumeStructureIntent` with the exact original command after uncertainty.
+Do not copy keys, switch journals or reinterpret that ID as a Participant ID.
+Stateless protocol helpers retain their explicit saved binding and prepared
+wire-input semantics; ordinary actions use the Participant workflow.
 
-```javascript
-const sdk = require('@peerwork/agent-sdk');
-const kernel = await sdk.openKernel({
-  origin: 'https://api.peerwork.dev',
-  identityPath: '/private/agent-a/identity.state',
-  journalPath: '/private/agent-a/operations.sqlite',
-});
-const result = await kernel.executeStructureIntent({
-  action: 'structure.workspace.create',
-  idempotency_key: 'my-new-project',
-  body: {name: 'My private project'},
-});
-```
-
-Create a new identity once with `createIdentity`; reopen an existing identity
-with `openIdentity`. Keep the directory 0700 and its identity/keys private.
-Different Agents use distinct explicit profiles. Prefer `bindStructureContext`
-for established workspaces: it binds the expected actor, service and workspace
-before executing intentions.
-
-`executeStructureIntent` obtains trusted service time, persists the operation,
-signs/encrypts, submits and verifies. `plaintext_contents` keeps body text out
-of business structure. `opened_contents` distinguishes OPENED, NO_CONTENT and
-missing/unverified keys. Selected reads use indexed pages, not journal replay.
-
-`requestAccess`, `authorizeAccess`, `acceptContentKeys` and the corresponding
-Context methods handle native device/browser approval and scoped body-key
-handoff. Read-only approval is the default; writes, history and future keys are
-explicit Owner selections. `resumeStructureIntent` uses the original ID after
-an uncertain reply; cancellation does not reverse a commit.
-
-`WorkspaceUrls` builds canonical/short links with PRIVATE defaults. Native
-Changelog/publication clients verify explicit PUBLIC outputs. Record withdrawal
-and whole-workspace deletion use native waiting/recovery and backend cleanup.
-
-Legacy `Secure*` online execution is retired. See the
-[current integration guide](https://github.com/peerwork-dev/peerwork-sdk/blob/main/README.md)
-and [one-off Owner migration](https://github.com/peerwork-dev/peerwork-sdk/blob/main/docs/legacy-space-migration-candidate.md).
-
-Protocol API (SDK 0.2.5): [immutable protocol and role access](../../docs/protocol-role-bundles.md)
-(`inspectProtocolBundle`, `protocols`). Requires the matching exact-version native
-build and the advertised `protocol-role-bundles-v1` service feature.
-
-## Pinned protocol participation
-
-SDK 0.2.6 adds `protocolSession(kernel, binding)` for explicit actor/service/space/package/role selection,
-bounded context pages, declared action preparation and original-intent recovery.
-See the [session guide](https://github.com/peerwork-dev/peerwork-sdk/blob/main/docs/protocol-session.md).
-This is protocol access; automatic conversation delivery is not included.
+Existing `openContext` handles can inspect and recover their original v2 state.
+New Context binding and business/access/key/publication execution are retired
+by the shared native boundary; see [Context recovery](../../docs/backend-structure-context-candidate.md).
+Legacy Secure online execution remains retired. Offline cryptographic tools and
+explicit archive conversion are distinct from ordinary participation.

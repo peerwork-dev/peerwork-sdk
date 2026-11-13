@@ -88,6 +88,17 @@ impl RuntimeClient {
         *self.verified.lock().await = Some(fingerprint.into());
         Ok(caps)
     }
+    /// A cached lifecycle guard checks the protected descriptor locally and
+    /// authenticates only a changed snapshot. No network round trip for an
+    /// unchanged descriptor; exact namespace/generation pins remain enforced.
+    pub(crate) async fn verify_current(&self)->Result<()> {
+        let endpoint=load_endpoint(&self.endpoint_path)?;
+        if endpoint.access!="CLIENT" {return Err(local("CLIENT_ADMIN_ENDPOINT_FORBIDDEN"));}
+        let fingerprint=sha256_hex(serde_json::to_string(&endpoint).map_err(|_|local("ENDPOINT_INVALID"))?.as_bytes());
+        let verified={self.verified.lock().await.clone()};
+        if verified.as_deref()!=Some(fingerprint.as_str()){self.verify(&endpoint,&fingerprint).await?;}
+        Ok(())
+    }
     /// Each exchange uses one protected descriptor snapshot. If the owner
     /// restarts/replaces it, verify its exact new capability before private work;
     /// never check one file version then send through a subsequently reread one.

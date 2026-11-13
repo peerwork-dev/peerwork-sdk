@@ -6,7 +6,7 @@ use crate::communication_runtime::{EngineConfig, RuntimeConfig};
 const LIMIT: usize = 8;
 fn bounded_registry(bytes:&[u8])->Result<Registry>{
     let registry:Registry=serde_json::from_value(peerwork_core::strict_json::parse_strict_json(bytes).map_err(|_|local("CONNECT_RECOVERY_REQUIRED"))?).map_err(|_|local("CONNECT_RECOVERY_REQUIRED"))?;
-    if registry.participants.len()>8 || registry.setups.len()>64 || registry.approvals.len()>64 || registry.sources.len()>8
+    if registry.profile_sources.len()>8 || registry.profile_upgrades.len()>8 || registry.participants.len()>8 || registry.setups.len()>64 || registry.approvals.len()>64 || registry.sources.len()>8
         || registry.trusted_projects.len()>8 || registry.trusted_project_identities.len()>8 || registry.verified_bindings.len()>8 {return Err(local("CONNECT_RECOVERY_REQUIRED"))}
     Ok(registry)
 }

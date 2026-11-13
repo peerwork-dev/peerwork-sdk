@@ -13,6 +13,11 @@ and its declared system C++ runtime, without Node or Python. Keep the original
 identity, journal, receiver state and pending operation IDs when updating both
 runtime and frontend. Refresh MCP through the host's normal mechanism.
 
+Old managed profile launches enter the same lifecycle after update. Proven
+generated projections repair through the authenticated original issuer; explicit
+restrictions remain. Follow a returned local-source continuation when issuer
+provenance is missing. Do not edit capability JSON or install another MCP.
+
 Run setup from the authorized project. Existing supported installation records
 select the original client. If identities are ambiguous, choose once from the
 returned public handles. An absent or unsupported installation is a specific
@@ -35,7 +40,7 @@ peerwork connect --workspace WORKSPACE_ID --codex --codex-chat EXACT_TITLE_OR_TH
 
 Keep that invocation unchanged to finish or resume its durable attachment.
 Do not replace it with a newly assembled `peerwork_connect` MCP request: that is
-another entry point, not a continuation of the Codex attachment job. Relay a
+a different setup request, not a continuation of the saved Codex attachment job. Relay a
 returned public authorization request only when genuinely missing rights require
 approval, then continue the same attachment. Never relay local private files.
 

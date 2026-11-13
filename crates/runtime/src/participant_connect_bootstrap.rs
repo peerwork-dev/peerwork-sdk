@@ -563,6 +563,36 @@ impl Connect {
         self.registry.local_runtime_admins.insert(handle.into(),admin.clone());self.save()?;
         Ok(admin)
     }
+    /// Source adoption authenticates the selected client in an existing runtime
+    /// without imposing a host adapter's single-engine attachment shape.
+    pub(super) async fn runtime_for_source(&mut self,handle:&str,selection:&RuntimeSelection)->Result<OwnedRuntime> {
+        let path=selection.config_path.as_ref().ok_or_else(||local("ORIGINAL_RUNTIME_CONFIG_SELECTION_REQUIRED"))?;
+        if !path.is_absolute(){return Err(local("LOCAL_SELECTION_INVALID"));}
+        let config:RuntimeConfig=serde_json::from_value(crate::communication_store::private_json(path,65536)
+            .map_err(|_|local("RUNTIME_CONFIG_NOT_PRIVATE"))?).map_err(|_|local("RUNTIME_CONFIG_INVALID"))?;
+        if config.format!="peerwork.participant-runtime.v1" || config.engines.is_empty() || config.engines.len()>8 || !config.state_directory.is_absolute()
+            || selection.admin_endpoint!=config.state_directory.join("admin.json") {return Err(local("ORIGINAL_RUNTIME_CONFIG_MISMATCH"));}
+        let registration=self.registry.participants.get(handle).cloned().ok_or_else(||local("LOCAL_SELECTION_REQUIRED"))?;
+        let client=self.original_client(handle).await?;
+        let binding=client.call(json!({"method":"binding"})).await?;
+        let name=binding["client_name"].as_str().filter(|name|identifier(name)).ok_or_else(||local("ORIGINAL_RUNTIME_CONFIG_MISMATCH"))?;
+        let mut matching=Vec::new();
+        for engine in &config.engines {
+            if engine.expected_actor==registration.actor_id
+                && crate::transport::canonical_lifecycle_origin(&engine.origin,engine.allow_loopback_http).map_err(|_|local("ORIGIN_INVALID"))?==registration.origin
+                && binding["engine_digest"]==engine.binding_digest()? {matching.push(engine);}
+        }
+        if matching.len()!=1 || registration.endpoint_path!=config.state_directory.join(format!("client-{name}.json")) {
+            return Err(local("ORIGINAL_RUNTIME_CONFIG_MISMATCH"));
+        }
+        if binding["client_generation"].is_null() {
+            let configured=config.clients.iter().find(|c|c.name==name&&c.engine==matching[0].name).ok_or_else(||local("ORIGINAL_RUNTIME_CONFIG_MISMATCH"))?;
+            let capability=client.call(json!({"method":"capabilities"})).await?;
+            if serde_json::to_value(&configured.capability).ok().as_ref()!=Some(&capability["capability"]){return Err(local("ORIGINAL_RUNTIME_CONFIG_MISMATCH"));}
+        }
+        self.runtime_admin(handle,Some(selection)).await?;
+        Ok(OwnedRuntime{config,registration,launch:None,config_path:Some(path.clone())})
+    }
     pub(super) async fn runtime_for_attachment(&mut self,handle:&str,selection:Option<&RuntimeSelection>)->Result<OwnedRuntime> {
         if selection.is_none(){return owned_runtime(self,handle).map_err(|error|if error.code=="LOCAL_RUNTIME_TAKEOVER_REQUIRED"{local("ORIGINAL_RUNTIME_CONFIG_SELECTION_REQUIRED")}else{error});}
         // Discovery/admin delegation does not authorize taking over a process

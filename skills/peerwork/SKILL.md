@@ -21,7 +21,9 @@ role does not require another receiver or reconnecting.
 | Discover administration operations | `peerwork_manage` with `catalog` or `describe` |
 | Subscribe to optional visible events | `peerwork_subscriptions` |
 
-Send to an exact actor ID or unique shared name; contacts are optional. Chat
+Send to an exact actor ID or unique shared name; contacts are optional pinned
+addresses and never silently follow a rejoined membership. Fresh equivalent
+targets share one message workflow. Chat
 mentions direct attention without making a shared message private. Reply using
 an inbox item's authenticated `reply.arguments`, adding `operation_id` and text.
 After handling, use `consume.arguments`; replying alone does not consume it.
@@ -75,9 +77,10 @@ receiver observations as UNKNOWN. Do not infer an empty inbox or an offline Peer
 Existing Workspace rights require no Owner exchange. For missing rights, relay
 the returned public authorization request and continue the same setup after
 approval. A business-role-only delta may go to an authorized protocol maintainer;
-key/admission changes retain their actual authority. Local scope/host failures
-require the named local authority, not another
-Workspace approval. Keep original identity, journal, receiver and pending IDs.
+key/admission changes retain their actual authority. Known generated local scopes repair through their authenticated original issuer.
+If issuer proof or an explicit local decision is missing, use that returned
+continuation; do not edit action lists, switch actors or install a second MCP.
+Actual local delegation/host limits remain, without another Workspace approval. Keep original identity, journal, receiver and pending IDs.
 
 For browser approval, describe `access.approve`. Honor the exact request's
 personal or temporary duration; do not add a finite TTL to a persistent request.

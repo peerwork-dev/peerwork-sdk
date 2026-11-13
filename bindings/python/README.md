@@ -1,54 +1,23 @@
-# Peerwork native Python SDK
+# Python bindings and historical command recovery
 
-The current SDK targets `backend-structure-v1`: backend-executed business structure,
-E2EE content bodies, PRIVATE workspaces/actions by default. Python requires
-3.11 or newer. Install a compatible exact-version binary wheel from the release
-support matrix; a source checkout is not evidence of published availability.
+Current program integration uses the native Participant API, with embedded or
+resident ownership. Ordinary Agents use loaded `peerwork_*` tools. Programs need
+no Agent host or mandatory daemon; Python is not a native client dependency.
+See the [current SDK guide](../../README.md) and [existing-client attachment](../../docs/existing-client-tools.md).
 
-```python
-import peerwork
+These Python sources retain low-level Kernel/verification primitives and
+compatibility views for existing integrations. They do not define a second
+recommended setup or durable business lifecycle. Source availability does not
+prove current binary-wheel publication; consult the exact release assets.
 
-client = peerwork.KernelClient(
-    "https://api.peerwork.dev",
-    "/private/agent-a/operations.sqlite",
-    "/private/agent-a/identity.state",
-)
-result = client.execute_structure_intent({
-    "action": "structure.workspace.create",
-    "idempotency_key": "my-new-project",
-    "body": {"name": "My private project"},
-})
-```
+`KernelClient` retains signing, E2EE, verification and original raw command IDs.
+Use `resume_structure_intent` for uncertain original commands. Do not substitute
+a Participant ID, replacement identity or new journal. Stateless protocol
+helpers keep their explicit saved binding and prepared wire-input semantics;
+ordinary actions use the Participant workflow.
 
-Create a new identity once using `create_identity`; reopen it using
-`open_identity`. Keep its directory private (0700). Distinct Agents select
-distinct profiles; existing identities and keys must be preserved.
-`bind_structure_context` pins the expected actor, service and workspace, and
-provides sync/async access, discovery, action and recovery methods.
-
-The native runtime obtains trusted service time, saves original operations,
-signs/encrypts, submits, verifies and opens selected bodies. Use
-`plaintext_contents` for private bodies. `opened_contents` reports OPENED,
-NO_CONTENT and key failures separately. Ordinary reads do not replay history.
-
-Use native `request_access`, `authorize_access` and `accept_content_keys` for
-member/browser access. Approval is read-only unless the Owner explicitly
-selects a write scope. Older body-key history and future-key consent are
-separate explicit selections. Resume uncertain operations by their original
-ID. Cancelling waiting does not undo an accepted backend action.
-
-Native workspace URL generation defaults to PRIVATE. Changelog/publication
-reads verify explicitly public material. Native record withdrawal and
-workspace deletion retain original-operation recovery and bounded waiting;
-the backend performs cleanup.
-
-Legacy `Secure*` online flows are retired. See the
-[current integration guide](https://github.com/peerwork-dev/peerwork-sdk/blob/main/README.md)
-and [one-off Owner migration](https://github.com/peerwork-dev/peerwork-sdk/blob/main/docs/legacy-space-migration-candidate.md).
-
-## Pinned protocol participation
-
-SDK 0.2.6 adds `ProtocolSession(kernel, binding)` for explicit actor/service/space/package/role selection,
-bounded context pages, declared action preparation and original-intent recovery.
-See the [session guide](https://github.com/peerwork-dev/peerwork-sdk/blob/main/docs/protocol-session.md).
-This is protocol access; automatic conversation delivery is not included.
+Existing Context handles retain inspection and original-ID recovery. New Context
+binding and business/access/key/publication execution return the native
+retirement error without submission. See [Context recovery](../../docs/backend-structure-context-candidate.md).
+Legacy Secure online execution remains retired; offline cryptographic work and
+explicit archive conversion remain separate intentions.

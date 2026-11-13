@@ -1236,3 +1236,36 @@ async fn host_diagnostics_are_live_and_limited_to_selected_client_generation(){
     assert_eq!(malformed["error"]["code"],"CLIENT_REQUEST_INVALID");
     cancel.cancel();task.await.unwrap().unwrap();drop(fixture);
 }
+
+#[tokio::test(flavor="multi_thread",worker_threads=2)]
+#[ignore="requires loopback IPC permission"]
+async fn source_adoption_requires_admin_exact_binding_and_explicit_policy_and_survives_restart() {
+    let temp=crate::test_support::protected_test_dir();let options=config(temp.path());
+    let(ready,cancel,task)=start(options.clone()).await;
+    assert!(ready.client_endpoints.keys().all(|name|!name.starts_with(OWNER_PREFIX)));
+    let source=&ready.client_endpoints["reader"];
+    let binding=call(source,json!({"method":"binding"})).await.unwrap()["value"].clone();
+    let original=call(source,json!({"method":"capabilities"})).await.unwrap()["value"]["capability"].clone();
+    let workspace="W".repeat(43);
+    let request=json!({"method":"client_adopt","adoption":{"source_binding":binding,"workspace_ids":[workspace],"alias":"selected-profile","policy":"INHERIT_ENGINE_FOR_WORKSPACES"}});
+    assert_eq!(call(source,request.clone()).await.unwrap()["error"]["code"],"CLIENT_REQUEST_INVALID");
+    let mut wrong=request.clone();wrong["adoption"]["source_binding"]["namespace"]=json!("unrelated");
+    assert_eq!(call(&ready.admin_endpoint,wrong).await.unwrap()["error"]["code"],"ORIGINAL_RUNTIME_BINDING_CHANGED");
+    let mut implicit=request.clone();implicit["adoption"]["policy"]=json!("automatic");
+    assert_eq!(call(&ready.admin_endpoint,implicit).await.unwrap()["error"]["code"],"LOCAL_OWNER_ADOPTION_POLICY_REQUIRED");
+    let issued=call(&ready.admin_endpoint,request.clone()).await.unwrap();assert_eq!(issued["ok"],true,"{issued}");
+    let endpoint=PathBuf::from(issued["value"]["endpoint_path"].as_str().unwrap());
+    assert_eq!(call(&ready.admin_endpoint,request.clone()).await.unwrap()["value"],issued["value"]);
+    assert_eq!(call(source,json!({"method":"capabilities"})).await.unwrap()["value"]["capability"],original);
+    assert_eq!(call(source,json!({"method":"binding"})).await.unwrap()["value"],binding);
+    let cap=call(&endpoint,json!({"method":"capabilities"})).await.unwrap()["value"]["capability"].clone();
+    assert_eq!(cap["workspace_ids"],json!([workspace]));assert_eq!(cap["allow_root"],false);
+    assert!(cap["operations"].as_array().unwrap().iter().any(|op|op=="structure.members.read"));
+    let adopted_binding=canonical_binding(&call(&endpoint,json!({"method":"binding"})).await.unwrap()["value"]);
+    cancel.cancel();task.await.unwrap().unwrap();
+    let(ready,cancel,task)=start(options).await;
+    assert_eq!(canonical_binding(&call(&endpoint,json!({"method":"binding"})).await.unwrap()["value"]),adopted_binding);
+    assert_eq!(call(&ready.admin_endpoint,request).await.unwrap()["value"],issued["value"]);
+    assert!(!temp.path().join("runtime").join(format!("client-{}.json",owner_name("one-identity"))).exists());
+    cancel.cancel();task.await.unwrap().unwrap();
+}

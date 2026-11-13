@@ -34,6 +34,8 @@ mod protocol_views;
 mod codex;
 #[path = "participant_connect_discovery.rs"]
 mod discovery;
+#[path="participant_connect_source.rs"]
+mod source;
 pub use discovery::Discovery;
 
 fn local(code: &str) -> ParticipantError {
@@ -199,6 +201,12 @@ struct Setup {
 #[serde(deny_unknown_fields)]
 struct Registry {
     #[serde(default)]
+    selected_source:Option<String>,
+    #[serde(default)]
+    profile_sources:BTreeMap<String,source::ProfileSource>,
+    #[serde(default)]
+    profile_upgrades:BTreeMap<String,bootstrap::OwnedRuntime>,
+    #[serde(default)]
     codex_attachments: BTreeMap<String, codex::Attachment>,
     participants: BTreeMap<String, Registration>,
     setups: BTreeMap<String, Setup>,
@@ -273,7 +281,7 @@ impl Connect {
             )
             .map_err(|_| local("CONNECT_RECOVERY_REQUIRED"))?,
         };
-        if registry.participants.len() > 8
+        if registry.profile_sources.len()>8 || registry.profile_upgrades.len()>8 || registry.participants.len() > 8
             || registry.setups.len() > 64 || registry.codex_attachments.len() > 64||registry.setups.values().any(|s|s.protocol_intents.len()>32)
             || registry.approvals.len() > 64
             || registry.sources.len() > 8 || registry.trusted_projects.len() > 8 || registry.trusted_project_identities.len()>8 || registry.verified_bindings.len() > 8
@@ -402,6 +410,10 @@ impl Connect {
             }
             return Ok(Some(handle.into()));
         }
+        if let Some(handle)=&self.registry.selected_source {
+            if !self.registry.participants.contains_key(handle){return Err(local("CONNECT_RECOVERY_REQUIRED"));}
+            return Ok(Some(handle.clone()));
+        }
         match self.registry.participants.len() {
             0 => Ok(None),
             1 => Ok(self.registry.participants.keys().next().cloned()),
@@ -433,7 +445,13 @@ impl Connect {
         let id = match ids.as_slice() {
             [] => return Ok(None),
             [id] => *id,
-            _ => return Err(local("MULTIPLE_WORKSPACES_SELECT_FRONTEND_WORKSPACE")),
+            _ => {
+                let first=self.registry.setups.get(ids[0]).and_then(|setup|setup.profile.as_ref());
+                if first.is_none() || ids.iter().skip(1).any(|id|self.registry.setups.get(*id).and_then(|setup|setup.profile.as_ref()).and_then(|profile|serde_json::to_value(profile).ok())!=first.and_then(|profile|serde_json::to_value(profile).ok())) {
+                    return Err(local("MULTIPLE_WORKSPACES_SELECT_FRONTEND_WORKSPACE"));
+                }
+                ids[0]
+            },
         };
         let setup = self
             .registry
@@ -1555,6 +1573,7 @@ pub fn cli(args: &[String]) -> Value {
             .contains(&flag.as_str());
             if ![
                 "--local",
+                "--profile", "--issuer", "--adopt-policy",
                 "--resume",
                 "--participant",
                 "--workspace",
@@ -1629,6 +1648,8 @@ pub fn cli(args: &[String]) -> Value {
     }
     if args.is_empty() || args == ["--help"] {
         return json!({"state":"HELP","usage":[
+            "peerwork connect --profile ORIGINAL_PROFILE --runtime-config ORIGINAL_RUNTIME_CONFIG --adopt-policy inherit-engine",
+            "peerwork connect --profile ORIGINAL_PROFILE --issuer ORIGINAL_ISSUER_ENDPOINT --adopt-policy inherit-issuer",
             "peerwork connect --workspace WORKSPACE --codex --join --body-keys --install codex",
             "peerwork connect --workspace WORKSPACE --codex --codex-chat EXACT_TITLE_OR_THREAD --join --body-keys --install codex",
             "peerwork connect --workspace WORKSPACE --host EXISTING_AGY_HOST --install agy",
@@ -1670,6 +1691,27 @@ pub fn cli(args: &[String]) -> Value {
     }
     let result = || -> Result<Value> {
         let mut values = parse(args)?;
+        if let Some(path)=values.get("--profile") {
+            if values.keys().any(|key|!["--profile","--issuer","--runtime-config","--adopt-policy"].contains(&key.as_str())) {
+                return Err(local("PROFILE_SOURCE_USES_SAVED_SELECTION"));
+            }
+            let profile=AgentProfile::load(Path::new(path))?;
+            let directory=Connect::profile_source(&profile)?.map(|(directory,_)|directory).unwrap_or(Connect::profile_directory(&profile)?);
+            let policy=values.get("--adopt-policy").map(String::as_str);
+            let runtime=tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().map_err(|_|local("RUNTIME_UNAVAILABLE"))?;
+            return runtime.block_on(async {
+                let mut connect=Connect::open(&directory)?;
+                let handle=match (values.get("--issuer"),values.get("--runtime-config"),policy) {
+                    (Some(issuer),None,Some("inherit-issuer"))=>connect.adopt_profile(&profile,Some(std::path::absolute(issuer).map_err(|_|local("LOCAL_SELECTION_INVALID"))?),true).await?,
+                    (None,Some(config),Some("inherit-engine"))=>connect.adopt_from_owner(&profile,std::path::absolute(config).map_err(|_|local("LOCAL_SELECTION_INVALID"))?).await?,
+                    (None,None,None)=>connect.adopt_profile(&profile,None,false).await?,
+                    _=>return Err(local("LOCAL_OWNER_ADOPTION_POLICY_REQUIRED")),
+                };
+                Ok(json!({"state":"LOCAL_ATTACHED","participant":handle,"onboarding":connect.context_for(Some(&handle),None),
+                    "remote_changes_submitted":false,"original_profile_entry":"REUSE_UNCHANGED","original_operations":"PRESERVED"}))
+            });
+        }
+        if values.contains_key("--issuer")||values.contains_key("--adopt-policy"){return Err(local("PROFILE_SOURCE_REQUIRED"));}
         let selected_adapter=host::adapter(&values)?;
         let binding_recovery=match (values.get("--binding-recovery"),values.get("--decision-id")) {
             (None,None)=>None,

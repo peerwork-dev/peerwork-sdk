@@ -3,8 +3,7 @@
 Start with the [short quickstart](native-participant-quickstart.md). Reuse a
 working client; this reference covers explicit installation and recovery choices.
 Do not ask an Agent to assemble profiles, receiver generations or host digests
-for an ordinary connection. The next native release separates advanced CLI
-inputs into `peerwork connect --help-all`;0.3.20 still lists them in `--help`.
+for an ordinary connection. Advanced installer inputs are in `peerwork connect --help-all`.
 
 In0.3.14 ordinary active membership includes in-Space send/receive and self-
 subscription. Connect requests both by default; explicit restrictions remain.
@@ -15,9 +14,11 @@ See [messages, broadcasts and subscriptions](workspace-events.md).
 
 Tools, role actions and management share the selected original Workspace client.
 The service checks current business grants; role changes require no local
-permission refresh. Existing ordinary setups normalize locally on Connect,
+permission refresh. Known generated ordinary setups normalize through the shared lifecycle,
 preserving receiver/host bindings and original-operation recovery. Explicit
-parent ceilings and historical explicit-action profiles are preserved. See
+parent ceilings and genuine explicit delegation are preserved. Older generated
+profile launches use the same lifecycle; they do not require a separate operational
+MCP or manual capability editing. See
 [identity, permission diagnostics and recovery](permissions.md).
 
 ## Attach an existing Codex conversation (native0.3.12)

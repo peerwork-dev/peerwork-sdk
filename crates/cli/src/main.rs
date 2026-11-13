@@ -2073,50 +2073,17 @@ fn agent_context_command(operation: &str, args: &[String]) -> ExitCode {
     };
     let help = serde_json::json!({
         "schema":"peerwork.agent-cli-help.v1",
-        "usage":[
-            "peerwork context open PROFILE EXPECTED_ACTOR EXPECTED_SERVICE",
-            "peerwork context bind PROFILE EXPECTED_ACTOR EXPECTED_SERVICE REQUEST_JSON_FILE",
-            "peerwork context bind-structure|execute-structure PROFILE EXPECTED_ACTOR EXPECTED_SERVICE REQUEST_JSON_FILE",
-            "peerwork context discover|describe|inspect|operations|recover PROFILE EXPECTED_ACTOR EXPECTED_SERVICE REQUEST_JSON_FILE",
-            "peerwork context event-sync|event-receive|event-ack|event-status PROFILE EXPECTED_ACTOR EXPECTED_SERVICE REQUEST_JSON_FILE",
-            "peerwork operate PROFILE EXPECTED_ACTOR EXPECTED_SERVICE REQUEST_JSON_FILE"
-        ],
-        "profile_schema":"peerwork.agent-context.v1",
-        "profile_schemas":["peerwork.agent-context.v1","peerwork.agent-context.v2"],
-        "backend_v2":{"profile":"backend-structure-v1","binding":"bind-structure accepts explicit v2 configuration; existing identity and protected journal parent, no legacy history or membership mutation",
-            "execution":"execute-structure accepts workspace_id and intent; operate accepts protocol.action with protocol_digest and expected_instance_revision, or structure.intent wrapping request",
-            "reads":"inspect selects workspace metadata; discover is a bounded instance page (limit<=32, query.after=next_cursor); describe requires instance_id and protocol_digest",
-            "events":"execute-structure action structure.events.read uses after_sequence or cursor; absent after_sequence starts NOW; no legacy full-history event-sync",
-            "recovery":"original command_id or operation_id; saved workspace checked before resubmission; durable writes, ordinary reads verified in memory",
-            "assurance":"BACKEND_CURRENT_STATE with service and author signature checks, without independent business replay"},
-        "context_pinning":"Retain value.context.fingerprint from open/bind and include expected_fingerprint in every subsequent request. It is optional for legacy CLI compatibility; omitting it does not pin continuity across invocations. Python/Node handles inject it automatically.",
-        "common_request_fields":{"workspace_id":"selected workspace", "expected_fingerprint":"fingerprint retained from open/bind"},
-        "continuation":"A continuation is a next-operation descriptor, not an executable request. Select its operation as the CLI verb (events.receive maps to context event-receive), copy the required request fields, retain the original context fingerprint and caller-selected lease/wait budgets. Do not pass the operation field inside request JSON. On STALE_LEASE receive the same consumer again and acknowledge only the newly returned token; never reuse an expired token.",
-        "supported":["bind", "open", "discover", "describe", "inspect", "operations", "recover", "protocol.action", "browser.approve", "workspace.invitation.finalize", "workbench.export", "workbench.apply", "events.sync", "events.receive", "events.ack", "events.status"],
-        "unsupported":["admission-browser approval producer", "non-action event sources", "incremental sync", "PUBLIC actions"],
-        "events":"Verified action receipts only. Initialized unchanged sources use a signed checkpoint probe; updates require full-history replay (incremental:false). Requested receive wait_ms budget is up to 60000ms, with cooperative cancellation. Leases may redeliver; ack is delivery acceptance, never task completion.",
-        "requests":{
-            "bind":{"workspace_profiles":["existing protected member profile"]},
-            "inspect_or_operations":{"workspace_id":"selected workspace"},
-            "discover":{"workspace_id":"selected workspace", "query":{"limit":64}},
-            "describe":{"workspace_id":"selected workspace", "query":{"instance_id":"selected installed instance", "action_id":"selected action"}},
-            "describe_exact_record":{"workspace_id":"selected workspace", "query":{"record_id":"exact record ID", "revision":1}},
-            "describe_exact_object":{"workspace_id":"selected workspace", "query":{"object_ref":{"kind":"selected kind", "id":"exact object ID", "revision":1}}},
-            "operate":{"workspace_id":"selected workspace", "operation_id":"stable caller operation ID",
-                "intent":{"kind":"protocol.action", "instance_id":"exact installed instance",
-                    "action_id":"selected action", "values":{}, "refs":[]}},
-            "browser_approve":{"workspace_id":"selected PRIVATE workspace", "operation_id":"stable caller operation ID",
-                "intent":{"kind":"browser.approve", "reference":"exact peerwork-browser-approval:v1 reference", "approve_writes":false}},
-            "recover":{"workspace_id":"selected workspace", "operation_id":"original operation ID"},
-            "events_sync_or_status":{"workspace_id":"selected workspace"},
-            "events_receive":{"workspace_id":"selected workspace", "consumer_id":"stable consumer", "filter_version":"caller-selected filter version", "wait_ms":1000, "lease_ms":30000},
-            "events_ack":{"workspace_id":"selected workspace", "consumer_id":"stable consumer", "filter_version":"caller-selected filter version", "ack_token":"received lease token"}
-        },
-        "query_options":"discover query.after is optional: use the previous page continuation.after, never a guessed ID. describe query.action_id is optional when describing an entire instance.",
-        "browser_approval":"Native PRIVATE workspace approval binds the exact browser reference. Verified acceptance returns sensitive value.result.approval_code; browser_consumption remains pending until browser redemption. Send the code privately to the intended browser; never publish it or log command output. Recover the original operation ID after uncertainty; no replacement approval.",
-        "recovery":"Supply exactly one original operation_id or command_id. Inspect pending operations after an uncertain reply; never mint a replacement intent.",
-        "privacy":"Existing selected PRIVATE member identity/history only. No creation, enrollment or Owner fallback.",
-        "output":"Versioned native JSON envelope on stdout; failures have ok:false and a nonzero exit. ok:true or exit zero alone does not mean an action is verified or a receive delivered an event; inspect value.status and value.result."
+        "mode":"ORIGINAL_CONTEXT_INSPECTION_AND_RECOVERY",
+        "usage":["peerwork context open ORIGINAL_CONTEXT EXPECTED_ACTOR EXPECTED_SERVICE",
+            "peerwork context inspect|discover|describe|operations|follow-operation|recover ORIGINAL_CONTEXT EXPECTED_ACTOR EXPECTED_SERVICE REQUEST_JSON_FILE"],
+        "profile_schema":"peerwork.agent-context.v2",
+        "supported":["open","inspect","discover","describe","operations","follow.operation","recover"],
+        "new_work":"Use the original Participant client or loaded peerwork tools. New Context binding/business execution is retired without submission.",
+        "context_pinning":"Preserve the original context, identity, service, workspace and expected_fingerprint; existing fingerprints remain valid.",
+        "recovery":"Supply workspace_id and exactly one original operation_id or command_id. Recover the saved intent; never map it into a new Participant namespace.",
+        "reads":"Bounded current inspection remains available. Describe selects exact instance_id/protocol_digest, optionally record_id/revision.",
+        "requests":{"recover":{"workspace_id":"ORIGINAL_WORKSPACE","command_id":"ORIGINAL_COMMAND_ID","expected_fingerprint":"ORIGINAL_FINGERPRINT"}},
+        "output":"Versioned native envelope; ok:true alone does not establish completion. Inspect value.status and verified result."
     });
     if matches!(operation, "help" | "--help" | "-h")
         || (args.len() == 1 && matches!(args[0].as_str(), "--help" | "-h")) {

@@ -33,61 +33,22 @@ without an Agent host, MCP or Skill.
    [availability](docs/member-availability.md) and
    [protocol tools](docs/protocol-session.md) through that same runtime.
 
-Native0.3.28 aligns discovery, protocol selection, setup and recovery with the
-[collaboration-first authority contract](docs/collaboration-authorization.md).
-Existing rights stay usable while optional setup work is pending; aliases and
-contacts are optional. Upgrade the original frontend and resident runtime without
-changing identity, journal or pending IDs. [Release notes](docs/releases/0.3.28.md).
+The shared lifecycle keeps existing profile/local launch selections on the original
+client. Proven generated projections repair through their authenticated issuer;
+explicit delegation remains. Current member discovery and fresh actor/name/contact
+messages share the same execution path. Original pending operations retain their
+namespace and frozen recipients across updates. See [existing-client recovery](docs/existing-client-tools.md).
 
-Native0.3.27 fixes Claude Channel protocol negotiation. The host automatically
-selects the supported handshake, without a global `MCP_PROTOCOL_NEGOTIATION`
-override or a second MCP server. Update the invoking MCP executable and resume
-the intended Claude conversation. [Release notes](docs/releases/0.3.27.md).
+Older Context and Node tool workflows are retained for original-state inspection
+and recovery, not new ordinary work. The complete native Participant API and
+low-level Kernel command recovery remain available. Release availability and
+qualified platform artifacts are listed in the [release notes](docs/releases/).
 
-Native0.3.26 repairs original Claude attachment resumption and generated profile
-snapshots. Update the CLI/MCP frontend; an existing0.3.25 resident runtime can
-remain running. [Recovery guide](docs/claude-code.md#resume-an-existing-setup).
-
-Native0.3.25 adds [Claude Code native MCP and opt-in Channels](docs/claude-code.md),
-verified mixed Agent/browser member discovery, and exact saved-setup recovery
-through `peerwork connect --resume SETUP_ID` or `peerwork_connect`. Keep the
-original identity, journal and pending IDs. Channels require explicit host
-activation and authentication; tool installation alone does not prove model
-wake. See the [release notes](docs/releases/0.3.26.md).
-
-Native0.3.20 retains all21 fixed tools and their argument schemas while keeping
-the negotiated operational catalog within16KiB. Runtime tests cover this contract.
-
-Native 0.3.24 adds [automatic host notification recovery](docs/host-bridge-recovery.md):
-controlled redelivery under the same logical message ID, late AGY acceptance,
-and consumption-aware recovery without reconnecting the original setup.
-Upgrade the original resident runtime and any host-user bridge; a frontend
-update alone does not add this capability. Business operations keep their
-original IDs. See the [release notes](docs/releases/0.3.24.md).
-
-Native0.3.22 adds [Human author verification](docs/human-author-evidence.md),
-version3 account-browser approval, selected Human public outputs and
-[current account recipients](docs/current-account-key-delivery.md). It also
-exposes selected incoming/outgoing relations and instance discussions through
-the existing protocol tools. Require the matching service capabilities; an SDK
-update does not activate accounts on a service. Preserve original Native
-identities, journals and pending operations when updating runtime and frontend.
-
-Native0.3.21 adds [personal browser approval](docs/persistent-browser-access.md),
-membership-bound author proofs, concise connection help and complete decrypted
-message output in the native CLI. Persistent access requires the matching service
-feature and0.3.21 readers; an SDK upgrade does not extend an old finite grant.
-See [message storage](docs/message-storage.md) for canonical history and cache policy.
-
-Native0.3.19 introduced [receiving and client recovery](docs/receiving-recovery.md):
-automatic recovery after capacity returns, independent acknowledgment-upload
-diagnostics and repair of known generated Workspace-client bindings in managed
-MCP/CLI. Update the resident runtime and frontend while keeping original state.
-
-Native0.3.18 introduced shared Space conversations, indexed encrypted history,
-task-thread replies, attributed goal pins and paged delivery facts. Check the
-service's `space-conversation-v1` capability; installing an SDK does not upgrade
-the service. Multiple roles share the original runtime and receiver.
+Native0.3.29 unifies client lifecycle handling across CLI, MCP and existing
+profile sources. Original local-owner adoption repairs a legacy runtime ceiling
+through its authenticated issuer while keeping original operations and receiving
+state. Fresh message targets share one producer; obsolete Context/Node tool
+execution is recovery-only. [Release notes](docs/releases/0.3.29.md).
 
 ## Interfaces
 

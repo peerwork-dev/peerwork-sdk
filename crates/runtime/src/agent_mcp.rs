@@ -10,7 +10,7 @@ use std::{
 };
 use tokio::{
     io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt},
-    sync::{mpsc, OnceCell},
+    sync::mpsc,
     task::{AbortHandle, JoinSet},
 };
 const MAX_FRAME: usize = 512 * 1024;
@@ -96,113 +96,7 @@ async fn write<W: AsyncWrite + Unpin>(writer: &mut W, value: Value) -> Result<()
     .map_err(|_| ParticipantError::local("MCP_OUTPUT_TIMEOUT", "MCP"))?
     .map_err(|_| ParticipantError::local("MCP_OUTPUT_CLOSED", "MCP"))
 }
-struct Tools {
-    profile: Option<AgentProfile>,
-    local: Option<std::path::PathBuf>,
-    handle: Option<String>,
-    workspace: Option<String>,
-    client: OnceCell<AgentTools>,
-}
-impl Tools {
-    fn channel_profile(&self)->Result<Option<AgentProfile>> {
-        if let Some(directory)=&self.local {
-            return crate::participant_connect::Connect::inspect(directory)?.profile_for_scope(self.handle.as_deref(),self.workspace.as_deref());
-        }
-        Ok(self.profile.clone())
-    }
-    async fn call(&self, request: AgentRequest) -> Result<Value> {
-        if let Some(directory)=&self.local {
-            let connect=crate::participant_connect::Connect::inspect(directory)?;
-            if let AgentRequest::Connect{request}=request {
-                let (request,resume)=connect.resolve_input(request)?;
-                // Selection-only observations remain available while another
-                // setup holds the writer. They cannot sign or create bindings.
-                if self.workspace.as_ref().is_some_and(|ws|ws!=&request.workspace_id){return Err(ParticipantError::local("FRONTEND_WORKSPACE_PIN_MISMATCH","CONNECT"));}
-                if self.handle.as_ref().is_some_and(|pin|!request.participant.is_empty() && pin!=&request.participant){return Err(ParticipantError::local("FRONTEND_IDENTITY_PIN_MISMATCH","CONNECT"));}
-                if resume {drop(connect);return crate::participant_connect::Connect::open(directory)?.resume_selected(&request.setup_id,self.handle.as_deref(),self.workspace.as_deref()).await;}
-                let discovery=connect.discovery_summary();
-                if discovery.candidates.is_empty() {
-                    let mut result=crate::participant_connect::Connect::selection_required(&request.setup_id);
-                    result["discovery"]=serde_json::to_value(discovery).unwrap();return Ok(result);
-                }
-                if discovery.candidates.len()>1 && self.handle.is_none() && request.participant.is_empty() {
-                    return Ok(json!({"state":"PENDING","discovery":discovery,"blocker":{"code":"IDENTITY_SELECTION_REQUIRED","next_actor":"LOCAL_RUNTIME_OWNER","next_action":"CHOOSE_ONE_PUBLIC_IDENTITY_HANDLE"}}));
-                }
-                drop(connect);
-                return crate::participant_connect::Connect::open(directory)?.connect_selected(request,self.handle.as_deref(),self.workspace.as_deref()).await;
-            }
-            if let AgentRequest::ConnectApprove{participant,approval_id,request}=request {
-                if self.handle.as_ref().is_some_and(|h|h!=&participant){return Err(ParticipantError::local("FRONTEND_IDENTITY_PIN_MISMATCH","CONNECT"));}
-                if self.workspace.as_ref().is_some_and(|ws|ws!=&request.workspace_id){return Err(ParticipantError::local("FRONTEND_WORKSPACE_PIN_MISMATCH","CONNECT"));}
-                drop(connect);return crate::participant_connect::Connect::open(directory)?.approve(&participant,&approval_id,request).await;
-            }
-            let handle=match connect.selected_handle(self.handle.as_deref()) {
-                Ok(handle)=>handle,
-                Err(error) if matches!(request,AgentRequest::Context) && error.code=="MULTIPLE_IDENTITIES_SELECT_FRONTEND_PARTICIPANT"=>return Ok(connect.context_for(self.handle.as_deref(),self.workspace.as_deref())),
-                Err(error)=>return Err(error),
-            };
-            let context=connect.context_for(handle.as_deref(),self.workspace.as_deref());
-            let profile=match connect.profile_for_scope(self.handle.as_deref(),self.workspace.as_deref()) {
-                Ok(profile)=>profile,
-                Err(error) if matches!(request,AgentRequest::Context) && error.code=="MULTIPLE_WORKSPACES_SELECT_FRONTEND_WORKSPACE"=>return Ok(context),
-                Err(error)=>return Err(error),
-            };
-            drop(connect);
-            if let Some(profile)=profile {
-                let is_context=matches!(request,AgentRequest::Context);
-                let alias=agent_tools::protocol_request_alias(&request).map(str::to_owned);let retry=request.clone();
-                let result=AgentTools::open(profile).await?.call(request).await;
-                let mut value=match result {
-                    Err(error)if agent_tools::refresh_workspace_error(&error).is_some() && crate::participant_connect::Connect::inspect(directory)?.workspace_profile_refreshable(self.handle.as_deref(),agent_tools::refresh_workspace_error(&error).unwrap())?=>{
-                        let workspace=agent_tools::refresh_workspace_error(&error).unwrap();
-                        if !crate::participant_connect::Connect::open(directory)?.refresh_workspace_profile(self.handle.as_deref(),workspace).await? {return Err(error);}
-                        let next=crate::participant_connect::Connect::inspect(directory)?.profile_for_scope(self.handle.as_deref(),self.workspace.as_deref())?.ok_or_else(||ParticipantError::local("LOCAL_SELECTION_REQUIRED","CONNECT"))?;
-                        AgentTools::open(next).await?.call(retry).await?
-                    },
-                    Err(error)if alias.is_some()&&error.code=="PROTOCOL_OPERATION_ROUTE_EXISTS"=>{
-                        let next=crate::participant_connect::Connect::inspect(directory)?.profile_for_scope(self.handle.as_deref(),self.workspace.as_deref())?.ok_or_else(||ParticipantError::local("LOCAL_SELECTION_REQUIRED","CONNECT"))?;
-                        AgentTools::open(next).await?.call(retry).await?
-                    },
-                    Err(error)if alias.is_some()&&agent_tools::refresh_protocol_error(&error)=>{
-                        if let Err(error)=crate::participant_connect::Connect::open(directory)?.refresh_protocol_alias(self.handle.as_deref(),self.workspace.as_deref(),alias.as_deref().unwrap(),error.details.as_ref()).await{if !agent_tools::refresh_nonblocking(&error,&retry){return Err(error);}}
-                        let next=crate::participant_connect::Connect::inspect(directory)?.profile_for_scope(self.handle.as_deref(),self.workspace.as_deref())?.ok_or_else(||ParticipantError::local("LOCAL_SELECTION_REQUIRED","CONNECT"))?;
-                        AgentTools::open(next).await?.call(retry).await?
-                    },other=>other?,
-                };
-                if is_context {value["onboarding"]=context;}
-                return Ok(value);
-            }
-            if matches!(request,AgentRequest::Context) { return Ok(context); }
-            return Err(ParticipantError::local("LOCAL_SELECTION_REQUIRED_USE_CONNECT","CONNECT"));
-        }
-        self.client
-            .get_or_try_init(|| AgentTools::open(self.profile.clone().expect("validated profile frontend")))
-            .await?
-            .call(request)
-            .await
-    }
-    fn catalog(&self)->Result<Vec<Value>> {
-        let mut tools=agent_tools::catalog();
-        if self.local.is_none() {
-            // A connected tool transport is not an installation/migration
-            // workflow. Local onboarding belongs to its own registry entry.
-            tools.retain(|v| !matches!(v["name"].as_str(), Some("peerwork_connect" | "peerwork_connect_approve")));
-        }
-        if let Some(directory)=&self.local {
-            let connect=crate::participant_connect::Connect::inspect(directory)?;
-            let profile=match connect.profile_for_scope(self.handle.as_deref(),self.workspace.as_deref()) {
-                Ok(profile)=>profile,
-                Err(error) if ["MULTIPLE_IDENTITIES_SELECT_FRONTEND_PARTICIPANT","MULTIPLE_WORKSPACES_SELECT_FRONTEND_WORKSPACE"].contains(&error.code.as_str())=>None,
-                Err(error)=>return Err(error),
-            };
-            if profile.is_none() {
-                let registered=connect.context()["participants"].as_array().is_some_and(|v|!v.is_empty());
-                tools.retain(|v|matches!(v["name"].as_str(),Some("peerwork_context"|"peerwork_connect")) || registered && v["name"]=="peerwork_connect_approve");
-            }
-        }
-        Ok(tools)
-    }
-}
+use crate::agent_lifecycle::Lifecycle as Tools;
 /// Supports per-request MCP 2026-07-28 and negotiated 2025-11-25 hosts.
 /// Discovery is available while the owner is offline; tools never create it.
 pub async fn serve<R, W>(profile: AgentProfile, reader: R, writer: W) -> Result<()>
@@ -211,7 +105,7 @@ where
     W: AsyncWrite + Unpin,
 {
     profile.validate()?;
-    serve_tools(Tools { profile:Some(profile),local:None,handle:None,workspace:None,client:OnceCell::new() },reader,writer).await
+    serve_tools(Tools::profile(profile),reader,writer).await
 }
 /// Serve the normal MCP tools using an already-owned participant. The caller
 /// retains its original identity, operation namespace, engine and lifecycle.
@@ -238,7 +132,7 @@ where
     W: AsyncWrite + Unpin,
 {
     let tools = AgentTools::from_client(client, selection)?;
-    serve_tools(Tools { profile:None,local:None,handle:None,workspace:None,client:OnceCell::new_with(Some(tools)) },reader,writer).await
+    serve_tools(Tools::attached(tools),reader,writer).await
 }
 pub async fn serve_local<R,W>(directory:std::path::PathBuf,reader:R,writer:W)->Result<()>
 where R:AsyncBufRead+Send+Unpin+'static,W:AsyncWrite+Unpin {
@@ -250,19 +144,19 @@ where R:AsyncBufRead+Send+Unpin+'static,W:AsyncWrite+Unpin {
     // identity handles expose discovery only, never secret scanning/bootstrap.
     if directory.exists(){crate::participant_connect::Connect::inspect(&directory)?;}
     else{drop(crate::participant_connect::Connect::open(&directory)?);}
-    serve_tools(Tools { profile:None,local:Some(directory),handle,workspace,client:OnceCell::new() },reader,writer).await
+    serve_tools(Tools::local(directory,handle,workspace),reader,writer).await
 }
 /// Claude Code's opt-in Channels transport over the same native tools and inbox.
 /// A successful notification write is never recorded as host acceptance.
 pub async fn serve_claude<R,W>(profile:AgentProfile,reader:R,writer:W)->Result<()>
 where R:AsyncBufRead+Send+Unpin+'static,W:AsyncWrite+Unpin {
     profile.validate()?;
-    serve_tools_mode(Tools{profile:Some(profile),local:None,handle:None,workspace:None,client:OnceCell::new()},reader,writer,true).await
+    serve_tools_mode(Tools::profile(profile),reader,writer,true).await
 }
 pub async fn serve_claude_local<R,W>(directory:std::path::PathBuf,handle:Option<String>,workspace:Option<String>,reader:R,writer:W)->Result<()>
 where R:AsyncBufRead+Send+Unpin+'static,W:AsyncWrite+Unpin {
     if directory.exists(){crate::participant_connect::Connect::inspect(&directory)?;}else{drop(crate::participant_connect::Connect::open(&directory)?);}
-    serve_tools_mode(Tools{profile:None,local:Some(directory),handle,workspace,client:OnceCell::new()},reader,writer,true).await
+    serve_tools_mode(Tools::local(directory,handle,workspace),reader,writer,true).await
 }
 async fn serve_tools<R,W>(tools:Tools,reader:R,writer:W)->Result<()>
 where R:AsyncBufRead+Send+Unpin+'static,W:AsyncWrite+Unpin {
@@ -406,7 +300,7 @@ mod tests {
             "b":{"actor_id":"B".repeat(43),"origin":"https://example.invalid/","endpoint_path":root.path().join("b.json")}},
             "setups":{},"active":null});
         owner.write_exact(&serde_json::to_vec(&registrations).unwrap()).unwrap();drop(owner);
-        let tools=Tools{profile:None,local:Some(directory),handle:None,workspace:None,client:OnceCell::new()};
+        let tools=Tools::local(directory,None,None);
         let catalog=tools.catalog().unwrap();assert!(catalog.iter().any(|v|v["name"]=="peerwork_connect"));
         let context=tools.call(AgentRequest::Context).await.unwrap();assert_eq!(context["participants"].as_array().unwrap().len(),2);
         let request=AgentRequest::parse("connect",json!({"request":{"workspace_id":"W".repeat(43)}})).unwrap();
@@ -504,8 +398,8 @@ mod tests {
         let task = tokio::spawn(serve(profile(), BufReader::new(sr), sw));
         send(&mut cw, modern(1, "tools/list", json!({}))).await;
         let list = receive(&mut cr).await;
-        assert_eq!(list["result"]["tools"].as_array().unwrap().len(), agent_tools::catalog().len() - 2);
-        assert!(list["result"]["tools"].as_array().unwrap().iter().all(|v| v["name"] != "peerwork_connect" && v["name"] != "peerwork_connect_approve"));
+        assert_eq!(list["result"]["tools"].as_array().unwrap().len(), agent_tools::catalog().len());
+        assert!(list["result"]["tools"].as_array().unwrap().iter().any(|v| v["name"] == "peerwork_connect"));
         assert_eq!(list["result"]["resultType"], "complete");
         send(&mut cw, modern(2, "server/discover", json!({}))).await;
         assert_eq!(
@@ -591,7 +485,7 @@ mod tests {
         let list = receive(&mut cr).await;
         assert_eq!(list["id"], 2);
         let tools = list["result"]["tools"].as_array().unwrap();
-        let expected: Vec<_> = agent_tools::catalog().into_iter().filter(|v| v["name"] != "peerwork_connect" && v["name"] != "peerwork_connect_approve").collect();
+        let expected: Vec<_> = agent_tools::catalog().into_iter().collect();
         assert_eq!(tools, &expected);
         assert!(tools.iter().all(|tool| tool["_meta"]["antigravity/alwaysLoad"] == true));
         let bytes=serde_json::to_vec(tools).unwrap().len();

@@ -29,13 +29,11 @@ is needed to read it. Mailbox addresses/tokens, session information, key state
 and queue internals are not disclosed by this summary. Detailed mailbox APIs
 retain their existing permissions. Explicit local instance/protocol/mailbox
 limits remain enforced; local denial is not evidence that the peer is offline.
-If `restricted_by` includes `operations`, `instance_ids`, `protocol_digests`
-and `mailbox_ids`, the selected client is not a Workspace directory client.
-Adding only `structure.members.read` is insufficient. Resume the supported
-connection through the original authorized runtime to select or derive its
-Workspace client, preserving older endpoints for pending-operation recovery.
-Upgrading the binary alone does not enlarge an existing immutable delegation.
-See [receiving recovery and local capability diagnosis](receiving-recovery.md).
+A known generated projection repairs through its authenticated original issuer.
+Explicit parent limits remain; missing issuer evidence returns one local-source
+continuation. Do not edit action lists or change identities to bypass the denial.
+Updating the frontend alone does not change a running engine's capabilities.
+See [existing-client recovery](existing-client-tools.md).
 
 ## Shared display names
 
@@ -70,7 +68,14 @@ explicitly; never take the first match. SDK resolution uses the sending client's
 existing capability and the server still checks SEND/RECEIVE. Identity and current
 membership are pinned into the immutable message intent. A name change or rejoin
 cannot redirect a saved operation. Existing optional `contact` arguments remain.
-The legacy CLI `send CONTACT` retains its optional local-contact meaning.
+A stored contact pins its exact membership/mailbox. The sending client and
+service validate it without requiring a directory read for an already-known
+exact address. An active actor/name/contact target uses the same
+conversation construction; a stale contact never silently follows a rejoin.
+`reachability` uses the same member-page question for workspace, scope and contact
+selectors. `diagnostic:true` with `scope` explicitly inspects that mailbox; it is
+not the default collaborator query.
+The compatibility CLI `send CONTACT` retains its pinned-contact meaning.
 The explicit member CLI equivalent is `peerwork agent --profile PROFILE reachability [--workspace WORKSPACE]`
 and `peerwork agent --profile PROFILE send --to MEMBER --id OPERATION_ID < message.txt`.
 

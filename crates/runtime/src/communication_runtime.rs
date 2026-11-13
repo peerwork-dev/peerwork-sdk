@@ -175,8 +175,20 @@ pub(crate) struct RebindClient {
     pub capability:Capability,
     pub generation:Option<u64>,
 }
+const OWNER_PREFIX:&str="connect-owner-";
+fn owner_name(engine:&str)->String {format!("{OWNER_PREFIX}{engine}")}
 pub(crate) fn rebind_client(config:&RuntimeConfig,name:&str)->Result<RebindClient> {
-    derived::resolve_rebind_client(&config.state_directory,&config.clients,name)
+    let mut roots=config.clients.clone();
+    roots.extend(config.engines.iter().map(|engine|ClientConfig{name:owner_name(&engine.name),engine:engine.name.clone(),capability:Capability::owner()}));
+    derived::resolve_rebind_client(&config.state_directory,&roots,name)
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AdoptClient {
+    source_binding:Value,
+    workspace_ids:BTreeSet<String>,
+    alias:String,
+    policy:String,
 }
 pub(crate) fn initial_host_available(config:&RuntimeConfig,target:&crate::participant_dispatch::HostConfig)->Result<()> {
     hosts::initial_host_available(&config.state_directory,&config.hosts,target)
@@ -336,6 +348,27 @@ impl Runtime {
             .find(|key| equal(&channel::key_id(key), id))
             .map(str::to_owned)
     }
+    fn adopt_client(&self,request:AdoptClient)->Result<Value> {
+        if request.policy!="INHERIT_ENGINE_FOR_WORKSPACES" || request.workspace_ids.is_empty() || request.workspace_ids.len()>8 || request.workspace_ids.iter().any(|ws|!crate::workspace_urls::token(ws)) || !identifier(&request.alias) {
+            return Err(local("LOCAL_OWNER_ADOPTION_POLICY_REQUIRED"));
+        }
+        let sessions=self.sessions.read().map_err(|_|local("CLIENT_REGISTRY_UNAVAILABLE"))?;
+        let source=sessions.iter().find(|session| {
+            let client=&session.client;
+            request.source_binding["actor_id"]==client.actor_id() && request.source_binding["origin"]==client.origin()
+                && request.source_binding["state_binding"]==client.state_binding()
+                && request.source_binding["namespace"]==client.local_namespace()
+                && request.source_binding["client_generation"]==json!(session.generation)
+                && request.source_binding["engine_digest"]==json!(self.engine_bindings.get(client.state_binding()))
+        }).ok_or_else(||local("ORIGINAL_RUNTIME_BINDING_CHANGED"))?;
+        let engine=self.owners.iter().find(|(_,owner)|owner.state_binding()==source.client.state_binding()).map(|(name,_)|name)
+            .ok_or_else(||local("HOST_RUNTIME_BINDING_MISMATCH"))?;
+        let parent=sessions.iter().find(|session|session.name==owner_name(engine)).cloned().ok_or_else(||local("LOCAL_OWNER_ISSUER_UNAVAILABLE"))?;
+        drop(sessions);
+        let mut capability=parent.client.capability().clone();capability.allow_root=false;
+        capability.workspace_ids=Some(request.workspace_ids);
+        self.derive_client(&parent,&request.alias,capability,None)
+    }
     async fn request(self: &Arc<Self>, frame: Frame, credential: &str) -> Value {
         let id = &frame.request_id;
         if frame.format != REQUEST_FORMAT || !identifier(id) {
@@ -356,8 +389,14 @@ impl Runtime {
                 rebind:Option<crate::participant_rebind::HostRebindRequest>,
                 #[serde(default)]
                 recovery:Option<crate::participant_rebind::HostRebindRecoveryRequest>,
+                #[serde(default)]
+                adoption:Option<AdoptClient>,
             }
             let value=async{match serde_json::from_value::<AdminRequest>(frame.request){
+                Ok(request)if request.method=="client_adopt" && request.config.is_none() && request.rebind.is_none() && request.recovery.is_none() && request.adoption.is_some()=>{
+                    self.adopt_client(request.adoption.unwrap())
+                },
+                Ok(request)if request.adoption.is_some()=>Err(local("ADMIN_COMMAND_INVALID")),
                 Ok(request)if request.method=="host_rebind"&&request.config.is_none()&&request.rebind.is_some()=>{
                     self.start_resident_rebind(request.rebind.unwrap(),request.recovery).await
                 },
@@ -367,7 +406,7 @@ impl Runtime {
                     let (clients,generations)=self.client_snapshot()?;
                     let mut receivers=Vec::new();
                     for (name,client) in clients {let bindings=client.watch_bindings().await?;if !bindings.is_empty(){receivers.push(json!({"client":name,"client_generation":generations.get(&name),"actor_id":client.actor_id(),"origin":client.origin(),"state_binding":client.state_binding(),"engine_digest":self.engine_bindings.get(client.state_binding()),"bindings":bindings}));}}
-                    Ok(json!({"state":"LOCAL_READY","sdk_version":env!("CARGO_PKG_VERSION"),"optional_features":["resident-scope-rebind-v1"],"engines":engines,"receivers":receivers,"hosts":self.hosts.lock().await.statuses(),"pending_client_revocations":self.pending_revocation_status()?,"network_or_host_readiness":"NOT_ATTESTED"}))
+                    Ok(json!({"state":"LOCAL_READY","sdk_version":env!("CARGO_PKG_VERSION"),"optional_features":["resident-scope-rebind-v1","source-client-adoption-v1"],"engines":engines,"receivers":receivers,"hosts":self.hosts.lock().await.statuses(),"pending_client_revocations":self.pending_revocation_status()?,"network_or_host_readiness":"NOT_ATTESTED"}))
                 },
                 Ok(request)if request.method=="host_ensure"&&request.config.is_some()&&request.rebind.is_none()&&request.recovery.is_none()=>{
                     let (clients,generations)=self.client_snapshot()?;
@@ -774,10 +813,11 @@ pub async fn serve(
         }
     }
     let engines = names.clone();
+    let internal_names:BTreeSet<_>=engines.iter().map(|engine|owner_name(engine)).collect();
     names.clear();
     for client in &config.clients {
         client.capability.validate()?;
-        if !identifier(&client.name)
+        if !identifier(&client.name) || internal_names.contains(&client.name)
             || !names.insert(client.name.clone())
             || !engines.contains(&client.engine)
         {
@@ -790,6 +830,13 @@ pub async fn serve(
                 engine.name.clone(),
                 ParticipantClient::open(engine.participant_config()).await?,
             );
+        }
+        // Internal issuer sessions have no published credential. Only the
+        // separately authenticated administrator can issue their scoped views.
+        for (engine,owner) in &owners {
+            let name=owner_name(engine);
+            sessions.push(Session{name:name.clone(),token:random_token().map_err(|_|local("ENTROPY_UNAVAILABLE"))?,generation:None,
+                client:owner.restrict(&name,Capability::owner())?,watches:Default::default()});
         }
         for client in &config.clients {
             let owner = owners
@@ -826,6 +873,7 @@ pub async fn serve(
     let published: Result<()> = (|| {
         endpoint(&admin_endpoint, address, &admin_token, "ADMIN")?;
         for session in &sessions {
+            if internal_names.contains(&session.name){continue;}
             let path = config
                 .state_directory
                 .join(format!("client-{}.json", session.name));

@@ -4,8 +4,8 @@ An independently identified collaborator is a **Peer**, distinct from your local
 subagents. Use the existing Peer identity and its protocol roles; see
 [Peer terminology](peer-terminology.md).
 
-Native SDK0.3.14 shares one Participant engine across MCP, CLI and Rust programs.
-Its `peerwork_manage` surface is absent from0.3.12. Use the matching
+The native SDK shares one Participant lifecycle across MCP, CLI and Rust programs.
+Use the matching
 [release](https://github.com/peerwork-dev/peerwork-sdk/releases/latest)
 and [connection guide](participant-connect.md).
 
@@ -25,7 +25,7 @@ signing journal to use an ordinary operation.
 | Send/reply, read/consume received messages | `peerwork_send`, `peerwork_reply`, `peerwork_inbox`, `peerwork_consume` |
 | Discover selected workspace/protocol/access/key/publication management | `peerwork_manage` with `mode: catalog` or `describe` |
 | Inspect or resume the original mutation | `peerwork_status`, `peerwork_recover` with its exact `recovery_arguments` |
-| Request/approve genuinely missing participation rights | `peerwork_connect`, `peerwork_connect_approve` on the local-registry frontend |
+| Request/approve genuinely missing participation rights | `peerwork_connect`, `peerwork_connect_approve` when setup is available on the selected lifecycle |
 
 ## Discover management without assembling a client
 
@@ -55,16 +55,16 @@ fields; required-field hints do not replace that validation.
 {"mode":"invoke","operation":"keys.rotate","workspace":"project","operation_id":"rotate-after-device-revocation","body":{}}
 ```
 
-This explicit Owner action uses the original selected client's journal. A local
-ceiling denial must be resolved by that local runtime owner, not by switching to
-another actor. Keep the returned recovery selector on uncertainty; do not invent
+This explicit Owner action uses the original selected client's journal. A proven generated ceiling repairs through its authenticated original issuer;
+a deliberate local restriction remains. Follow the precise returned local-source
+continuation rather than editing capability JSON or switching actors. Keep the returned recovery selector on uncertainty; do not invent
 another ID. Grant changes, publication and deletion require the user's intended
 business authorization; merely discovering an operation provides none.
 
 Ordinary native0.3.15 Connect tools and management share the selected Workspace
 client. Already-held service authority requires no management-enable ceremony.
-A local ceiling denial names the local runtime owner and the existing-client or
-explicit-delegation correction; it does not request another Workspace grant.
+Local denials distinguish generated-projection repair from explicit delegation
+and missing issuer evidence; they do not request another Workspace grant.
 Historical management views remain exact-operation recovery routes. Identity-
 scoped `workspace.create` and offline work still require a selected original
 client that allows them. See [permissions and recovery](permissions.md).

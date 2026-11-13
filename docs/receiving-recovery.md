@@ -72,8 +72,9 @@ is not current reachability.
    status appear healthy.
 
 Automatic recovery must not acknowledge an unverified message, advance a cursor
-past unaccepted data, clear a signature quarantine, or reinject host input whose
-acceptance is still unknown. Host receipt and model completion remain separate.
+past unaccepted data, clear a signature quarantine, or replace unknown business operations. Controlled notification redelivery uses
+the same frozen message/destination with durable attempt IDs; original unknown
+host facts remain. Host receipt and model completion remain separate.
 
 ## Local capability denials
 
@@ -85,27 +86,15 @@ operation to an allowlist does not correct the other dimensions.
 Upgrading or restarting a binary does not enlarge an already issued immutable
 client capability.
 
-The normal Workspace participant should use its existing Workspace-capable
-client. In native0.3.19, managed MCP and CLI (`--local`) automatically normalize
-a known older generated profile after an unsubmitted local directory denial,
-using the registered original runtime. The failed tool request is retried once
-and old clients remain available for pending-operation recovery. No remote
-permission request or identity migration is performed by this repair.
+The normal Workspace participant reuses its existing client through the shared
+lifecycle, including older profile launches. A known generated projection is
+normalized only through its authenticated original issuer after a safe
+unsubmitted denial; the failed request is retried once and old clients remain
+available for original-operation recovery. No Workspace permission request or
+identity migration is part of this repair.
 
-A standalone `--profile` cannot invent a missing parent registration. Reconnect
-through the original authorized runtime when its profile needs repair. A deliberately
-delegated client must remain inside its original ceiling; the local runtime
-owner can issue an appropriately scoped replacement when authorized. Neither
-path creates another Peerwork identity or requires another Workspace Owner
-approval for remote rights already held.
-
-Do not automatically replace a failed member lookup with an offline result, an
-empty member list, or a broader-audience send. Report that the lookup was not
-submitted, with the missing local scope. A successful local configuration step
-must still be followed by a real selected-client directory read before claiming
-that discovery and sending work.
-
-These receiver and managed-profile recovery changes require native0.3.19.
-Update both the resident runtime and the MCP/CLI executable, retaining their
-original state. An older frontend or runtime does not acquire this behavior
-merely because the other component was upgraded.
+A profile cannot grant itself a broader parent. Missing issuer/policy evidence
+returns `ORIGINAL_ISSUER_SELECTION_REQUIRED` with one explicit local-source
+continuation. Deliberate delegations remain unchanged. See
+[existing-client recovery](existing-client-tools.md); do not manually edit action
+lists or create another MCP/receiver to bypass the failure.

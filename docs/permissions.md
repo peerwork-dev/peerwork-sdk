@@ -1,6 +1,6 @@
 # Identity, permissions and recovery
 
-Native0.3.15 uses one ordinary Workspace client for fixed tools and management.
+The native SDK uses one ordinary Workspace client for fixed tools and management.
 The backend evaluates current business authorization on every request. Selecting
 a protocol role does not copy its current grants into a local action whitelist.
 Grant additions and revocations therefore take effect without rebuilding the
@@ -50,11 +50,11 @@ request; an action list never installs a local role whitelist. Subsequent servic
 grant changes apply without recreating the client. Actual parent restrictions
 still apply: requesting actions outside that ceiling returns `LOCAL_SCOPE_DENIED`.
 
-Historical issued profiles whose action lists created local scoped tool views
-retain those views and original credentials. An unfinished request without an
-issued profile is not a legacy delegation. Reusing a historical delegated profile
-requires its constrained parent (`EXPLICIT_DELEGATION_PARENT_REQUIRED` otherwise).
-Those mixed profiles do not isolate a caller from broader credentials it holds.
+Known SDK-generated historical action/member/recipient projections are not
+presumed deliberate delegation. The shared lifecycle validates their original
+issuer before normalizing them and retains old operation routes. Unknown source
+policies remain unchanged until an explicit local-owner source-policy decision.
+Real `Capability` restrictions and child namespaces retain their limits.
 
 ## Read a denial
 
@@ -80,7 +80,7 @@ remain compatible; `details.reason` distinguishes the actual failed condition:
 | `GRANT_EXPIRED` / `GRANT_REVOKED` | The grant is no longer effective | Protocol maintainer |
 | `GRANT_MEMBERSHIP_CHANGED` | The grant belongs to an older membership | Protocol maintainer |
 | `GRANT_CONTEXT_MISMATCH` | Grant and selected execution differ | Protocol maintainer |
-| `CAPABILITY_NOT_GRANTED` | Protocol maintenance responsibility is missing | Workspace Owner |
+| `CAPABILITY_NOT_GRANTED` | Protocol maintenance responsibility is missing | Current designated governance authority |
 | `OWNER_REQUIRED` | The operation requires Workspace Owner authority | Workspace Owner |
 | `ACCESS_EXPIRED` / `MEMBERSHIP_INACTIVE` | This Actor's access is no longer active | Workspace Owner |
 | `COMMUNICATION_RESTRICTED` / `COMMUNICATION_OVERRIDE_EXPIRED` | An explicit communication exception blocks this direction | Workspace Owner |
@@ -101,15 +101,17 @@ operation is never reclassified as unsubmitted after access is revoked.
 
 ## Upgrade an existing installation
 
-Update the original resident runtime before normalizing its tools. The runtime
-feature `workspace-client-authority-v1` includes durable operation scope; an older
-runtime returns a supported upgrade step and preserves the working profile.
+The frontend and resident engine report separate capabilities. Update the original
+process that lacks the required feature, retaining identity, journal, receiver and
+host binding. Both profile and local-registry adapters enter the shared lifecycle.
+Proven generated projections repair through the authenticated original issuer;
+the old profile revision and sender/directory/management/protocol recovery routes
+remain. This does not request remote rights or widen old issued tokens.
 
-Repeating Connect locally normalizes a proven ordinary saved setup, retaining
-the old profile revision, sender/directory/management and protocol recovery
-bindings. It does not request remote rights, replace an identity/journal, change
-the receiver or rebind the host. Explicit or unknown historical restrictions
-are preserved. New credentials do not widen previously issued tokens.
+When source provenance cannot establish a policy, `ORIGINAL_ISSUER_SELECTION_REQUIRED`
+identifies the needed original issuer/runtime configuration and explicit local
+policy. Follow [the source-selection continuation](existing-client-tools.md);
+manual capability JSON editing or another Workspace approval is not the remedy.
 
 Operation IDs are unique across the ordinary Workspace client's tools and
 instances. Use stable unique IDs; do not reuse one for a different intent.

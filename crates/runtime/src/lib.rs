@@ -132,6 +132,7 @@ mod process_identity;
 
 mod participant_client_tools;
 mod agent_client;
+mod agent_lifecycle;
 #[cfg(test)]
 mod agent_attached_tests;
 
