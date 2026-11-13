@@ -510,7 +510,9 @@ impl Connect {
         action: &str,
         details: Value,
     ) -> Result<Value> {
-        self.record(r, json!({"state":"PENDING","setup_id":r.setup_id,
+        let setup = self.registry.setups.get(&r.setup_id).ok_or_else(||local("CONNECT_STATE_INVALID"))?;
+        let profile_path = setup.profile.as_ref().map(|profile|self.ensure_profile(&r.setup_id,profile)).transpose()?;
+        self.record(r, json!({"state":"PENDING","setup_id":r.setup_id,"tools_available":profile_path.is_some(),"profile_path":profile_path,
             "blocker":{"stage":stage,"code":code,"affected_scope":{"workspace_id":r.workspace_id},"next_actor":actor,"next_action":action},
             "details":details,"existing_configuration_preserved":true}), None)
     }
@@ -695,18 +697,6 @@ impl Connect {
             self.registry.setups.get_mut(&request.setup_id).unwrap().agent_host_required = true;
             self.save()?;
         }
-        if agent&&request.receive {
-            let selected_host=request.host.as_ref().or(self.registry.setups[&request.setup_id].effective_host.as_ref())
-                .and_then(|name|self.registry.hosts.get(name)).filter(|host|host.participant==request.participant);
-            if selected_host.is_some_and(|host|host.adapter["kind"]=="agy-app"
-                ||host.adapter["kind"]=="bridge"&&host.adapter["destination"]["host"]=="ANTIGRAVITY_APP") {
-                return self.pending(&request,"HOST_BINDING","HOST_PUSH_UNSUPPORTED","HOST_USER",
-                    "SELECT_SUPPORTED_LIVE_HOST_OR_EXPLICIT_INBOX",json!({"host_mode":"TOOL_ONLY",
-                    "automatic_model_wake":"NOT_SUPPORTED","retryable":false,"owner_exchange_required":false,
-                    "remote_changes_submitted":false,"existing_receiver_preserved":true,
-                    "message":"AGY App supports queued input. For live PUSH, select a supported host; otherwise explicitly choose INBOX. Keep existing tools and receiver. Retrying or requesting more Workspace rights cannot enable live PUSH."}));
-            }
-        }
         let client = match self.original_client(&request.participant).await
         {
             Ok(c) => c,
@@ -735,32 +725,10 @@ impl Connect {
             );
         }
         let parent: Capability = serde_json::from_value(caps["capability"].clone()).map_err(|_| local("LOCAL_CEILING_INVALID"))?;
-        Self::check_requested_actions(&parent,&request.protocols)?;
-        let management_actions=crate::agent_tools::management::workspace_actions(&request.management)?;
-        let missing_management:Vec<_>=management_actions.difference(&parent.operations).cloned().collect();
-        if !missing_management.is_empty() {
-            let mut error=local("LOCAL_SCOPE_DENIED");error.phase="AUTHORIZATION".into();error.recovery="REVIEW_EXPLICIT_LOCAL_CAPABILITY".into();
-            error.details=Some(json!({"missing_operations":missing_management,"next_actor":"LOCAL_RUNTIME_OWNER","remote_permission_checked":false,"remote_grants_changed":false}));return Err(error);
-        }
-        let communication_requested=request.send||request.receive||!request.contacts.is_empty();
-        let mut required=vec!["structure.workspace.get","structure.members.read"];
-        if communication_requested||request.require_body_keys{required.push("participant.time.read");}
-        if communication_requested{required.push("structure.communication.grant.get");}
-        if request.receive{required.push("structure.mailboxes.read");}
-        if !request.protocols.is_empty(){required.extend(["structure.instance.resolve","structure.protocol.resolve","structure.grant.get"]);}
-        if request.send{required.push("structure.message.send");}
-        let missing=required.into_iter().filter(|action|!parent.operations.contains(*action)).collect::<Vec<_>>();
-        let probe=Invoke::new("connect-local-preflight","structure.workspace.get",Scope{workspace_id:Some(request.workspace_id.clone()),..Default::default()},json!({}));
-        let denied=parent.authorize(&probe).and_then(|_|parent.authorize(&Invoke::new("connect-directory-preflight","structure.members.read",probe.scope.clone(),json!({"view":"COLLABORATION","limit":1})))).err();
-        if !missing.is_empty()||denied.is_some(){
-            let mut error=denied.unwrap_or_else(||local("LOCAL_SCOPE_DENIED"));error.phase="AUTHORIZATION".into();error.recovery="REVIEW_EXPLICIT_LOCAL_CAPABILITY".into();
-            let mut details=error.details.take().unwrap_or(json!({}));details["missing_operations"]=json!(missing);details["next_actor"]=json!("LOCAL_RUNTIME_OWNER");details["remote_permission_checked"]=json!(false);error.details=Some(details);return Err(error);
-        }
         let scope = Scope {
             workspace_id: Some(request.workspace_id.clone()),
             ..Scope::default()
         };
-        let now = if communication_requested||request.require_body_keys {trusted_time(&client, &scope).await?} else {0};
         let workspace = match read(&client, "structure.workspace.get", scope.clone(), json!({})).await {
             Ok(value)=>value,
             Err(error) if request.request_membership && (matches!(error.code.as_str(),"FORBIDDEN"|"UNVERIFIED_AUTHORIZATION_RESPONSE") || error.details.as_ref().is_some_and(|d|d["http_status"]==403))=>{
@@ -787,6 +755,43 @@ impl Connect {
         let owner = workspace["owner_id"]
             .as_str()
             .ok_or_else(|| local("WORKSPACE_OBSERVATION_INVALID"))?;
+        // Existing membership opens the already-authorized tool surface before
+        // optional roles, keys or host attachment are resolved on this Setup.
+        self.establish_baseline(&request, &selected, &parent, &client, membership).await?;
+        if agent&&request.receive {
+            let selected_host=request.host.as_ref().or(self.registry.setups[&request.setup_id].effective_host.as_ref())
+                .and_then(|name|self.registry.hosts.get(name)).filter(|host|host.participant==request.participant);
+            if selected_host.is_some_and(|host|host.adapter["kind"]=="agy-app"
+                ||host.adapter["kind"]=="bridge"&&host.adapter["destination"]["host"]=="ANTIGRAVITY_APP") {
+                return self.pending(&request,"HOST_BINDING","HOST_PUSH_UNSUPPORTED","HOST_USER",
+                    "SELECT_SUPPORTED_LIVE_HOST_OR_EXPLICIT_INBOX",json!({"host_mode":"TOOL_ONLY",
+                    "automatic_model_wake":"NOT_SUPPORTED","retryable":false,"owner_exchange_required":false,
+                    "remote_changes_submitted":false,"existing_receiver_preserved":true,
+                    "message":"AGY App supports queued input. For live PUSH, select a supported host; otherwise explicitly choose INBOX. Keep existing tools and receiver. Retrying or requesting more Workspace rights cannot enable live PUSH."}));
+            }
+        }
+        Self::check_requested_actions(&parent,&request.protocols)?;
+        let management_actions=crate::agent_tools::management::workspace_actions(&request.management)?;
+        let missing_management:Vec<_>=management_actions.difference(&parent.operations).cloned().collect();
+        if !missing_management.is_empty() {
+            let mut error=local("LOCAL_SCOPE_DENIED");error.phase="AUTHORIZATION".into();error.recovery="REVIEW_EXPLICIT_LOCAL_CAPABILITY".into();
+            error.details=Some(json!({"missing_operations":missing_management,"next_actor":"LOCAL_RUNTIME_OWNER","remote_permission_checked":false,"remote_grants_changed":false}));return Err(error);
+        }
+        let communication_requested=request.send||request.receive||!request.contacts.is_empty();
+        let mut required=vec!["structure.workspace.get","structure.members.read"];
+        if communication_requested||request.require_body_keys{required.push("participant.time.read");}
+        if communication_requested{required.push("structure.communication.grant.get");}
+        if request.receive{required.push("structure.mailboxes.read");}
+        if !request.protocols.is_empty(){required.extend(["structure.instance.resolve","structure.protocol.resolve","structure.grant.get"]);}
+        if request.send{required.push("structure.message.send");}
+        let missing=required.into_iter().filter(|action|!parent.operations.contains(*action)).collect::<Vec<_>>();
+        let probe=Invoke::new("connect-local-preflight","structure.workspace.get",Scope{workspace_id:Some(request.workspace_id.clone()),..Default::default()},json!({}));
+        let denied=parent.authorize(&probe).and_then(|_|parent.authorize(&Invoke::new("connect-directory-preflight","structure.members.read",probe.scope.clone(),json!({"view":"COLLABORATION","limit":1})))).err();
+        if !missing.is_empty()||denied.is_some(){
+            let mut error=denied.unwrap_or_else(||local("LOCAL_SCOPE_DENIED"));error.phase="AUTHORIZATION".into();error.recovery="REVIEW_EXPLICIT_LOCAL_CAPABILITY".into();
+            let mut details=error.details.take().unwrap_or(json!({}));details["missing_operations"]=json!(missing);details["next_actor"]=json!("LOCAL_RUNTIME_OWNER");details["remote_permission_checked"]=json!(false);error.details=Some(details);return Err(error);
+        }
+        let now = if communication_requested||request.require_body_keys {trusted_time(&client, &scope).await?} else {0};
         let grants = if communication_requested {read(
             &client,
             "structure.communication.grant.get",
@@ -938,7 +943,8 @@ impl Connect {
                     "origin":selected.origin,"workspace_id":request.workspace_id,"actor_id":selected.actor_id,"membership_id":membership,
                     "owner_id":owner,"missing":missing,"body_keys_required":needs_keys,"key_request":key_request}))?;
             let code=authorization_request.to_code()?;
-            return self.pending(&request,"REMOTE_AUTHORIZATION",if missing.is_empty(){"KEY_AUTHORIZATION_REQUIRED"}else{"OWNER_APPROVAL_REQUIRED"},owner,"APPROVE_REQUESTED_PERMISSION_DELTA",
+            let business_only = !needs_keys && authorization_request.missing.iter().all(|delta|matches!(delta,approval::Delta::BusinessRole{..}));
+            return self.pending(&request,"REMOTE_AUTHORIZATION",if missing.is_empty(){"KEY_AUTHORIZATION_REQUIRED"}else if business_only{"AUTHORIZATION_REQUIRED"}else{"OWNER_APPROVAL_REQUIRED"},if business_only{"PROTOCOL_MAINTAINER"}else{owner},"APPROVE_REQUESTED_PERMISSION_DELTA",
                 json!({"authorization_request":authorization_request,"authorization_code":code,
                     "approval":{"tool":"peerwork_connect_approve","arguments":{"approval_id":format!("approve-{}",&sha256_hex(code.as_bytes())[..24]),"request":code},"add_required":["participant"]},
                     "delivery":"PUBLIC_REQUEST_CODE_OR_OBJECT","request_is_not_authorization":true,"contains_private_keys_or_local_paths":false}));

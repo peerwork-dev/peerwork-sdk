@@ -5,11 +5,12 @@ impl AgentTools {
     pub(super) async fn observe_original(&self,method:&str,id:&str,protocol:Option<&str>,workspace:Option<&str>,management:Option<&str>,protocol_view:Option<&str>,recovery_view:Option<&str>)->Result<Value>{
         if [protocol,workspace,management,protocol_view,recovery_view].iter().filter(|v|v.is_some()).count()>1{return Err(invalid("OPERATION_SCOPE_AMBIGUOUS"));}
         let mut recovered=None;
+        let mut recovered_protocol=None;
         let (client,cached)=if let Some(view)=recovery_view {
             (&self.recovery_clients.get(view).ok_or_else(||invalid("RECOVERY_VIEW_REQUIRED"))?.1,None)
         }else if let Some(alias)=protocol {
-            let(client,_,_,value)=self.original_protocol_operation(alias,id).await?.ok_or_else(||invalid("OPERATION_NOT_FOUND"))?;
-            (client,Some(value))
+            let(client,_,route,value)=self.original_protocol_operation(alias,id).await?.ok_or_else(||invalid("OPERATION_NOT_FOUND"))?;
+            recovered_protocol=route;(client,Some(value))
         }else if management.is_some()||protocol_view.is_some(){
             (self.operation_client(None,None,management,protocol_view)?,None)
         }else{
@@ -21,15 +22,16 @@ impl AgentTools {
             else{client.call(json!({"method":"recover","operation_id":id})).await?};
         let mut value=operation_view(value);
         if let Some(view)=recovered.or(recovery_view){value["recovery_arguments"]=json!({"operation_id":id,"recovery_view":view});}
+        if let Some((key,view))=recovered_protocol{value["recovery_arguments"]=json!({"operation_id":id,(key):view});}
         Ok(value)
     }
     pub(super) async fn original_general_operation(&self,id:&str,workspace:Option<&str>,scope:Option<&Scope>)->Result<Option<(&Client,Option<&str>,Value)>>{
         let mut clients=vec![(&self.client,None)];
-        clients.extend(self.directory_clients.values().map(|client|(client,None)));
+        clients.extend(self.directory_clients.iter().filter(|(ws,_)|workspace.is_none_or(|selected|selected==ws.as_str())).map(|(_,client)|(client,None)));
         clients.extend(self.recovery_clients.iter().filter(|(_,v)|workspace.is_none_or(|ws|ws==v.0)).map(|(id,(_,client))|(client,Some(id.as_str()))));
         let mut seen=std::collections::BTreeSet::new();let mut found=None;
         for(client,view)in clients {
-            let binding=if client.attached_mode(){format!("attached:{client:p}")}else{crate::communication_runtime::canonical_binding(&client.call(json!({"method":"binding"})).await?).to_string()};
+            let binding=if let Some(binding)=client.attached_namespace_binding(){binding}else{crate::communication_runtime::canonical_binding(&client.call(json!({"method":"binding"})).await?).to_string()};
             if !seen.insert(binding){continue;}
             let value=match client.call(json!({"method":"operation","operation_id":id})).await {Ok(value)=>value,Err(e)if e.code=="OPERATION_NOT_FOUND"=>continue,Err(e)=>return Err(e)};
             let original:Scope=serde_json::from_value(value["scope"].clone()).map_err(|_|invalid("ORIGINAL_OPERATION_SCOPE_INVALID"))?;

@@ -1,6 +1,33 @@
 use super::*;
 use crate::kernel_identity::KernelIdentity;
 
+#[tokio::test(flavor="multi_thread",worker_threads=2)]
+#[ignore="requires loopback IPC permission"]
+async fn optional_agent_routes_do_not_block_context_and_failed_routes_can_recover() {
+    use crate::agent_tools::{AgentProfile,AgentRequest,AgentTools,RecoveryView};
+    let temp=crate::test_support::protected_test_dir();let options=config(temp.path());
+    let (ready,cancel,task)=start(options.clone()).await;
+    let origin=&options.engines[0].origin;let actor=&options.engines[0].expected_actor;
+    let main=RuntimeClient::connect(ready.client_endpoints["creator"].clone(),origin,actor).await.unwrap();
+    let binding=canonical_binding(&main.call(json!({"method":"binding"})).await.unwrap());
+    let missing=temp.path().join("temporarily-missing-client.json");let ws="W".repeat(43);let other="O".repeat(43);
+    let mut profile:AgentProfile=serde_json::from_value(json!({"format":"peerwork.agent-profile.v1","endpoint_path":ready.client_endpoints["creator"],"expected_origin":origin,"expected_actor":actor,"scopes":{},"workspaces":{"project":ws,"other":other},"directory_endpoints":{(other.clone()):missing},"receive_endpoint_path":missing})).unwrap();
+    profile.recovery_views.insert("unavailable".into(),RecoveryView{workspace_id:other,endpoint_path:missing.clone(),binding:binding.clone()});
+    let mut wrong=binding;wrong["namespace"]=json!("different-original-namespace");
+    profile.recovery_views.insert("changed".into(),RecoveryView{workspace_id:ws,endpoint_path:ready.client_endpoints["creator"].clone(),binding:wrong});
+    let tools=AgentTools::open(profile).await.unwrap();
+    let context=tools.call(AgentRequest::Context).await.unwrap();
+    assert_eq!(context["local_engine"],"AUTHENTICATED");assert!(context["bindings"].is_null());assert_eq!(context["receiving_status"]["state"],"UNKNOWN");
+    let wrong=tools.call(AgentRequest::parse("status",json!({"operation_id":"not-submitted","recovery_view":"changed"})).unwrap()).await.unwrap_err();
+    assert_eq!(wrong.code,"ORIGINAL_RUNTIME_BINDING_CHANGED");
+    let unavailable=tools.call(AgentRequest::parse("status",json!({"operation_id":"not-submitted","recovery_view":"unavailable"})).unwrap()).await.unwrap_err();
+    assert_ne!(unavailable.code,"OPERATION_NOT_FOUND");
+    let original=std::fs::read(&ready.client_endpoints["creator"]).unwrap();write_private(&missing,&original).unwrap();
+    let restored=tools.call(AgentRequest::Context).await.unwrap();
+    assert_eq!(restored["bindings"],json!([]));assert!(restored["receiving_status"].is_null(),"transient endpoint failure must not be cached forever");
+    cancel.cancel();task.await.unwrap().unwrap();
+}
+
 fn config(directory: &Path) -> RuntimeConfig {
     let identity_path = directory.join("identity");
     let identity = KernelIdentity::create(&identity_path).unwrap();

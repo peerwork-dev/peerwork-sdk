@@ -246,7 +246,9 @@ impl Connect {
             .cloned()
             .ok_or_else(|| local("LOCAL_SELECTION_REQUIRED"))?;
         let admission=request.missing.iter().any(|v|matches!(v,Delta::Membership));
-        if (!admission&&selected.actor_id != request.owner_id) || selected.origin != request.origin {
+        let business_only = !request.body_keys_required && !request.missing.is_empty()
+            && request.missing.iter().all(|delta|matches!(delta,Delta::BusinessRole{..}));
+        if (!admission&&!business_only&&selected.actor_id != request.owner_id) || selected.origin != request.origin {
             return Err(local("APPROVER_IDENTITY_OR_ORIGIN_MISMATCH"));
         }
         let client =
@@ -280,7 +282,7 @@ impl Connect {
             let now = trusted_time(&client, &scope).await?;
             let workspace =
                 read(&client, "structure.workspace.get", scope.clone(), json!({})).await?;
-            if workspace["membership"]["role"] != "OWNER" {
+            if !business_only && workspace["membership"]["role"] != "OWNER" {
                 return Err(local("OWNER_APPROVAL_REQUIRED"));
             }
             let mut steps = Vec::new();
@@ -344,7 +346,7 @@ impl Connect {
                     &client,
                     "structure.grant.get",
                     s.clone(),
-                    json!({"actor_id":request.actor_id}),
+                    json!({"actor_id":request.actor_id,"view":"SUMMARY"}),
                 )
                 .await?;
                 let grant = &old["grant"];

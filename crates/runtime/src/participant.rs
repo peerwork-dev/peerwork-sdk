@@ -321,38 +321,26 @@ impl Capability {
         }
         Ok(())
     }
-    fn denied(&self, r: &Invoke) -> ParticipantError {
-        let mut restricted_by=Vec::new();
-        if !self.operations.contains(&r.action) { restricted_by.push("operations"); }
-        if r.scope.workspace_id.as_ref().is_some_and(|id|!allows(&self.workspace_ids,id)) || r.scope.workspace_id.is_none()&&!self.allow_root { restricted_by.push("workspace_ids"); }
-        if self.instance_ids.is_some() && r.scope.instance_id.as_ref().is_none_or(|id|!allows(&self.instance_ids,id)) { restricted_by.push("instance_ids"); }
-        if self.protocol_digests.is_some() && r.scope.protocol_digest.as_ref().is_none_or(|id|!allows(&self.protocol_digests,id)) { restricted_by.push("protocol_digests"); }
-        if r.action=="structure.action" && self.business_actions.as_ref().is_some_and(|values|r.body["action_id"].as_str().is_none_or(|v|!values.contains(v))) { restricted_by.push("business_actions"); }
-        if self.mailbox_ids.is_some() && (catalog::is_communication_action(&r.action)||r.action=="structure.members.read"&&r.body["view"].as_str().is_some_and(|v|v!="BASIC")) {restricted_by.push("mailbox_ids");}
-        if restricted_by.is_empty(){restricted_by.push("request_scope");}
+    fn denied(&self, r: &Invoke, restriction: &str) -> ParticipantError {
         let mut error=ParticipantError::local("LOCAL_SCOPE_DENIED","AUTHORIZATION");
         error.recovery="REVIEW_EXPLICIT_LOCAL_CAPABILITY".into();
-        error.details=Some(json!({"action":r.action,"scope":r.scope,"restricted_by":restricted_by,"next_actor":"LOCAL_RUNTIME_OWNER","remote_permission_checked":false}));
-        if r.action=="structure.members.read" {
-            let details=error.details.as_mut().unwrap();
-            details["required_client_scope"]=json!("WORKSPACE");
-            details["next_action"]=json!("SELECT_WORKSPACE_CLIENT_FROM_ORIGINAL_RUNTIME");
-        }
+        error.details=Some(json!({"action":r.action,"scope":r.scope,"restricted_by":[restriction],"next_actor":"LOCAL_RUNTIME_OWNER","remote_permission_checked":false}));
         error
     }
     pub fn authorize(&self, r: &Invoke) -> Result<()> {
         r.validate()?;
-        let denied = || self.denied(r);
+        let denied = || self.denied(r, "request_scope");
         if !self.operations.contains(&r.action) {
-            return Err(denied());
+            return Err(self.denied(r, "operations"));
         }
         if r.action=="structure.instance.records.read" {
             let instance=r.body["instance_id"].as_str().ok_or_else(denied)?;
-            if self.protocol_digests.is_some()||r.scope.protocol_digest.is_some()||r.scope.instance_id.is_some()
-                ||!allows(&self.instance_ids,instance)||r.scope.workspace_id.as_ref().is_none_or(|ws|!allows(&self.workspace_ids,ws)){return Err(denied());}
+            if self.protocol_digests.is_some(){return Err(self.denied(r,"protocol_digests"));}
+            if r.scope.protocol_digest.is_some()||r.scope.instance_id.is_some(){return Err(denied());}
+            if !allows(&self.instance_ids,instance){return Err(self.denied(r,"instance_ids"));}
+            if r.scope.workspace_id.as_ref().is_none_or(|ws|!allows(&self.workspace_ids,ws)){return Err(self.denied(r,"workspace_ids"));}
             return Ok(());
         }
-        if r.action=="structure.members.read" && self.mailbox_ids.is_some() && r.body["view"].as_str().is_some_and(|v|v!="BASIC") { return Err(denied()); }
         let communication = catalog::is_communication_action(&r.action);
         if communication {
             self.authorize_communication(r)?;
@@ -361,26 +349,26 @@ impl Capability {
             && (self.instance_ids.is_some() || self.protocol_digests.is_some())
             && !crate::participant_actions::instance_scoped(&r.action)
         {
-            return Err(denied());
+            return Err(self.denied(r, if self.instance_ids.is_some() {"instance_ids"} else {"protocol_digests"}));
         }
         match &r.scope.workspace_id {
-            None if !self.allow_root => return Err(denied()),
-            Some(id) if !allows(&self.workspace_ids, id) => return Err(denied()),
+            None if !self.allow_root => return Err(self.denied(r, "workspace_ids")),
+            Some(id) if !allows(&self.workspace_ids, id) => return Err(self.denied(r, "workspace_ids")),
             _ => {}
         }
         if let Some(id) = &r.scope.instance_id {
             if !allows(&self.instance_ids, id) {
-                return Err(denied());
+                return Err(self.denied(r, "instance_ids"));
             }
         } else if self.instance_ids.is_some() && !communication {
-            return Err(denied());
+            return Err(self.denied(r, "instance_ids"));
         }
         if let Some(id) = &r.scope.protocol_digest {
             if !allows(&self.protocol_digests, id) {
-                return Err(denied());
+                return Err(self.denied(r, "protocol_digests"));
             }
         } else if self.protocol_digests.is_some() && !communication {
-            return Err(denied());
+            return Err(self.denied(r, "protocol_digests"));
         }
         if r.action == "structure.action"
             && self
@@ -388,7 +376,7 @@ impl Capability {
                 .as_ref()
                 .is_some_and(|a| r.body["action_id"].as_str().is_none_or(|v| !a.contains(v)))
         {
-            return Err(denied());
+            return Err(self.denied(r, "business_actions"));
         }
         if catalog::has_body_instance_selector(&r.action) {
             if let Some(instance) = &r.scope.instance_id {
@@ -404,10 +392,10 @@ impl Capability {
         Ok(())
     }
     fn authorize_communication(&self, r: &Invoke) -> Result<()> {
-        let denied = || self.denied(r);
+        let denied = || self.denied(r, "request_scope");
         // A deliberately mailbox-narrowed credential cannot acquire access to
         // the entire shared room. Ordinary workspace clients have no such cap.
-        if r.action.starts_with("structure.conversation.") && self.mailbox_ids.is_some() {return Err(denied());}
+        if r.action.starts_with("structure.conversation.") && self.mailbox_ids.is_some() {return Err(self.denied(r, "mailbox_ids"));}
         let mailbox = |v: &Value| -> Result<()> {
             let id = v
                 .as_str()
@@ -416,15 +404,14 @@ impl Capability {
             if allows(&self.mailbox_ids, id) {
                 Ok(())
             } else {
-                Err(denied())
+                Err(self.denied(r, "mailbox_ids"))
             }
         };
         let instance = |v: &Value| -> Result<()> {
             let id = v["instance_id"].as_str().ok_or_else(denied)?;
             let protocol = v["protocol_digest"].as_str().ok_or_else(denied)?;
-            if !allows(&self.instance_ids, id) || !allows(&self.protocol_digests, protocol) {
-                return Err(denied());
-            }
+            if !allows(&self.instance_ids, id) {return Err(self.denied(r, "instance_ids"));}
+            if !allows(&self.protocol_digests, protocol) {return Err(self.denied(r, "protocol_digests"));}
             Ok(())
         };
         // Communication is independent of business instances. A client with a
@@ -432,7 +419,7 @@ impl Capability {
         if (self.instance_ids.is_some() || self.protocol_digests.is_some())
             && self.mailbox_ids.is_none()
         {
-            return Err(denied());
+            return Err(self.denied(r, "mailbox_ids"));
         }
         if r.action == "structure.communication.stream.get" {
             let scopes = r.body["scopes"]
@@ -442,7 +429,7 @@ impl Capability {
             for scope in scopes {
                 let ws = scope["workspace_id"].as_str().ok_or_else(denied)?;
                 if !allows(&self.workspace_ids, ws) {
-                    return Err(denied());
+                    return Err(self.denied(r, "workspace_ids"));
                 }
                 mailbox(&scope["mailbox_id"])?;
             }
@@ -478,7 +465,7 @@ impl Capability {
         {
             // These selectors do not establish a mailbox boundary. A future
             // handle convenience may narrow them; adding an ignored field cannot.
-            return Err(denied());
+            return Err(self.denied(r, "mailbox_ids"));
         } else if r.action.starts_with("structure.mailbox.")
             && r.action != "structure.mailbox.create"
         {
@@ -1981,4 +1968,20 @@ mod tests {
         );
         client.close().await.unwrap();
     }
+}
+
+#[cfg(test)]
+#[test]
+fn member_metadata_is_independent_of_explicit_outbound_mailboxes() {
+    let workspace="W".repeat(43);let scope=Scope{workspace_id:Some(workspace.clone()),..Default::default()};
+    let mut cap=Capability::owner();cap.allow_root=false;cap.workspace_ids=Some([workspace].into());cap.mailbox_ids=Some(["M".repeat(43)].into());
+    for view in ["BASIC","DELIVERY","COLLABORATION"] {
+        cap.authorize(&Invoke::new("metadata","structure.members.read",scope.clone(),json!({"view":view,"limit":2}))).unwrap();
+    }
+    let send=Invoke::new("send","structure.message.send",scope.clone(),json!({"recipients":[{"mailbox_id":"N".repeat(43)}]}));
+    let error=cap.authorize(&send).unwrap_err();assert_eq!(error.details.unwrap()["restricted_by"],json!(["mailbox_ids"]));
+    let mut child=cap.clone();child.mailbox_ids=None;assert!(!child.is_subset_of(&cap),"discovery must not widen recipient delegation");
+    cap.operations.remove("structure.members.read");
+    let error=cap.authorize(&Invoke::new("metadata","structure.members.read",scope,json!({"view":"COLLABORATION"}))).unwrap_err();
+    assert_eq!(error.details.as_ref().unwrap()["restricted_by"],json!(["operations"]));assert_eq!(error.details.unwrap()["remote_permission_checked"],false);
 }

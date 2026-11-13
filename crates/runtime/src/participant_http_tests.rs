@@ -4332,6 +4332,24 @@ async fn connect_consolidates_missing_rights_and_resumes_without_owner_profile_e
     let mut worker=Connect::open(&root.path().join("worker-local")).unwrap();
     worker.register("worker",Registration{origin:service.origin.clone(),actor_id:worker_config.expected_actor.clone(),endpoint_path:ready.client_endpoints["worker"].clone()}).await.unwrap();
     let request=ConnectRequest{ management: Vec::new(),setup_id:"worker-first".into(),participant:"worker".into(),workspace_id:ws,alias:"project".into(),send:true,receive:true,receive_mode:None,require_body_keys:false,request_membership:false,protocols:Vec::new(),contacts:Vec::new(),host:None};
+    let mut first_role=request.clone();first_role.setup_id="first-optional-role".into();
+    first_role.protocols.push(crate::participant_connect::ProtocolSelection{alias:"claim".into(),instance_id:adopted["instance_id"].as_str().unwrap().into(),role:"WORKER".into(),actions:Vec::new()});
+    let first_pending=worker.run(first_role.clone()).await.unwrap();
+    assert_eq!(first_pending["state"],"PENDING");assert_eq!(first_pending["tools_available"],true,"{first_pending}");
+    assert_eq!(first_pending["blocker"]["next_actor"],"PROTOCOL_MAINTAINER");
+    let first_tools=crate::agent_tools::AgentTools::open(worker.profile().unwrap().unwrap()).await.unwrap();
+    assert!(first_tools.call(crate::agent_tools::AgentRequest::parse("reachability",json!({})).unwrap()).await.unwrap()["members"].is_array());
+    assert_eq!(first_tools.call(crate::agent_tools::AgentRequest::Context).await.unwrap()["bindings"],json!([]));
+    drop(first_tools);
+    // Reproduce interruption between the baseline snapshot and active selection.
+    drop(worker);let path=root.path().join("worker-local/connect.state");
+    let store=crate::secure_state::SecureStateStore::open(&path).unwrap();
+    let mut interrupted:Value=serde_json::from_slice(&store.read_exact().unwrap().unwrap()).unwrap();
+    interrupted["active"]=Value::Null;interrupted["active_by_scope"]=json!({});
+    store.write_exact(&serde_json::to_vec(&interrupted).unwrap()).unwrap();drop(store);
+    let mut worker=Connect::open(&root.path().join("worker-local")).unwrap();
+    assert_eq!(worker.run(first_role).await.unwrap()["tools_available"],true);
+    assert!(worker.profile().unwrap().is_some(),"resume must restore baseline selection");
     let result=worker.run(request.clone()).await.unwrap();
     assert_eq!(result["state"],"LOCAL_CONFIGURED","{result}");assert_eq!(result["owner_exchange_required"],false);
     let mut owner=Connect::open(&root.path().join("owner-local")).unwrap();
@@ -4367,7 +4385,7 @@ async fn connect_consolidates_missing_rights_and_resumes_without_owner_profile_e
     assert_eq!(std::fs::read(receiver_path).unwrap(),original_receiver,"receiver repair changed credentials/custody");
     let mut role_request=request;role_request.setup_id="worker-role".into();
     role_request.protocols.push(crate::participant_connect::ProtocolSelection{alias:"claim".into(),instance_id:adopted["instance_id"].as_str().unwrap().into(),role:"WORKER".into(),actions:Vec::new()});
-    let pending=worker.run(role_request.clone()).await.unwrap();assert_eq!(pending["blocker"]["code"],"OWNER_APPROVAL_REQUIRED","{pending}");
+    let pending=worker.run(role_request.clone()).await.unwrap();assert_eq!(pending["blocker"]["code"],"AUTHORIZATION_REQUIRED","{pending}");
     let approved=owner.approve("owner","approve-role",serde_json::from_value(pending["details"]["authorization_request"].clone()).unwrap()).await.unwrap();
     assert_eq!(approved["state"],"APPROVED","{approved}");
     let role_result=worker.run(role_request).await.unwrap();assert_eq!(role_result["state"],"LOCAL_CONFIGURED","{role_result}");
@@ -4482,7 +4500,7 @@ async fn connect_send_only_accepts_body_keys_without_mailbox_and_preserves_lease
     assert!(boxes["result"]["structure"]["mailboxes"].as_array().unwrap().is_empty(),"send-only created a mailbox: {boxes}");
     assert_eq!(service.counts().await["actions"]["structure.communication.grant.set"],2,"key-only approval rewrote communication authority");
     let mut upgrade=request;upgrade.setup_id="receive-upgrade".into();upgrade.receive=true;
-    let pending=worker.run(upgrade.clone()).await.unwrap();assert_eq!(pending["blocker"]["code"],"OWNER_APPROVAL_REQUIRED","{pending}");
+    let pending=worker.run(upgrade.clone()).await.unwrap();assert_eq!(pending["blocker"]["code"],"AUTHORIZATION_REQUIRED","{pending}");
     let handoff=pending["details"]["authorization_request"].clone();assert_eq!(handoff["body_keys_required"],false);
     assert_eq!(handoff["missing"],json!([{"kind":"COMMUNICATION_RECEIVE"}]));
     service.config(json!({"drop_action":"structure.communication.grant.set"})).await;
@@ -4694,7 +4712,7 @@ async fn workspace_member_tools_need_no_contacts_preserve_limits_and_recover_nam
     assert_eq!(after["commands"].as_u64().unwrap()-before["commands"].as_u64().unwrap(),1);
     assert_eq!(before["journal_reads"],after["journal_reads"]);
     let mut narrow=cap.clone();narrow.mailbox_ids=Some(Default::default());let restricted=worker.restrict("mailbox-limited",narrow).unwrap();let limited=AgentTools::from_client(restricted,selection).unwrap();
-    let error=limited.call(AgentRequest::parse("reachability",json!({})).unwrap()).await.unwrap_err();assert_eq!(error.code,"LOCAL_SCOPE_DENIED");assert!(error.details.unwrap()["restricted_by"].as_array().unwrap().iter().any(|x|x=="mailbox_ids"));
+    let discovered=limited.call(AgentRequest::parse("reachability",json!({})).unwrap()).await.unwrap();assert_eq!(discovered["members"].as_array().unwrap().len(),1,"a mailbox limit is not a metadata limit");
     drop(limited);drop(tools);owner.close().await.unwrap();drop(worker);drop(owner);
     let runtime=RuntimeConfig{format:"peerwork.participant-runtime.v1".into(),state_directory:root.path().join("runtime"),hosts:vec![],
         engines:vec![EngineConfig{name:"original".into(),origin:cfg.origin.clone(),expected_actor:cfg.expected_actor.clone(),authority:cfg.authority.clone(),identity_path:cfg.identity_path.clone(),state_directory:cfg.state_directory.clone(),journal_path:Some(cfg.journal_path.clone()),allow_loopback_http:true,transport:cfg.transport.clone(),max_inflight:4,max_pending:64,max_stored_bytes:32*1024*1024,migration_sources:vec![]}],
@@ -4754,6 +4772,8 @@ mod tail_qualification;
 mod management;
 #[path="participant_protocol_upgrade_http_tests.rs"]
 mod protocol_upgrades;
+#[path="participant_collaboration_guard_http_tests.rs"]
+mod collaboration_guards;
 
 #[tokio::test(flavor="multi_thread",worker_threads=2)]
 #[ignore="requires local TEST PostgreSQL and real HTTP service"]
@@ -4818,10 +4838,16 @@ async fn unified_events_native_subscriptions_watch_consumption_and_exact_stop() 
     watch.consume(vec![DeliveryReference{sequence:item["sequence"].as_u64().unwrap(),delivery_id:item["delivery_id"].as_str().unwrap().into()}]).await.unwrap();
     watch_until(&mut watch,|s|!s.application_ack_pending).await;
     let after=selected(&owner,"structure.communication.event.get",&scope,json!({"event_sequence":seq})).await;assert_eq!(after["outcome"],"ALL_DELIVERED","{after}");
+    mutate(&owner,"disable-worker-receive","structure.communication.grant.set",&scope,json!({"actor_id":worker.actor_id(),"membership_id":member["membership_id"],"expected_revision":null,"send":true,"receive":false})).await;
+    let before_list=service.counts().await;
+    let listed=tools.call(AgentRequest::parse("subscriptions",json!({"mode":"list"})).unwrap()).await.unwrap();
+    assert_eq!(listed["subscriptions"].as_array().unwrap().len(),1,"{listed}");
+    assert_eq!(service.counts().await["actions"]["structure.mailboxes.read"],before_list["actions"]["structure.mailboxes.read"]);
     let mut stop=accepted["stop"]["arguments"].clone();stop["operation_id"]=json!("stop-original-selector");stop["wait_ms"]=json!(5000);
     let stopped=tools.call(AgentRequest::parse("subscriptions",stop.clone()).unwrap()).await.unwrap();assert_eq!(stopped["state"],"ACCEPTED","{stopped}");
     let again=tools.call(AgentRequest::parse("subscriptions",stop).unwrap()).await.unwrap();assert_eq!(again["command_id"],stopped["command_id"]);
     assert_eq!(tools.call(AgentRequest::parse("subscriptions",json!({})).unwrap()).await.unwrap()["subscriptions"].as_array().unwrap().len(),0);
+    assert_eq!(service.counts().await["actions"]["structure.mailboxes.read"],before_list["actions"]["structure.mailboxes.read"],"stop must reuse its exact mailbox");
     assert_eq!(service.counts().await["journal_reads"],0);
     drop(watch);drop(tools);worker.close().await.unwrap();owner.close().await.unwrap();
 }

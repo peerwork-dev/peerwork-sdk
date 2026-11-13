@@ -70,7 +70,7 @@ async fn managed_mcp_and_cli_repair_generated_directory_clients_without_replacin
     profile.endpoint_path=legacy.clone();profile.directory_endpoints.clear();
     let restricted=AgentTools::open(profile.clone()).await.unwrap();let baseline=service.counts().await;
     let error=restricted.call(AgentRequest::parse("reachability",json!({"workspace":ws})).unwrap()).await.unwrap_err();
-    assert_eq!(error.code,"LOCAL_SCOPE_DENIED");assert_eq!(error.details.as_ref().unwrap()["restricted_by"],json!(["operations","instance_ids","protocol_digests","mailbox_ids"]));
+    assert_eq!(error.code,"LOCAL_SCOPE_DENIED");assert_eq!(error.details.as_ref().unwrap()["restricted_by"],json!(["operations"]));
     assert_eq!(service.counts().await["commands"],baseline["commands"],"the original denial must not submit a request");
     drop(restricted);drop(connect);
     let store=crate::secure_state::SecureStateStore::open(&registry.join("connect.state")).unwrap();let mut state:Value=serde_json::from_slice(&store.read_exact().unwrap().unwrap()).unwrap();let active=state["active"].as_str().unwrap().to_owned();

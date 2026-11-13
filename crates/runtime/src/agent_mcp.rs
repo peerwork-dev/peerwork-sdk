@@ -153,7 +153,7 @@ impl Tools {
                 let alias=agent_tools::protocol_request_alias(&request).map(str::to_owned);let retry=request.clone();
                 let result=AgentTools::open(profile).await?.call(request).await;
                 let mut value=match result {
-                    Err(error)if agent_tools::refresh_workspace_error(&error).is_some()=>{
+                    Err(error)if agent_tools::refresh_workspace_error(&error).is_some() && crate::participant_connect::Connect::inspect(directory)?.workspace_profile_refreshable(self.handle.as_deref(),agent_tools::refresh_workspace_error(&error).unwrap())?=>{
                         let workspace=agent_tools::refresh_workspace_error(&error).unwrap();
                         if !crate::participant_connect::Connect::open(directory)?.refresh_workspace_profile(self.handle.as_deref(),workspace).await? {return Err(error);}
                         let next=crate::participant_connect::Connect::inspect(directory)?.profile_for_scope(self.handle.as_deref(),self.workspace.as_deref())?.ok_or_else(||ParticipantError::local("LOCAL_SELECTION_REQUIRED","CONNECT"))?;

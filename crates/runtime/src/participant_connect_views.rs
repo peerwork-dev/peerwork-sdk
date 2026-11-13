@@ -4,6 +4,48 @@ use super::*;
 use crate::agent_tools::{ProtocolView,ProtocolViewScope,MAX_PROTOCOL_VIEWS};
 const READS:&[&str]=&["structure.instance.records.read","structure.instance.get","structure.instance.resolve","structure.protocol.resolve","structure.protocol.resource.get","structure.record.get","structure.record.relations.read","structure.records.read"];
 impl Connect {
+    pub(crate) fn workspace_profile_refreshable(&self, participant:Option<&str>, workspace:&str)->Result<bool> {
+        let Some(handle)=self.selected_handle(participant)? else {return Ok(false);};
+        let Some(setup)=self.registry.active_by_scope.get(&format!("{handle}:{workspace}")).and_then(|id|self.registry.setups.get(id)) else {return Ok(false);};
+        Ok(Self::generated_authority_candidate(setup))
+    }
+    fn generated_authority_candidate(setup:&Setup)->bool {
+        setup.result["client_authority_model"]!="SERVICE_CURRENT" && !Self::explicit_setup(setup)
+            && setup.profile.as_ref().is_some_and(|profile|!profile.protocol_endpoints.keys().any(|alias|!setup.protocol_intents.contains_key(alias)&&!setup.desired.protocols.iter().any(|p|p.alias==*alias)))
+    }
+    pub(super) async fn establish_baseline(&mut self, request:&ConnectRequest, selected:&Registration, parent:&Capability, client:&RuntimeClient, membership:&str)->Result<()> {
+        if let Some(profile)=self.registry.setups[&request.setup_id].profile.as_ref() {
+            self.ensure_profile(&request.setup_id,profile)?;
+            let key=format!("{}:{}",request.participant,request.workspace_id);
+            if !self.registry.active_by_scope.contains_key(&key) {
+                self.registry.active_by_scope.insert(key,request.setup_id.clone());
+                self.registry.active=Some(request.setup_id.clone());self.save()?;
+            }
+            return Ok(());
+        }
+        let existing=self.registry.active_by_scope.get(&format!("{}:{}",request.participant,request.workspace_id))
+            .and_then(|id|self.registry.setups.get(id)).filter(|setup|setup.registration==*selected&&setup.profile.is_some()).cloned();
+        if let Some(existing)=existing {
+            let setup=self.registry.setups.get_mut(&request.setup_id).unwrap();
+            setup.profile=existing.profile;setup.sender_capability=existing.sender_capability;
+            setup.result["client_authority_model"]=existing.result["client_authority_model"].clone();
+            return self.save();
+        }
+        let (capability,endpoint)=self.workspace_client(&request.participant,&request.workspace_id,parent,client).await?;
+        let profile=AgentProfile{format:"peerwork.agent-profile.v1".into(),endpoint_path:endpoint.clone(),expected_origin:selected.origin.clone(),expected_actor:selected.actor_id.clone(),
+            workspaces:[(request.alias.clone(),request.workspace_id.clone())].into(),
+            send_scopes:[(request.alias.clone(),SendScope{workspace_id:request.workspace_id.clone(),membership_id:membership.into()})].into(),
+            directory_endpoints:[(request.workspace_id.clone(),endpoint)].into(),
+            protocols:Default::default(),protocol_endpoints:Default::default(),scopes:Default::default(),contacts:Default::default(),receive_endpoint_path:None,
+            recovery_views:Default::default(),protocol_views:Default::default(),management_views:Default::default()};
+        profile.validate()?;
+        let setup=self.registry.setups.get_mut(&request.setup_id).unwrap();
+        setup.profile=Some(profile.clone());setup.sender_capability=Some(capability);setup.result["client_authority_model"]=json!("SERVICE_CURRENT");
+        self.save()?;
+        self.ensure_profile(&request.setup_id,&profile)?;
+        self.registry.active_by_scope.insert(format!("{}:{}",request.participant,request.workspace_id),request.setup_id.clone());
+        self.registry.active=Some(request.setup_id.clone());self.save()
+    }
     pub(crate) async fn refresh_workspace_profile(&mut self,participant:Option<&str>,workspace:&str)->Result<bool>{
         self.require_writer()?;
         let handle=self.selected_handle(participant)?.ok_or_else(||local("LOCAL_SELECTION_REQUIRED"))?;
@@ -24,7 +66,7 @@ impl Connect {
     }
     pub(super) async fn normalize_cached_authority(&mut self,id:&str)->Result<String>{
         let old=self.registry.setups[id].clone();
-        if old.result["client_authority_model"]=="SERVICE_CURRENT"||old.profile.is_none()||Self::explicit_setup(&old){return Ok(id.into());}
+        if !Self::generated_authority_candidate(&old){return Ok(id.into());}
         let previous=old.profile.as_ref().unwrap();
         // Unknown/custom aliases are not proof of software-generated ceilings.
         if previous.protocol_endpoints.keys().any(|alias|!old.protocol_intents.contains_key(alias)&&!old.desired.protocols.iter().any(|p|p.alias==*alias)){return Ok(id.into());}

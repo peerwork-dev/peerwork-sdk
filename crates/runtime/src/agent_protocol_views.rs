@@ -6,19 +6,19 @@ impl AgentTools {
         let _=action;
         Ok(self.directory_client(scope.workspace_id.as_deref().ok_or_else(||invalid("WORKSPACE_ALIAS_UNKNOWN"))?))
     }
-    pub(super) async fn original_protocol_operation(&self,alias:&str,id:&str)->Result<Option<(&Client,Scope,Option<&str>,Value)>>{
+    pub(super) async fn original_protocol_operation(&self,alias:&str,id:&str)->Result<Option<(&Client,Scope,Option<(&str,&str)>,Value)>>{
         let target=self.protocol(alias)?;let mut found=None;let mut seen=std::collections::BTreeSet::new();
         for(view_id,view)in self.profile.protocol_views.iter().filter(|(_,v)|!v.read_only&&v.scope.workspace_id==target.workspace_id&&v.scope.instance_id==target.instance_id){
             let client=self.protocol_view_clients.get(view_id).ok_or_else(||invalid("PROTOCOL_VIEW_RECOVERY_REQUIRED"))?;
             let binding=view.binding.to_string();if !seen.insert(binding){continue;}
             match client.call(json!({"method":"operation","operation_id":id})).await {
-                Ok(value)=>{let scope:Scope=serde_json::from_value(value.get("scope").cloned().unwrap_or_else(||json!(view.scope))).map_err(|_|invalid("ORIGINAL_OPERATION_SCOPE_INVALID"))?;if scope.workspace_id!=target.workspace_id||scope.instance_id!=target.instance_id{continue;}if found.is_some(){return Err(invalid("OPERATION_SCOPE_AMBIGUOUS_USE_PROTOCOL_VIEW"));}found=Some((client,scope,Some(view_id.as_str()),value));},
+                Ok(value)=>{let scope:Scope=serde_json::from_value(value.get("scope").cloned().unwrap_or_else(||json!(view.scope))).map_err(|_|invalid("ORIGINAL_OPERATION_SCOPE_INVALID"))?;if scope.workspace_id!=target.workspace_id||scope.instance_id!=target.instance_id{continue;}if found.is_some(){return Err(invalid("OPERATION_SCOPE_AMBIGUOUS_USE_PROTOCOL_VIEW"));}found=Some((client,scope,Some(("protocol_view",view_id.as_str())),value));},
                 Err(e)if e.code=="OPERATION_NOT_FOUND"=>(),Err(e)=>return Err(e),
             }
         }
         for(candidate,scope)in self.profile.protocols.iter().filter(|(_,scope)|scope.workspace_id==target.workspace_id&&scope.instance_id==target.instance_id){
         let client=self.protocol_client(candidate)?;
-        let binding=if client.attached_mode(){format!("attached:{client:p}")}else{crate::communication_runtime::canonical_binding(&client.call(json!({"method":"binding"})).await?).to_string()};
+        let binding=if let Some(binding)=client.attached_namespace_binding(){binding}else{crate::communication_runtime::canonical_binding(&client.call(json!({"method":"binding"})).await?).to_string()};
         if seen.insert(binding) {
             match client.call(json!({"method":"operation","operation_id":id})).await{
                 Ok(value)=>{let original:Scope=serde_json::from_value(value.get("scope").cloned().unwrap_or_else(||json!(scope))).map_err(|_|invalid("ORIGINAL_OPERATION_SCOPE_INVALID"))?;if original.workspace_id!=target.workspace_id||original.instance_id!=target.instance_id{continue;}if found.is_some(){return Err(invalid("OPERATION_SCOPE_AMBIGUOUS_USE_PROTOCOL_VIEW"));}found=Some((client,original,None,value));},
@@ -26,9 +26,19 @@ impl AgentTools {
             }
         }
         }
+        for (view_id, (workspace, client)) in self.recovery_clients.iter().filter(|(_, (workspace, _))|target.workspace_id.as_deref()==Some(workspace)) {
+            let _=workspace;
+            let binding=crate::communication_runtime::canonical_binding(&client.call(json!({"method":"binding"})).await?).to_string();
+            if !seen.insert(binding){continue;}
+            let value=match client.call(json!({"method":"operation","operation_id":id})).await{Ok(value)=>value,Err(e)if e.code=="OPERATION_NOT_FOUND"=>continue,Err(e)=>return Err(e)};
+            let scope:Scope=serde_json::from_value(value["scope"].clone()).map_err(|_|invalid("ORIGINAL_OPERATION_SCOPE_INVALID"))?;
+            if scope.workspace_id!=target.workspace_id||scope.instance_id!=target.instance_id{continue;}
+            if found.is_some(){return Err(invalid("OPERATION_SCOPE_AMBIGUOUS_USE_PROTOCOL_VIEW"));}
+            found=Some((client,scope,Some(("recovery_view",view_id.as_str())),value));
+        }
         Ok(found)
     }
-    pub(super) async fn action_protocol_route(&self,alias:&str,request:&Invoke)->Result<(&Client,Invoke,Option<&str>)>{
+    pub(super) async fn action_protocol_route(&self,alias:&str,request:&Invoke)->Result<(&Client,Invoke,Option<(&str,&str)>)>{
         let fallback=self.protocol_client(alias)?;
         let value=fallback.call(json!({"method":"capabilities"})).await?;
         let cap:crate::participant::Capability=serde_json::from_value(value["capability"].clone()).map_err(|_|invalid("LOCAL_CEILING_INVALID"))?;

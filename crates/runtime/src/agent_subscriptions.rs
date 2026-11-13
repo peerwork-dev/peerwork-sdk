@@ -12,10 +12,8 @@ impl AgentTools {
         let workspace=self.selected_workspace(workspace.as_deref())?;
         let client=self.directory_client(&workspace);
         let scope=Scope{workspace_id:Some(workspace.clone()),..Default::default()};
-        let boxes=self.read_client(client,"structure.mailboxes.read",scope.clone(),json!({"limit":8})).await?;
-        let mailbox=boxes["mailboxes"].as_array().and_then(|v|v.iter().find(|b|b["name"]=="default")).and_then(|v|v["mailbox_id"].as_str()).ok_or_else(||invalid("DEFAULT_MAILBOX_REQUIRED"))?;
         if mode=="list" {
-            let mut value=self.read_client(client,"structure.communication.subscriptions.read",scope,json!({"mailbox_id":mailbox,"limit":32})).await?;
+            let mut value=self.read_client(client,"structure.communication.subscriptions.read",scope,json!({"limit":32})).await?;
             if let Some(items)=value["subscriptions"].as_array_mut(){
                 for item in items {
                     item["stop"]=stop_arguments(&workspace,self.client.actor_id(),item);
@@ -30,12 +28,14 @@ impl AgentTools {
             let decoded=peerwork_core::crypto::decode_base64url(&handle).map_err(|_|invalid("SUBSCRIPTION_STOP_HANDLE_INVALID"))?;
             if decoded.len()>16384{return Err(invalid("SUBSCRIPTION_STOP_HANDLE_INVALID"));}
             let selected:Value=serde_json::from_slice(&decoded).map_err(|_|invalid("SUBSCRIPTION_STOP_HANDLE_INVALID"))?;
-            if selected["format"]!="peerwork.subscription-stop.v1"||selected["workspace_id"]!=workspace||selected["actor_id"]!=self.client.actor_id()||selected["body"]["mailbox_id"]!=mailbox{return Err(invalid("SUBSCRIPTION_STOP_HANDLE_SCOPE_MISMATCH"));}
+            if selected["format"]!="peerwork.subscription-stop.v1"||selected["workspace_id"]!=workspace||selected["actor_id"]!=self.client.actor_id()||!selected["body"]["mailbox_id"].as_str().is_some_and(token){return Err(invalid("SUBSCRIPTION_STOP_HANDLE_SCOPE_MISMATCH"));}
             let old=&selected["body"];
             let mut body=json!({"state":"STOPPED"});
             for field in ["subscription_id","mailbox_id","expected_revision","instance_id","protocol_digest","actions","kinds","schemas","include_self","actor_id"] {body[field]=old[field].clone();}
             body
         } else {
+            let boxes=self.read_client(client,"structure.mailboxes.read",scope.clone(),json!({"limit":8})).await?;
+            let mailbox=boxes["mailboxes"].as_array().and_then(|v|v.iter().find(|b|b["name"]=="default")).and_then(|v|v["mailbox_id"].as_str()).ok_or_else(||invalid("DEFAULT_MAILBOX_REQUIRED"))?;
             let id=subscription_id.unwrap_or_else(||base64url(&sha256(json!(["peerwork.subscription.v1",self.client.actor_id(),workspace,operation]).to_string().as_bytes())));
             if !token(&id){return Err(invalid("SUBSCRIPTION_ID_INVALID"));}
             let mut selected=json!({"subscription_id":id,"mailbox_id":mailbox,"expected_revision":expected_revision,"state":"ACTIVE","kinds":if kinds.is_empty()&&protocol.is_some(){vec!["action.accepted".to_owned()]}else{kinds},"actions":actions,"schemas":schemas});
