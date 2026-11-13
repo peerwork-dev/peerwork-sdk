@@ -330,13 +330,13 @@ struct Failure {
 }
 impl Failure {
     fn capacity(&self) -> bool {
-        !self.no_effect && matches!(self.code.as_str(),
+        matches!(self.code.as_str(),
             "RESOURCE_EXHAUSTED" | "CAPACITY_RESERVATION_EXHAUSTED")
     }
     fn for_receiver(mut self) -> Self {
-        // A resource diagnostic is not a terminal signed outcome. Maintenance
-        // may probe again; an uncertain claim still uses its frozen command ID.
-        // Do not change the general business-operation recovery contract.
+        // One command may be terminal without ending receiver maintenance.
+        // A definite refusal rotates a claim; an uncertain claim keeps its ID.
+        // General business-operation recovery is unchanged.
         self.retryable |= self.capacity();
         self
     }
@@ -368,16 +368,15 @@ fn result(
             )
             .map_err(|_| Failure::code("RESULT_INVALID"))?;
             if value.outcome_state() == "REJECTED" {
-                return Err(Failure {
+                Err(Failure {
                     no_effect: data["status"] == "REJECTED_NO_EFFECT",
                     code: data["error"]["code"]
                         .as_str()
                         .unwrap_or("SERVICE_REFUSED")
                         .into(),
                     retryable: false,
-                });
-            }
-            Ok(data)
+                })
+            } else {Ok(data)}
         }
         Ok(StructureIntentOutcome::Pending {
             code, retryable, ..
@@ -871,7 +870,7 @@ pub(crate) async fn run(
                                 })();
                                 match parsed.and_then(|p|{store.register(&p)?;Ok(p)}){Ok(p)=>{s.binding.pins=Some(p);s.state("CLAIMED",None);},Err(e)=>s.fail(Failure{no_effect:false,code:e.code,retryable:false})}
                             },Err(mut e)=>{
-                                if e.no_effect&&e.code=="MAILBOX_RECEIVER_BUSY"{
+                                if e.no_effect&&(e.code=="MAILBOX_RECEIVER_BUSY"||e.capacity()){
                                     e.retryable=true;
                                     // A late refusal after Stop stays in the original journal;
                                     // reattach can verify it again before advancing selection.
@@ -1594,7 +1593,8 @@ mod reliability_tests {
             assert_eq!(s.code.as_deref(),Some("MAILBOX_EPOCH_MISMATCH"));
         }
         let signed_refusal=Failure{no_effect:true,code:"RESOURCE_EXHAUSTED".into(),retryable:false}.for_receiver();
-        assert!(!signed_refusal.retryable,"a signed terminal result cannot become an uncertain retry");
+        assert!(signed_refusal.retryable,"a terminal resource refusal does not end receiver maintenance");
+        assert!(signed_refusal.no_effect,"classification must retain confirmed refusal for safe claim rotation");
         assert_eq!(receiver_retry_delay(1,true),Duration::from_secs(2));
         assert_eq!(receiver_retry_delay(2,true),Duration::from_secs(4));
         assert_eq!(receiver_retry_delay(u8::MAX,true),Duration::from_secs(30));

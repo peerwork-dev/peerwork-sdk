@@ -93,6 +93,7 @@ receiving mailbox.
 | Missing body key | Complete the existing key request or synchronization; do not replace the identity or invent a new communication grant. |
 | Read timeout/unavailable | The observation is unavailable. It does not prove a record, Peer or reply is absent and does not trigger a new Connect flow. |
 | Unknown submitted effect | Keep `operation_id` and returned `recovery_arguments`. Recover the original intent, rather than submit a replacement. |
+| Receiver `RESOURCE_EXHAUSTED` | Maintenance backs off and probes automatically. A signed no-effect refusal ends that maintenance command, not the receiver. Confirmed rejected claims get a fresh command ID; unknown claims retain the frozen ID. Identity, checkpoint, ACK facts and host binding remain unchanged. |
 | Optional host/receiver failure | Use the reported receiving/host blocker. Other authorized tools remain usable; successful sending does not prove model wake. |
 
 Signatures, encrypted-body authentication, actor/Origin/Space binding, original

@@ -45,7 +45,7 @@ const app=createPostgresControlApp(f.kernel,{source:()=> '127.0.0.1'});
 let offline=false,dropAction=null,delayName=null,delayAction=null,release=null,streamDurationOnce=0;
 let rejectNextRebindMailbox=null,corruptFrame=null,keyDelayWorkspace=null,delayMailbox=null;
 let keyDelayMs=0,earlyEofCount=0,timeoutAction=null;const timeoutReleases=new Set();
-let resourceRefusal=null;
+let resourceRefusal=null;const signedResourceRefusals=new Map();
 const counts={commands:0,discovery:0,context:0,journal_reads:0,dropped:0,native_streams:0,corrupted_frames:0,delayed_keys:0,delayed:0,delayed_completed:0,members_batches:0,grant_batches:0,claim_commands:[],actions:{},ack_batches:{RECEIVER_STORED:{requests:0,items:0,max:0},APPLICATION_CONSUMED:{requests:0,items:0,max:0}},command_request_bytes:0,command_response_bytes:0,sse_bytes:0};
 const commandIds=new Set();
 // Explicit maintainer measurement only. Buffer closed metadata in memory and
@@ -115,8 +115,22 @@ const handle=async request=>{
   if(command.action_id==='structure.members.read'&&Array.isArray(command.body.actor_ids))counts.members_batches++;
   if(command.action_id==='structure.grant.get'&&Array.isArray(command.body.actor_ids))counts.grant_batches++;
   if(command.action_id==='structure.mailbox.claim')counts.claim_commands.push({command_id:command.command_id,receiver_id:command.body.receiver_id,replace:command.body.replace,expected_epoch:command.body.expected_epoch});
+  const refusalKey=command.actor_id+':'+command.command_id;
+  if(signedResourceRefusals.has(refusalKey)){
+   counts.replayed_signed_resource_refusals=(counts.replayed_signed_resource_refusals??0)+1;
+   return Response.json(signedResourceRefusals.get(refusalKey));
+  }
   if(resourceRefusal?.action===command.action_id){
    counts.resource_refusals=(counts.resource_refusals??0)+1;
+   if(resourceRefusal.signed===true){
+    // Use the actual service receipt producer. A rejected command stays
+    // rejected after capacity returns, just like a durable terminal outcome.
+    if(signedResourceRefusals.size>=128)throw Error('synthetic refusal bound');
+    const response=f.kernel.response(command,hash(envelope.jws),{profile:'backend-structure-v1',assurance:'BACKEND_CURRENT_STATE',workspace_id:command.workspace_id,instance_id:command.instance_id,protocol_digest:command.protocol_digest,status:'REJECTED_NO_EFFECT',effect_certainty:'NOT_APPLIED',error:{phase:'EXECUTION',code:resourceRefusal.code,retryable:false,recovery:'NEW_INTENT_REQUIRED'},author_intent:envelope.jws});
+    signedResourceRefusals.set(refusalKey,response);
+    counts.signed_resource_refusals=(counts.signed_resource_refusals??0)+1;
+    return Response.json(response);
+   }
    return Response.json({error:{code:resourceRefusal.code}},{status:429});
   }
   if(command.action_id==='structure.mailbox.claim'&&command.body.replace===true&&command.body.mailbox_id===rejectNextRebindMailbox){

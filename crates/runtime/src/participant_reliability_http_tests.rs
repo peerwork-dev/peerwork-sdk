@@ -111,6 +111,14 @@ async fn managed_mcp_and_cli_repair_generated_directory_clients_without_replacin
 #[tokio::test(flavor="multi_thread",worker_threads=2)]
 #[ignore="requires explicit synthetic PostgreSQL and real product HTTP fixture"]
 async fn receiver_capacity_recovers_claim_pulse_ack_and_stream_without_replacing_identity_or_cursor() {
+    receiver_capacity_recovery(false).await;
+}
+#[tokio::test(flavor="multi_thread",worker_threads=2)]
+#[ignore="requires explicit synthetic PostgreSQL and real product HTTP fixture"]
+async fn signed_resource_refusals_resume_receiver_maintenance_without_rebinding() {
+    receiver_capacity_recovery(true).await;
+}
+async fn receiver_capacity_recovery(signed:bool) {
     for (action,code) in [
         ("structure.mailbox.get","RESOURCE_EXHAUSTED"),
         ("structure.mailbox.claim","RESOURCE_EXHAUSTED"),
@@ -133,11 +141,11 @@ async fn receiver_capacity_recovers_claim_pulse_ack_and_stream_without_replacing
         mutate(&client,"key-capacity","structure.content-key.set",&scope,json!({"key_id":key,"expected_epoch":0,"expected_head_revision":null})).await;
         let options=WatchOptions{workspace_id:ws,mailbox_id:mailbox["mailbox_id"].as_str().unwrap().into(),membership_id:mailbox["membership_id"].as_str().unwrap().into(),consumer_id:"capacity-receiver".into(),host_destination:None};
         let initial=matches!(action,"structure.mailbox.get"|"structure.mailbox.claim");
-        if initial { service.config(json!({"resource_refusal":{"action":action,"code":code}})).await; }
+        if initial { service.config(json!({"resource_refusal":{"action":action,"code":code,"signed":signed}})).await; }
         let mut watch=client.watch(options.clone()).await.unwrap();
         let before=if initial {watch.page(0,32).await.unwrap()} else {watch_until(&mut watch,|s|s.receiver_link_verified).await};
         if !initial {
-            service.config(json!({"resource_refusal":{"action":action,"code":code},"close_connections":action=="structure.communication.stream.get"})).await;
+            service.config(json!({"resource_refusal":{"action":action,"code":code,"signed":signed},"close_connections":action=="structure.communication.stream.get"})).await;
         }
         let sent=structure(&client.invoke(native_message("during-capacity",&scope,&mailbox,&mailbox,&"v".repeat(43),"recover-original-delivery"),Duration::from_secs(5)).await.unwrap());
         let ack=action=="structure.mailbox.ack";
@@ -161,7 +169,13 @@ async fn receiver_capacity_recovers_claim_pulse_ack_and_stream_without_replacing
         let current=selected(&client,"structure.mailbox.get",&scope,json!({"mailbox_id":options.mailbox_id})).await;
         assert_eq!(current["mailbox"]["epoch"],1,"capacity recovery must preserve the original receiver generation");
         let claims=service.counts().await["claim_commands"].as_array().unwrap().clone();
-        assert!(claims.iter().all(|v|v["command_id"]==claims[0]["command_id"]&&v["receiver_id"]==claims[0]["receiver_id"]&&v["replace"]==false),"unknown claim attempts must retain their frozen command and receiver IDs");
+        assert!(claims.iter().all(|v|v["receiver_id"]==claims[0]["receiver_id"]&&v["replace"]==false),"receiver identity and destination remain unchanged");
+        if signed&&action=="structure.mailbox.claim" {
+            assert!(claims.iter().any(|v|v["command_id"]!=claims[0]["command_id"]),"a confirmed rejected claim needs a fresh maintenance command, not terminal replay");
+        } else {
+            assert!(claims.iter().all(|v|v["command_id"]==claims[0]["command_id"]),"unknown claim attempts must retain their frozen command ID");
+        }
+        if signed {assert!(service.counts().await["signed_resource_refusals"].as_u64().unwrap_or(0)>0);assert_eq!(service.counts().await["replayed_signed_resource_refusals"].as_u64().unwrap_or(0),0,"terminal resource refusals must not be replayed as new maintenance");}
         client.close().await.unwrap();
     }
 }
