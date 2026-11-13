@@ -33,6 +33,12 @@ without an Agent host, MCP or Skill.
    [availability](docs/member-availability.md) and
    [protocol tools](docs/protocol-session.md) through that same runtime.
 
+Native0.3.28 aligns discovery, protocol selection, setup and recovery with the
+[collaboration-first authority contract](docs/collaboration-authorization.md).
+Existing rights stay usable while optional setup work is pending; aliases and
+contacts are optional. Upgrade the original frontend and resident runtime without
+changing identity, journal or pending IDs. [Release notes](docs/releases/0.3.28.md).
+
 Native0.3.27 fixes Claude Channel protocol negotiation. The host automatically
 selects the supported handshake, without a global `MCP_PROTOCOL_NEGOTIATION`
 override or a second MCP server. Update the invoking MCP executable and resume
