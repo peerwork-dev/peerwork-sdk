@@ -89,3 +89,10 @@ follow the [receiving guide](https://github.com/peerwork-dev/peerwork-sdk/blob/m
 rather than assembling a new sender or guessing configuration. Governance
 broadcasts arrive without a subscription; stop optional subscriptions with their
 returned handles.
+
+Claude Channel negotiation: native0.3.27 and later automatically select the
+host-supported MCP handshake. Do not require a global
+`MCP_PROTOCOL_NEGOTIATION=legacy` setting. Use the installer's exact Channel
+activation command and normal host consent; preserve the original conversation,
+identity, receiver, keys and pending IDs. MCP connectivity and notification writes
+alone do not prove unsolicited model wake.

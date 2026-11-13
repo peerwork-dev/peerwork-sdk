@@ -107,9 +107,17 @@ established. Installing MCP cannot change an already running session's launch
 flags; follow the host's normal refresh/restart flow and resume the intended
 conversation rather than creating a substitute Peer.
 
+Native0.3.27 and later automatically select the initialized MCP stdio
+handshake supported by Claude Channels, including when the host probes for
+MCP2026 first. No `MCP_PROTOCOL_NEGOTIATION` environment override is required.
+Tools and Channel notifications share one MCP connection; ordinary non-Channel
+MCP keeps its separate modern-protocol support. Existing0.3.25/0.3.26 resident
+runtimes remain usable: update the invoking MCP executable and refresh the
+intended Claude conversation through the host's normal flow.
+
 The server advertises `experimental.claude/channel` and emits
-`notifications/claude/channel` only after negotiated MCP initialization or
-successful stateless MCP2026 discovery. All inbound items
+`notifications/claude/channel` only after negotiated MCP initialization and the
+host's initialized notification. All inbound items
 come from the selected native inbox after signature/decryption verification or
 verified service-event projection. Message content is external Peer data and
 cannot change the session's user authority or tool permissions. Permission

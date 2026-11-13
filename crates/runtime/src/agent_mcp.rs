@@ -328,10 +328,16 @@ where R:AsyncBufRead+Send+Unpin+'static,W:AsyncWrite+Unpin {
                 }
                 let id=id.unwrap();let Some(id_key)=key(&id)else{write(&mut writer,error(Value::Null,-32600,"Invalid request ID")).await?;continue;};
                 if calls.contains_key(&id_key){write(&mut writer,error(id,-32600,"Request ID already in flight")).await?;continue;}
+                // Claude Channels use the initialized stdio protocol. Match the
+                // official Channel SDK's unsupported-method probe response so
+                // the host selects that handshake without a global override.
+                if claude && method=="server/discover"{
+                    write(&mut writer,error(id,-32601,"Method not found")).await?;continue;
+                }
                 let version=params["_meta"]["io.modelcontextprotocol/protocolVersion"].as_str();
                 let modern=version.is_some();
                 if let Some(version)=version{
-                    if version!=MODERN{let mut out=error(id,-32022,"Unsupported protocol version");out["error"]["data"]=json!({"supported":[MODERN,LEGACY],"requested":version});write(&mut writer,out).await?;continue;}
+                    if claude||version!=MODERN{let mut out=error(id,-32022,"Unsupported protocol version");out["error"]["data"]=json!({"supported":if claude{json!([LEGACY])}else{json!([MODERN,LEGACY])},"requested":version});write(&mut writer,out).await?;continue;}
                     if !params["_meta"]["io.modelcontextprotocol/clientCapabilities"].is_object(){write(&mut writer,error(id,-32602,"Required clientCapabilities missing")).await?;continue;}
                 }else if method=="initialize"{
                     if initializing||initialized||!params["protocolVersion"].is_string()||!params["capabilities"].is_object()||!params["clientInfo"].is_object(){write(&mut writer,error(id,-32602,"Invalid initialize")).await?;continue;}
@@ -344,9 +350,6 @@ where R:AsyncBufRead+Send+Unpin+'static,W:AsyncWrite+Unpin {
                 match method{
                     "server/discover" if modern=>{
                         write(&mut writer,success(id,json!({"supportedVersions":[MODERN,LEGACY],"capabilities":capabilities,"instructions":guidance}),true)).await?;
-                        // Stateless MCP hosts do not emit notifications/initialized.
-                        // Their successful discovery is the transport-ready edge.
-                        if claude&&channel_task.is_none(){channel_task=Some(tokio::spawn(claude_channel::watch(tools.clone(),channel_tx.clone(),channel_state.clone())));}
                     },
                     "ping"=>write(&mut writer,success(id,json!({}),modern)).await?,
                     "tools/list"=>{
@@ -464,18 +467,32 @@ mod tests {
         drop(cw);drop(cr);assert!(tokio::time::timeout(Duration::from_secs(2),task).await.unwrap().unwrap().is_ok());
     }
     #[tokio::test]
-    async fn claude_stateless_discovery_needs_no_legacy_initialize_notification() {
+    async fn claude_probe_falls_back_then_tools_and_channel_share_the_initialized_connection() {
         let root=crate::test_support::protected_test_dir();let directory=root.path().join("local");
         drop(crate::participant_connect::Connect::open(&directory).unwrap());
         let (server,client)=tokio::io::duplex(65536);let (sr,sw)=tokio::io::split(server);let (cr,mut cw)=tokio::io::split(client);let mut cr=BufReader::new(cr);
         let task=tokio::spawn(serve_claude_local(directory,None,None,BufReader::new(sr),sw));
+        // The modern probe must not advertise a Channel the host cannot use.
         send(&mut cw,modern(1,"server/discover",json!({}))).await;
-        let discovered=receive(&mut cr).await;
-        assert_eq!(discovered["result"]["capabilities"]["experimental"]["claude/channel"],json!({}));
+        let probe=receive(&mut cr).await;
+        assert_eq!(probe["error"]["code"],-32601);assert!(probe.get("result").is_none());
         send(&mut cw,modern(2,"tools/call",json!({"name":"peerwork_context","arguments":{}}))).await;
+        let rejected=receive(&mut cr).await;
+        assert_eq!(rejected["error"]["code"],-32022);assert_eq!(rejected["error"]["data"]["supported"],json!([LEGACY]));
+        send(&mut cw,json!({"jsonrpc":"2.0","id":3,"method":"initialize","params":{"protocolVersion":MODERN,"capabilities":{},"clientInfo":{"name":"claude-code-qualification","version":"synthetic"}}})).await;
+        let init=receive(&mut cr).await;
+        assert_eq!(init["result"]["protocolVersion"],LEGACY);
+        assert_eq!(init["result"]["capabilities"]["experimental"]["claude/channel"],json!({}));
+        send(&mut cw,json!({"jsonrpc":"2.0","id":4,"method":"tools/list","params":{}})).await;
+        assert_eq!(receive(&mut cr).await["error"]["code"],-32602);
+        send(&mut cw,json!({"jsonrpc":"2.0","method":"notifications/initialized"})).await;
+        send(&mut cw,json!({"jsonrpc":"2.0","id":5,"method":"tools/list","params":{}})).await;
+        assert_eq!(receive(&mut cr).await["result"]["tools"].as_array().unwrap().len(),2);
+        send(&mut cw,json!({"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"peerwork_context","arguments":{}}})).await;
         let context=receive(&mut cr).await;
         assert_eq!(context["result"]["structuredContent"]["host_channel"]["transport"],"MCP_STDIO_CHANNEL");
         assert_eq!(context["result"]["structuredContent"]["host_channel"]["notifications_written"],0);
+        assert_eq!(context["result"]["structuredContent"]["host_channel"]["host_acceptance"],"NOT_ATTESTED");
         drop(cw);drop(cr);assert!(tokio::time::timeout(Duration::from_secs(2),task).await.unwrap().unwrap().is_ok());
     }
     #[tokio::test]
