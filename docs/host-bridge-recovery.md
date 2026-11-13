@@ -35,8 +35,11 @@ credentials. An old observation becomes UNKNOWN; it cannot prove current health.
 | HOST_ACCEPTANCE_UNRESOLVED | The original attempt might have been accepted. Keep its evidence unchanged, probe any available receipt, and schedule controlled same-message delivery while the item remains unhandled. Unknown does not mean not sent. |
 | STALLED_TERMINATION | An owned helper could not yet be proven terminal. The writer fence stays held; a second writer is not started. |
 
-Historical unknown calls retain their original destination/binding and authorized
-namespace. Their facts survive restart and rebind. They do not become another
+Live unknown calls retain their original destination/binding and authorized
+namespace. Their facts survive restart and rebind. Native 0.3.30 bounds local
+retention after reporting, generation fencing or exact consumption; see
+[notification state retention](notification-state-retention.md). Retirement never
+invents a host result. They do not become another
 client's obligation. If the actual host provides no authoritative readback, the original attempt
 remains unknown. That fact no longer permanently stops its notification:
 a separate durable attempt reuses the exact frozen message ID, input and target.
@@ -47,7 +50,8 @@ replayed by the delivery scheduler and retain their own operation IDs.
 Each delivery obligation is independent of attempt evidence. Exact local
 application consumption ends automatic notification attempts and releases the
 ordered lane without fabricating HOST_ACCEPTED or claiming model completion.
-A late original receipt refines only that original attempt. It cannot overwrite
+Before local evidence retirement, a late original receipt refines only that
+original attempt. It cannot overwrite
 the current successor or its lane. Old binding versions cannot be retried against
 a new receiver, membership or destination.
 
@@ -77,7 +81,9 @@ coordinator. Cached authenticated health remains readable during host or ledger
 waits. Existing persisted receipts remain queryable while the host is offline.
 A missing-call negative receipt still writes a serialized durable tombstone;
 it is never invented from a cached health result. Pending result writes retry
-without resending an accepted input. Queue/capacity pressure remains explicit.
+without resending an accepted input. Queue/capacity pressure remains explicit. Native 0.3.30 compacts legacy local
+notification evidence and performs retirement even while new-input admission is
+full; preserve the original state when upgrading both Runtime and bridge.
 
 Codex uses its supported existing-session API. Managed AGY stdio reuses its one
 explicit owned process and retains it after an input-acknowledgement timeout.

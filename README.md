@@ -44,6 +44,12 @@ and recovery, not new ordinary work. The complete native Participant API and
 low-level Kernel command recovery remain available. Release availability and
 qualified platform artifacts are listed in the [release notes](docs/releases/).
 
+Native0.3.30 repairs local notification ledger exhaustion: completed items retire
+across sequence holes, retry evidence is bounded, and full legacy stores compact
+without replacing original state. Upgrade both the original Runtime and host-user
+bridge. [Release notes](docs/releases/0.3.30.md) ·
+[Retention and recovery](docs/notification-state-retention.md).
+
 Native0.3.29 unifies client lifecycle handling across CLI, MCP and existing
 profile sources. Original local-owner adoption repairs a legacy runtime ceiling
 through its authenticated issuer while keeping original operations and receiving

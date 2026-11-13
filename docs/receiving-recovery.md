@@ -39,6 +39,16 @@ and reconcile it. A signed terminal refusal is not converted into a transient
 result. Invalid signatures, changed receiver generations and authority failures
 retain their existing isolation requirements.
 
+## Local notification storage
+
+Native 0.3.30 repairs accumulating Runtime/bridge call evidence. This is separate
+from the service resource retry policy above. Follow the
+[notification retention guide](notification-state-retention.md), upgrade both
+original resident components and keep their state. Completed notifications can
+be reclaimed across old sequence holes; a pending application item does not pin
+every later completed frame. Do not delete messages or clear unknown operations
+to force free space. Actual outstanding work still applies backpressure.
+
 ## Read observations separately
 
 | Observation | Meaning | What it does not prove |

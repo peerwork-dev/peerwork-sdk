@@ -50,8 +50,8 @@ impl InboxStore {
             return Err(failure("HOST_EVIDENCE_SCOPE_MISMATCH"));
         }
         if self.host_delivery_completed(namespace, options, &call)? { return Ok(None); }
-        let (active, retry_at): (bool,i64) = self.db.query_row("SELECT delivery_state='ACTIVE',retry_at FROM inbox_host_calls WHERE call_id=?1",[&call.call_id],|r|Ok((r.get(0)?,r.get(1)?))).map_err(db_error)?;
-        if !active || !matches!(call.state.as_str(),"RESULT_UNKNOWN"|"HOST_QUEUED") || retry_at > crate::participant_store::now() { return Ok(None); }
+        let (active, retry_at): (bool,i64) = self.db.query_row("SELECT delivery_state='ACTIVE' AND report_pending=0,retry_at FROM inbox_host_calls WHERE call_id=?1",[&call.call_id],|r|Ok((r.get(0)?,r.get(1)?))).map_err(db_error)?;
+        if !active || !matches!(call.state.as_str(),"RESULT_UNKNOWN"|"HOST_QUEUED"|"HOST_ACCEPTED") || retry_at > crate::participant_store::now() { return Ok(None); }
         let pins = self.pins(&options.workspace_id,&options.mailbox_id)?.ok_or_else(invalid)?;
         if call.scope["receiver_id"] != pins.receiver_id || call.scope["epoch"] != pins.epoch
             || call.scope["binding_version"] != pins.binding_version || call.scope["destination_digest"] != pins.destination_digest {
@@ -126,10 +126,10 @@ mod tests {
     #[test]
     fn lost_acceptance_retries_frozen_notification_after_restart_without_falsifying_original() {
         let mut f=Fixture::new();let first=f.begin();
-        f.finish(&first,HostOutcome::Unknown{code:"HOST_ACK_UNKNOWN".into()});
+        f.finish(&first,HostOutcome::Unknown{code:"HOST_ACK_UNKNOWN".into()});f.reported(&first);
         assert!(f.store.host_retry(&f.identity,NS,&f.options,&first).unwrap().is_none(),"respect the initial recovery grace");
         f.retry_now();
-        for index in ["inbox_host_current_unknown","inbox_host_original_active","inbox_host_delivery_recovery"] {f.store.db.execute_batch(&format!("DROP INDEX {index}")).unwrap();}
+        for index in ["inbox_host_current_unknown","inbox_host_original_active","inbox_host_delivery_recovery","inbox_host_gc_superseded"] {f.store.db.execute_batch(&format!("DROP INDEX {index}")).unwrap();}
         for column in ["retry_at","retry_of","diagnostic","delivery_state"] {f.store.db.execute_batch(&format!("ALTER TABLE inbox_host_calls DROP COLUMN {column}")).unwrap();}
         let mut reopened=InboxStore::open_local(&f.root.path().join("inbox"),&f.identity,"https://example.invalid/").unwrap();
         let original=reopened.host_reconcile_due(&f.identity,NS,&f.options).unwrap().unwrap();
@@ -168,11 +168,13 @@ mod tests {
         assert_eq!(f.store.host_call(&f.identity,&first.call_id).unwrap().state,"RESULT_UNKNOWN");
     }
     #[test]
-    fn accepted_input_is_not_consumption_and_does_not_reinject_the_full_message() {
-        let mut f=Fixture::new();let first=f.begin();f.finish(&first,HostOutcome::HostAccepted{receipt:"host-only".into()});
-        f.retry_now();
+    fn accepted_input_keeps_a_bounded_reminder_without_claiming_application_consumption() {
+        let mut f=Fixture::new();let first=f.begin();f.finish(&first,HostOutcome::HostAccepted{receipt:"host-only".into()});f.reported(&first);
         assert!(f.store.host_retry(&f.identity,NS,&f.options,&first).unwrap().is_none());
         assert_eq!(f.store.host_status(&f.identity,NS,&f.options,&f.items[0]).unwrap()["delivery"]["state"],"ACTIVE");
+        f.retry_now();let reminder=f.store.host_retry(&f.identity,NS,&f.options,&first).unwrap().unwrap();assert_eq!(reminder.frame,first.frame);
+        let plan=f.store.host_retirement_plan(&f.identity,NS,&f.options).unwrap().unwrap();f.store.host_retirement_commit(&f.identity,NS,&f.options,&plan).unwrap();
+        assert_eq!(f.store.db.query_row("SELECT rows FROM inbox_host_meta",[],|r|r.get::<_,u64>(0)).unwrap(),1);
         assert_eq!(retry_delay("RESULT_UNKNOWN",1000),300000);
     }
     #[test]

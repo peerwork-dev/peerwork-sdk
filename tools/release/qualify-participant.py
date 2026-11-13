@@ -19,7 +19,7 @@ import sys
 TARGETS = {
     'linux-x64-gnu': 'x86_64-unknown-linux-gnu',
 }
-GROUPS = ['communication_host::', 'communication_host_owner::tests',
+GROUPS = ['communication_bridge::', 'communication_host::', 'communication_host_owner::tests',
           'communication_local_channel::tests', 'communication_runtime::tests',
           'communication_store::', 'participant_store::tests', 'participant_inbox::tests',
           'participant_transfer::tests', 'participant_presence::', 'participant_watch::reliability_tests', 'agent_mcp::tests',

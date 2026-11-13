@@ -299,7 +299,9 @@ fn rebind_preserves_original_unknown_keys_cursors_and_unblocks_only_the_new_lane
         .pending_host_report(&identity, &s.namespace, &s.new)
         .unwrap()
         .unwrap();
-    assert_eq!(report["scope"], original.scope);
+    let mut expected_scope=original.scope.clone();expected_scope.as_object_mut().unwrap().remove("attempt");
+    assert_eq!(report["scope"],expected_scope);
+    assert_eq!(report["attempt"],original.attempt);
     assert_eq!(report["state"], "HOST_ACCEPTED");
     assert_eq!(
         store.host_call(&identity, &call.call_id).unwrap().scope,

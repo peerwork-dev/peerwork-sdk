@@ -314,6 +314,7 @@ impl Store {
             [allocation],
         )
         .map_err(|_| "BRIDGE_STATE_FAILED")?;
+        if no_send.is_some() {storage::account(&tx,id)?;}
         tx.commit().map_err(|_| "BRIDGE_STATE_FAILED")
     }
     pub fn finish(&self, binding: &Value, value: &Value) -> R<()> {

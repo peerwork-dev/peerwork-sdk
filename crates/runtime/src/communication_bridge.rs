@@ -352,6 +352,10 @@ fn validate_query(bindings: &[BridgeGrant], destination: &Value, method: &str, q
     if let Some(previous) = &q.retry_of {
         let mut expected = b.clone();
         expected["call_id"] = previous["call_id"].clone();
+        if let Some(attempt)=b["attempt"].as_u64() {
+            if previous["attempt"].as_u64().is_some_and(|old|attempt<=old) {return Err("HOST_INPUT_CONFLICT");}
+            if previous.get("attempt").is_some() {expected["attempt"]=previous["attempt"].clone();}else{expected.as_object_mut().unwrap().remove("attempt");}
+        }
         if method != "deliver" || previous != &expected
             || previous["call_id"] == b["call_id"] || previous["call_id"].as_str().is_none_or(|v|!token(v)) {
             return Err("HOST_INPUT_CONFLICT");

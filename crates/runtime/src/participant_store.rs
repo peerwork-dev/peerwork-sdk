@@ -72,6 +72,8 @@ impl Store {
         if !columns.iter().any(|name|name=="resolved"){db.execute_batch("ALTER TABLE participant_operations ADD COLUMN resolved BLOB").map_err(|_|storage())?;}
         if !columns.iter().any(|name|name=="logical_route"){db.execute_batch("ALTER TABLE participant_operations ADD COLUMN logical_route TEXT").map_err(|_|storage())?;}
         if !columns.iter().any(|name|name=="logical_input_hash"){db.execute_batch("ALTER TABLE participant_operations ADD COLUMN logical_input_hash TEXT").map_err(|_|storage())?;}
+        if !columns.iter().any(|name|name=="allocation_version"){db.execute_batch("ALTER TABLE participant_operations ADD COLUMN allocation_version INTEGER NOT NULL DEFAULT 0").map_err(|_|storage())?;}
+        db.execute_batch("CREATE INDEX IF NOT EXISTS participant_accounting_upgrade ON participant_operations(allocation_version,session,id)").map_err(|_|storage())?;
         db.execute_batch("CREATE UNIQUE INDEX IF NOT EXISTS participant_logical_route ON participant_operations(logical_route) WHERE logical_route IS NOT NULL").map_err(|_|storage())?;
         let binding=json!({"format":"peerwork.participant-store.v1","actor":identity.actor_id(),"key":identity.key_id(),"origin":origin}).to_string();
         db.execute(
@@ -90,7 +92,18 @@ impl Store {
                 "LOCAL_STATE",
             ));
         }
-        Ok(Self { db, binding })
+        let store=Self{db,binding};store.reconcile_accounting()?;Ok(store)
+    }
+    fn reconcile_accounting(&self)->Result<()> {
+        // Correct retained legacy byte accounting in bounded pages, without
+        // deleting business input, command IDs or idempotency evidence.
+        let rows=self.db.prepare("SELECT session,id,allocation,CASE WHEN status IN ('ACCEPTED','REJECTED_NO_EFFECT') THEN length(input)+COALESCE(length(resolved),0)+COALESCE(length(outcome),0)+1024 ELSE allocation END FROM participant_operations WHERE allocation_version=0 ORDER BY session,id LIMIT 32").map_err(|_|storage())?.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,u64>(2)?,r.get::<_,u64>(3)?))).map_err(|_|storage())?.collect::<std::result::Result<Vec<_>,_>>().map_err(|_|storage())?;
+        let tx=self.db.unchecked_transaction().map_err(|_|storage())?;
+        for (session,id,old,actual) in rows {
+            tx.execute("UPDATE participant_operations SET allocation=?3,allocation_version=1 WHERE session=?1 AND id=?2",params![session,id,actual]).map_err(|_|storage())?;
+            tx.execute("UPDATE participant_meta SET allocated=allocated-?1+?2 WHERE id=1",params![old,actual]).map_err(|_|storage())?;
+        }
+        tx.commit().map_err(|_|storage())?;Ok(())
     }
     fn aad(&self, session: &str, id: &str, hash: &str, kind: &str) -> String {
         json!({"format":"peerwork.participant-local.v1","binding":self.binding,"session":session,"operation_id":id,"input_hash":hash,"kind":kind}).to_string()
@@ -112,6 +125,7 @@ impl Store {
         self.reserve_resolved(session,request,request,identity,max_pending,max_bytes,false)
     }
     pub fn reserve_resolved(&mut self,session:&str,request:&Invoke,resolved:&Invoke,identity:&KernelIdentity,max_pending:usize,max_bytes:usize,protocol_route:bool)->Result<Operation>{
+        self.reconcile_accounting()?;
         let wire = serde_json::to_string(request).map_err(|_| corrupt())?;
         let hash = sha256_hex(wire.as_bytes());
         if let Some(old) = self.hash(session, &request.operation_id)? {
@@ -162,7 +176,7 @@ impl Store {
         // for earlier clients: it never claims NOT_SUBMITTED after execution
         // may have begun. The returned admission fact below is known before
         // scheduling; current RUNNING is an owner-memory observation only.
-        tx.execute("INSERT INTO participant_operations(session,id,input_hash,action,workspace,instance,protocol,status,input,allocation,lane,resolved,logical_route,logical_input_hash) VALUES(?1,?2,?3,?4,?5,?6,?7,'PENDING',?8,?9,?10,?11,?12,?13)",
+        tx.execute("INSERT INTO participant_operations(session,id,input_hash,action,workspace,instance,protocol,status,input,allocation,lane,resolved,logical_route,logical_input_hash,allocation_version) VALUES(?1,?2,?3,?4,?5,?6,?7,'PENDING',?8,?9,?10,?11,?12,?13,1)",
             params![session,request.operation_id,hash,request.action,s.workspace_id,s.instance_id,s.protocol_digest,sealed,allocated,lane,selected,logical.as_ref().map(|v|&v.0),logical.as_ref().map(|v|&v.1)]).map_err(|_|storage())?;
         tx.execute("UPDATE participant_meta SET pending=pending+1,allocated=allocated+?1,rows=rows+1 WHERE id=1",[allocated]).map_err(|_|storage())?;
         tx.commit().map_err(|_| storage())?;
@@ -364,14 +378,14 @@ impl Store {
             .db
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|_| storage())?;
-        let (failures,allocation,input_len):(usize,usize,usize)=tx.query_row("SELECT failures,allocation,length(input) FROM participant_operations WHERE session=?1 AND id=?2",params![session,id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).map_err(|_|storage())?;
+        let (failures,allocation,input_len):(usize,usize,usize)=tx.query_row("SELECT failures,allocation,length(input)+COALESCE(length(resolved),0) FROM participant_operations WHERE session=?1 AND id=?2",params![session,id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).map_err(|_|storage())?;
         let next_allocation = if terminal {
             input_len + sealed.len() + 1024
         } else {
             allocation
         };
         let delay = 500i64.saturating_mul(1i64 << failures.min(6)).min(30000);
-        tx.execute("UPDATE participant_operations SET status=?1,outcome=?2,command_id=COALESCE(?3,command_id),failures=failures+1,next_retry=?4,allocation=?5 WHERE session=?6 AND id=?7",params![state,sealed,command,now()+delay,next_allocation,session,id]).map_err(|_|storage())?;
+        tx.execute("UPDATE participant_operations SET status=?1,outcome=?2,command_id=COALESCE(?3,command_id),failures=failures+1,next_retry=?4,allocation=?5,allocation_version=1 WHERE session=?6 AND id=?7",params![state,sealed,command,now()+delay,next_allocation,session,id]).map_err(|_|storage())?;
         if terminal {
             tx.execute("UPDATE participant_meta SET pending=pending-1,allocated=allocated-?1+?2 WHERE id=1",params![allocation,next_allocation]).map_err(|_|storage())?;
         }
@@ -420,6 +434,20 @@ impl Store {
 mod tests {
     use super::*;
     use crate::participant::Scope;
+    #[test]
+    fn completed_operation_and_upgrade_account_for_retained_resolved_input() {
+        let root=crate::test_support::protected_test_dir();let identity=KernelIdentity::create(&root.path().join("identity")).unwrap();let directory=root.path().join("state");
+        let mut store=Store::open(&directory,&identity,"https://example.invalid/").unwrap();
+        let request=Invoke::new("original-operation","structure.workspace.create",Scope::default(),json!({"name":"before"}));
+        let resolved=Invoke::new("original-operation","structure.workspace.create",Scope::default(),json!({"name":"x".repeat(4096)}));
+        store.reserve_resolved("program",&request,&resolved,&identity,4,1024*1024,false).unwrap();
+        store.finish("program","original-operation",&identity,&json!({"state":"ACCEPTED","result":{"command_id":"unchanged-original-command"}})).unwrap();
+        let (allocation,actual,resolved_bytes):(u64,u64,u64)=store.db.query_row("SELECT allocation,length(input)+length(resolved)+length(outcome)+1024,length(resolved) FROM participant_operations",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap();assert_eq!(allocation,actual);
+        store.db.execute("UPDATE participant_operations SET allocation=allocation-?1,allocation_version=0",[resolved_bytes]).unwrap();store.db.execute("UPDATE participant_meta SET allocated=allocated-?1",[resolved_bytes]).unwrap();drop(store);
+        let store=Store::open(&directory,&identity,"https://example.invalid/").unwrap();assert_eq!(store.db.query_row("SELECT allocated FROM participant_meta",[],|r|r.get::<_,u64>(0)).unwrap(),actual);
+        assert_eq!(store.get("program","original-operation",&identity).unwrap().command_id.as_deref(),Some("unchanged-original-command"));
+        assert_eq!(serde_json::to_value(store.request("program","original-operation",&identity).unwrap()).unwrap(),serde_json::to_value(resolved).unwrap());
+    }
     #[test]
     fn admission_is_recoverable_without_a_durable_running_transition() {
         let t = crate::test_support::protected_test_dir();

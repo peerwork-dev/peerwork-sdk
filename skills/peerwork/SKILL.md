@@ -74,6 +74,9 @@ Replacing a file does not update its running process. Refresh only owned
 components that need the target capabilities, preserving original state,
 pending IDs and the exact conversation. Versions need compatibility, not
 mechanical equality. Report unknown or externally managed components explicitly.
+For local notification capacity, follow the [retention guide](https://github.com/peerwork-dev/peerwork-sdk/blob/main/docs/notification-state-retention.md).
+Native 0.3.30 repairs accumulating call evidence in both Runtime and bridge;
+keep the original state. Workspace quota increases do not fix an old local ledger.
 Distinguish tools loaded, receiver healthy, automatic session arrival and reply;
 do not claim the entire upgrade complete from any single one of these facts.
 

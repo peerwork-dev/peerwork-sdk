@@ -433,6 +433,9 @@ mod tests {
             .db
             .execute("UPDATE inbox_host_ready SET next_retry=0", [])
             .unwrap();
+        assert!(store.host_begin(&identity,ns,&options,&item,frame.clone()).unwrap().is_none(),"pending report pressure cannot generate unlimited replacement attempts");
+        let reported=store.host_call(&identity,&first.call_id).unwrap();
+        store.host_reported(&options.workspace_id,&options.mailbox_id,&first.call_id,reported.report_version).unwrap();
         let second = store
             .host_begin(&identity, ns, &options, &item, frame)
             .unwrap()
@@ -658,7 +661,7 @@ pub(super) fn initialize(db: &Connection) -> Result<()> {
             db.execute_batch(&format!("ALTER TABLE inbox_host_calls ADD COLUMN {name} {definition}")).map_err(db_error)?;
         }
     }
-    db.execute_batch("CREATE INDEX IF NOT EXISTS inbox_host_payload_refs ON inbox_host_calls(payload_key); CREATE INDEX IF NOT EXISTS inbox_host_storage_migration ON inbox_host_calls(workspace,mailbox,host,storage_version,call_id); CREATE INDEX IF NOT EXISTS inbox_host_gc_completed ON inbox_host_calls(workspace,mailbox,host,report_pending,consumed_confirmed,sequence,call_id);").map_err(db_error)?;
+    db.execute_batch("CREATE INDEX IF NOT EXISTS inbox_host_gc_prefix ON inbox_host_calls(workspace,mailbox,host,report_pending,sequence,call_id); CREATE INDEX IF NOT EXISTS inbox_host_gc_superseded ON inbox_host_calls(workspace,mailbox,host,report_pending,delivery_state,sequence,call_id); CREATE INDEX IF NOT EXISTS inbox_host_payload_refs ON inbox_host_calls(payload_key); CREATE INDEX IF NOT EXISTS inbox_host_storage_migration ON inbox_host_calls(workspace,mailbox,host,storage_version,call_id); CREATE INDEX IF NOT EXISTS inbox_host_gc_completed ON inbox_host_calls(workspace,mailbox,host,report_pending,consumed_confirmed,sequence,call_id);").map_err(db_error)?;
     db.execute_batch("CREATE INDEX IF NOT EXISTS inbox_host_current_unknown ON inbox_host_calls(workspace,mailbox,delivery_state,state); CREATE INDEX IF NOT EXISTS inbox_host_original_active ON inbox_host_calls(workspace,mailbox,delivery_state,state,json_extract(scope,'$.namespace'),json_extract(scope,'$.membership_id'));").map_err(db_error)?;
     db.execute_batch("CREATE INDEX IF NOT EXISTS inbox_host_delivery_recovery ON inbox_host_calls(workspace,mailbox,host,delivery_state,state,reconcile_at,call_id);").map_err(db_error)?;
     db.execute_batch("CREATE INDEX IF NOT EXISTS inbox_host_gc ON inbox_host_calls(workspace,mailbox,report_pending,state,sequence,call_id);").map_err(db_error)?;
@@ -679,7 +682,7 @@ impl InboxStore {
         let (host,_)=self.host_link(namespace,options)?;
         let now=crate::participant_store::now();
         let mut selected:Option<(String,i64,u64)>=None;
-        for status in ["RESULT_UNKNOWN","HOST_QUEUED"] {
+        for status in ["RESULT_UNKNOWN","HOST_QUEUED","HOST_ACCEPTED"] {
             // Two range seeks, rather than scanning sleeping calls. The second
             // also repairs scheduling after a backwards wall-clock jump.
             for (predicate,threshold) in [("reconcile_at<=?5",now),("reconcile_at>?5",now.saturating_add(30000))] {
@@ -813,7 +816,7 @@ impl InboxStore {
         }
         // Healthy busy/approval observations are eligibility waits, not failed
         // inputs. They must not accumulate a30s cooldown after the host resumes.
-        let waiting=matches!(code,"HOST_BUSY"|"HOST_WAITING_APPROVAL");
+        let waiting=matches!(code,"HOST_BUSY"|"HOST_WAITING_APPROVAL"|"HOST_REPORT_PENDING");
         self.db.execute("UPDATE inbox_host_ready SET next_retry=?4+CASE WHEN ?7 THEN 500 ELSE min(30000,500*(1<<min(failures,6))) END,failures=CASE WHEN ?7 THEN 0 ELSE failures+1 END,code=?5 WHERE workspace=?1 AND mailbox=?2 AND sequence=?3 AND delivery_id=?6",params![options.workspace_id,options.mailbox_id,item.sequence,crate::participant_store::now(),code,item.delivery_id,waiting]).map_err(db_error)?;
         Ok(())
     }
@@ -868,6 +871,8 @@ impl InboxStore {
             tx.commit().map_err(db_error)?;
             return Ok(None);
         }
+        let report_pending:bool=self.db.query_row("SELECT EXISTS(SELECT 1 FROM inbox_host_calls WHERE workspace=?1 AND mailbox=?2 AND sequence=?3 AND state='NOT_SENT' AND report_pending<>0)",params![options.workspace_id,options.mailbox_id,item.sequence],|r|r.get(0)).map_err(db_error)?;
+        if report_pending {self.host_defer(namespace,options,item,"HOST_REPORT_PENDING")?;return Ok(None);}
         let pins = self
             .pins(&options.workspace_id, &options.mailbox_id)?
             .ok_or_else(|| failure("WATCH_NOT_CONNECTED"))?;
@@ -919,7 +924,9 @@ impl InboxStore {
             )
             .map_err(db_error)?;
         if bytes + allocation + payload_allocation > 32 * 1024 * 1024 || rows >= 65536 {
-            return Err(failure("HOST_STATE_CAPACITY"));
+            let mut error=failure("HOST_STATE_CAPACITY");
+            error.details=Some(json!({"resource":"LOCAL_NOTIFICATION_STATE","used_bytes":bytes,"limit_bytes":32*1024*1024,"required_bytes":allocation+payload_allocation,"retained_calls":rows,"maintenance":"CONTINUES_WITHOUT_NEW_ADMISSION"}));
+            return Err(error);
         }
         tx.execute("INSERT INTO inbox_host_attempts VALUES(?1,?2,?3,?4) ON CONFLICT(workspace,mailbox,sequence) DO UPDATE SET attempt=excluded.attempt",params![options.workspace_id,options.mailbox_id,item.sequence,attempts+1]).map_err(db_error)?;
         tx.execute("UPDATE inbox_host_calls SET delivery_state='SUPERSEDED' WHERE workspace=?1 AND mailbox=?2 AND sequence=?3 AND state='NOT_SENT' AND delivery_state='ACTIVE'",params![options.workspace_id,options.mailbox_id,item.sequence]).map_err(db_error)?;
@@ -1020,6 +1027,8 @@ impl InboxStore {
         {
             return Err(failure("HOST_EVIDENCE_SCOPE_MISMATCH"));
         }
+        let consumed:bool=self.db.query_row("SELECT consumed_confirmed=1 FROM inbox_host_calls WHERE call_id=?1",[&old.call_id],|r|r.get(0)).map_err(db_error)?;
+        if consumed {return Ok(());}
         let value = serde_json::to_value(&outcome).map_err(|_| invalid())?;
         if old.outcome.as_ref() == Some(&value) {
             return Ok(());
@@ -1203,7 +1212,8 @@ impl InboxStore {
         id: &str,
         version: u64,
     ) -> Result<()> {
-        self.db.execute("UPDATE inbox_host_calls SET report_pending=0,report_code=NULL WHERE workspace=?1 AND mailbox=?2 AND call_id=?3 AND report_version=?4",params![workspace,mailbox,id,version]).map_err(db_error)?;
+        let changed=self.db.execute("UPDATE inbox_host_calls SET report_pending=0,report_code=NULL WHERE workspace=?1 AND mailbox=?2 AND call_id=?3 AND report_version=?4",params![workspace,mailbox,id,version]).map_err(db_error)?;
+        if changed==1 {self.db.execute("UPDATE inbox_host_ready SET next_retry=0,failures=0,code=NULL WHERE workspace=?1 AND mailbox=?2 AND code='HOST_REPORT_PENDING' AND sequence=(SELECT sequence FROM inbox_host_calls WHERE call_id=?3)",params![workspace,mailbox,id]).map_err(db_error)?;}
         Ok(())
     }
 }
