@@ -77,6 +77,14 @@ pub(crate) struct InboxStore {
     service_key: String,
 }
 impl InboxStore {
+    pub(crate) fn notification_head(&self, workspace: &str, mailbox: &str) -> Result<Value> {
+        let checkpoint = self.cursor(workspace, mailbox)?.map(|c| c.item).unwrap_or(0);
+        let pending: bool = self.db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM inbox_items WHERE workspace=?1 AND mailbox=?2 AND consume_requested=0)",
+            params![workspace, mailbox], |r| r.get(0),
+        ).map_err(db_error)?;
+        Ok(json!({"checkpoint":checkpoint,"has_pending":pending}))
+    }
     pub fn open(
         directory: &Path,
         identity: &KernelIdentity,
@@ -1138,6 +1146,28 @@ fn subjects(value: &WireValue) -> Result<Vec<(String, String, u64)>> {
         }
     }
     Ok(result)
+}
+
+/// Seed already-verified cache fixtures only; never compiled into a release.
+#[cfg(test)]
+pub(crate) fn seed_notification_events(directory:&Path,identity:&KernelIdentity,origin:&str,options:&crate::participant::WatchOptions,events:&[(u64,Value)]) {
+    let mut store=InboxStore::open_local(directory,identity,origin).unwrap();
+    store.attach_watch(identity,"program:creator",options).unwrap();
+    if store.cursor(&options.workspace_id,&options.mailbox_id).unwrap().is_none(){
+        store.register(&MailboxPins{workspace_id:options.workspace_id.clone(),mailbox_id:options.mailbox_id.clone(),membership_id:options.membership_id.clone(),receiver_id:"R".repeat(43),epoch:1,destination_digest:"a".repeat(64),binding_version:1,after_sequence:0,after_control_sequence:Some(0)}).unwrap();
+    }
+    for (sequence,event) in events {
+        let delivery=format!("{sequence:043}");
+        let item=json!({"sequence":sequence,"delivery_id":delivery,"kind":"BUSINESS","event":event});
+        let canonical=|value:&Value| {let parsed=parse_wire_json_bounded(value.to_string().as_bytes(),40,MAX_FRAME_BYTES).unwrap();canonical_wire_value(&parsed,CanonicalPath::STRUCTURED).unwrap()};
+        let item_digest=sha256_hex(canonical(&item).as_bytes());
+        let wire=canonical(&json!({"items":[item]}));let hash=sha256_hex(wire.as_bytes());
+        let sealed=seal_bounded(identity,&store.aad(&options.workspace_id,&options.mailbox_id,&hash),&wire,MAX_FRAME_BYTES).unwrap();
+        store.db.execute("INSERT INTO inbox_frames VALUES(?1,?2,?3,?4,?5)",params![hash,options.workspace_id,options.mailbox_id,sealed,wire.len()]).unwrap();
+        store.db.execute("INSERT INTO inbox_items(workspace,mailbox,sequence,delivery_id,kind,frame,item_index,item_digest,status) VALUES(?1,?2,?3,?4,'BUSINESS',?5,0,?6,'PENDING')",params![options.workspace_id,options.mailbox_id,sequence,delivery,hash,item_digest]).unwrap();
+        store.db.execute("UPDATE inbox_mailboxes SET item_cursor=max(item_cursor,?3),last_frame=?4 WHERE workspace=?1 AND mailbox=?2",params![options.workspace_id,options.mailbox_id,sequence,hash]).unwrap();
+        store.db.execute("UPDATE inbox_meta SET allocated=allocated+?1,rows=rows+1 WHERE id=1",[wire.len()]).unwrap();
+    }
 }
 
 #[cfg(test)]

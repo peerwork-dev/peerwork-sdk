@@ -12,6 +12,9 @@ fn local(code: &str) -> ParticipantError { ParticipantError::local(code, "LOCAL_
 
 pub(crate) async fn call(client: &ParticipantClient, watches: &Watches, request: ClientRequest) -> Result<Value> {
     match request {
+        ClientRequest::NotificationRead{batch,options,after,cursor,limit,max_bytes,..}if batch.is_empty()=>crate::communication_notifications::manual_read(client,options.as_ref(),after,cursor.as_deref(),limit,max_bytes).await,
+        ClientRequest::Delivery{mode,..}if matches!(mode.as_str(),"status"|"pause")=>Ok(json!({"state":"NO_AUTOMATIC_HOST","messages_deleted":false,"application_consumption_changed":false})),
+        ClientRequest::Delivery{..}|ClientRequest::NotificationPoll{..}|ClientRequest::NotificationValidate{..}|ClientRequest::NotificationObserve{..}|ClientRequest::NotificationRead{..}=>Err(local("RESIDENT_RUNTIME_REQUIRED_FOR_AUTOMATIC_DELIVERY")),
         ClientRequest::HostStatus=>Err(local("RESIDENT_RUNTIME_REQUIRED_FOR_HOST_STATUS")),
                 ClientRequest::DeliveryStatus{options,item}=>client.delivery_status(&options,item).await,
                 ClientRequest::Unwatch{options}=>{client.unwatch(&options).await?;watches.lock().await.remove(&options.key());Ok(json!({"state":"LOCAL_STOPPED","lease_expires_within_ms":15000,"messages_deleted":false}))},

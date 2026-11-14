@@ -249,13 +249,25 @@ fn receiving_self_test(receiver:&Value,push:bool)->Value {
     let presence=&receiver["presence"];
     let keys=presence["key_current"]==true&&matches!(presence["body_key"]["state"].as_str(),Some("READY"|"NOT_REQUIRED"));
     let host=presence["host_current"]==true&&presence["host"]["ready"]==true&&presence["host"]["mode"]=="LIVE";
+    if let Some(delivery)=receiver.get("notification_delivery").filter(|value|value.is_object()) {
+        let verified=delivery["state"]=="RUNNING"&&delivery["automatic_receiving"]=="VERIFIED";
+        let code=if !linked{receiver["code"].as_str().unwrap_or("RECEIVER_NOT_VERIFIED")}
+            else if push&&delivery["state"]=="PAUSED"{"DELIVERY_PAUSED"}
+            else if push&&!keys{"BODY_KEYS_NOT_READY"}
+            else if push&&!verified{"DELIVERY_SELF_TEST_PENDING"}else{"READY"};
+        return json!({"state":if linked&&(!push||(keys&&verified)){"READY"}else{"PENDING"},"code":code,
+            "receiver_link_verified":linked,"host_required":push,"host_ready":host,"body_keys_ready":keys,"presence":presence,
+            "automatic_receiving":delivery["automatic_receiving"],"last_verified_at":delivery["last_verified_at"],
+            "notification_delivery":delivery,"receiving_mode":if push{"AUTOMATIC"}else{"INBOX"},
+            "basis":"LOCAL_RECEIVER_AND_NOTIFICATION_OBSERVATION","model_response":"NOT_ATTESTED"});
+    }
     let code=if !linked{receiver["code"].as_str().unwrap_or("RECEIVER_NOT_VERIFIED")}else if push&&presence["host_current"]==true&&presence["host"]["mode"]=="TOOL_ONLY"{"HOST_PUSH_UNSUPPORTED"}else if push&&!keys{"BODY_KEYS_NOT_READY"}else if push&&!host{"HOST_LIVE_DELIVERY_NOT_READY"}else{"READY"};
     json!({"state":if linked&&(!push||(host&&keys)){"READY"}else{"PENDING"},"code":code,"receiver_link_verified":linked,
         "host_required":push,"host_ready":host,"body_keys_ready":keys,"presence":presence,
         "basis":"CURRENT_LOCAL_RUNTIME_OBSERVATION","model_response":"NOT_ATTESTED"})
 }
 fn receiving_observation(observed:&Value)->Value {
-    json!({"state":observed["state"],"code":observed["code"],"verification_failure":observed["verification_failure"],"presence":observed["presence"],"receiver_link_verified":observed["receiver_link_verified"],"checkpoint":observed["checkpoint"],"model_response":"NOT_ATTESTED"})
+    json!({"state":observed["state"],"code":observed["code"],"verification_failure":observed["verification_failure"],"notification_delivery":observed["notification_delivery"],"presence":observed["presence"],"receiver_link_verified":observed["receiver_link_verified"],"checkpoint":observed["checkpoint"],"model_response":"NOT_ATTESTED"})
 }
 impl Connect {
     pub fn selection_required(setup_id: &str) -> Value {
@@ -2183,6 +2195,12 @@ mod tests {
             "presence":{"host_current":true,"host":{"ready":true,"mode":"LIVE"},
                 "key_current":true,"body_key":{"state":"READY"}}});
         assert_eq!(receiving_self_test(&ready,true)["state"],"READY");
+        // Historical observation summaries insert null for unavailable fields;
+        // that is not a new notification-verification contract.
+        let summarized=receiving_observation(&ready);
+        assert!(summarized["notification_delivery"].is_null());
+        assert_eq!(receiving_self_test(&summarized,true)["state"],"READY");
+        assert_eq!(receiving_self_test(&summarized,false)["state"],"READY");
         assert_eq!(receiving_self_test(&ready,false)["state"],"READY");
         for state in ["BLOCKED","RECONNECTING","LOCAL_STOPPED","CLAIMED"] {
             let mut fault=ready.clone();fault["state"]=json!(state);
@@ -2202,6 +2220,28 @@ mod tests {
         assert_eq!(receiving_self_test(&queued,false)["state"],"READY");
         queued["presence"]["host_current"]=json!(false);
         assert_eq!(receiving_self_test(&queued,true)["code"],"HOST_LIVE_DELIVERY_NOT_READY");
+    }
+
+    #[test]
+    fn receiving_self_test_uses_explicit_notification_verification_for_queued_and_channel_hosts() {
+        let mut receiver=json!({"state":"RECEIVER_LINK_VERIFIED","receiver_link_verified":true,
+            "presence":{"host_current":false,"host":{"ready":false,"mode":"TOOL_ONLY"},"key_current":true,"body_key":{"state":"READY"}},
+            "notification_delivery":{"state":"RUNNING","automatic_receiving":"VERIFIED","last_verified_at":123}});
+        let ready=receiving_self_test(&receiver,true);
+        assert_eq!(ready["state"],"READY");assert_eq!(ready["model_response"],"NOT_ATTESTED");assert_eq!(ready["host_ready"],false);
+        receiver["notification_delivery"]["state"]=json!("VERIFYING");
+        receiver["notification_delivery"]["automatic_receiving"]=json!("VERIFYING");
+        assert_eq!(receiving_self_test(&receiver,true)["code"],"DELIVERY_SELF_TEST_PENDING");
+        receiver["notification_delivery"]["state"]=json!("PAUSED");receiver["notification_delivery"]["automatic_receiving"]=json!("PAUSED");
+        assert_eq!(receiving_self_test(&receiver,true)["code"],"DELIVERY_PAUSED");
+        let inbox=receiving_self_test(&receiver,false);assert_eq!(inbox["state"],"READY");assert_eq!(inbox["receiving_mode"],"INBOX");assert_eq!(inbox["automatic_receiving"],"PAUSED");
+        receiver["notification_delivery"]["state"]=json!("RUNNING");receiver["notification_delivery"]["automatic_receiving"]=json!("VERIFIED");
+        receiver["presence"]["host"]=json!({"mode":"CLAUDE_CHANNEL"});
+        assert_eq!(receiving_self_test(&receiver,true)["state"],"READY");
+        receiver["presence"]["key_current"]=json!(false);
+        assert_eq!(receiving_self_test(&receiver,true)["code"],"BODY_KEYS_NOT_READY");
+        receiver["verification_failure"]=json!({"code":"STREAM_DIGEST_INVALID"});
+        assert_eq!(receiving_self_test(&receiver,true)["state"],"PENDING");
     }
 
 }

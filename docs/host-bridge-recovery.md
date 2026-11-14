@@ -1,5 +1,43 @@
 # Host bridge recovery
 
+## Candidate 0.3.31 policy (unreleased)
+
+The compact-delivery implementation candidate replaces full-body reminders with
+one minimal notification followed by `peerwork_inbox` using its batch reference.
+See [compact delivery and controls](agent-delivery.md#candidate-0331-compact-notification-delivery-unreleased)
+for bounded reads, fresh/active views and the distinction between automatic local
+notification acknowledgement and explicit application consumption.
+
+The original frontend, resident runtime and bridge, when present, need compatible
+`compact-notifications-v1` support. Preserve original identity, state, receiver,
+pending IDs and host-session pins. Updating only the frontend does not upgrade a
+running scheduler or bridge. No new Workspace Owner permission is introduced.
+Do not restart a deliberately stopped stack as a side effect of inspection.
+
+Use the selected client's `peerwork_delivery` controls, or
+`peerwork agent --profile PROFILE.json delivery status|pause|resume|self-test`.
+Manual pause persists across restart and prevents new notification admission;
+it does not consume pending work or retract already-written host input. Inspect
+pause/enforcement results before upgrading original components. The self-test
+belongs to this upgrade/resume workflow, not to a separate service or model
+process. It observes the local notification/read path, not end-to-end service
+transport or a real business reply. Preserve approval waits and current host
+activation; AGY queued input and Claude Channel remain supported observations.
+
+Batch progress is independent of `consume`. A valid bounded inbox result triggers
+an internal local observation acknowledgement inside the same tool invocation;
+there is no additional model ACK call. Unhandled work remains available through
+`view: active`. Compact wake backoff is shared across the bound destination's
+batch, preventing each old unconsumed document from generating another full-body
+reminder. Unknown host acceptance remains unknown, and exactly-once model input
+is not promised.
+
+The candidate is not a released download. The remaining sections document the
+published recovery foundation and original-stack boundaries; the legacy
+per-item body-reminder policy below is historical for the compact candidate.
+
+## Published 0.3.23–0.3.30 notification policy
+
 Native 0.3.23 adds controlled notification redelivery. Published 0.3.22 and
 earlier runtimes do not provide this recovery policy. Reporting beyond 32
 attempts additionally requires service schema 27.
@@ -106,7 +144,7 @@ running. Inventory the components selected by the original installation:
 | Host-user bridge, when present | Check the original bridge's live executable/build and authenticated diagnostics through its owning installation. Frontend/runtime version fields do not establish the bridge version. An unreported version is UNKNOWN. |
 | Claude Channel, when used | This adapter runs in the Claude MCP process. Inspect `host_channel` and preserve the existing Channel activation and conversation. A separate native bridge is not required for this path. |
 
-Compatibility is the requirement, not identical version strings. This guide's
+Compatibility is the requirement, not identical version strings. The published legacy
 controlled-redelivery policy needs an updated resident scheduler and, when
 present, a bridge that supports the corresponding retry receipts. A new runtime
 cannot add those behaviors to an old bridge. A successful upgrade must account
@@ -122,7 +160,8 @@ instead of claiming they were updated. If the original owner, configuration or
 state cannot be established, retain the working stack and report that specific
 missing source rather than create a substitute integration.
 
-Install the current Linux assets, stop/restart the **original** resident runtime
+For an authorized published-version upgrade, install the current Linux assets
+and stop/restart the **original** resident runtime
 and any original host-user bridge with their existing configuration, identity,
 journal and state directories. Do not initialize a new participant or copy
 pending operations into another namespace. Existing host pins, grants, receiver

@@ -442,6 +442,7 @@ impl Runtime {
                 address: self.address,
                 token: session.token.clone(),
                 access: "CLIENT".into(),
+                control_address:Some(self.control_address),
             };
             endpoints.insert(
                 entry.name.clone(),
@@ -558,7 +559,7 @@ impl Runtime {
                     }
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                    endpoint(&path, self.address, &session.token, "CLIENT")?
+                    endpoint_control(&path, self.address, &session.token, "CLIENT",Some(self.control_address))?
                 }
                 Err(_) => return Err(local("CLIENT_ENDPOINT_CONFLICT")),
             }
@@ -602,7 +603,7 @@ impl Runtime {
                 .write()
                 .map_err(|_| local("CLIENT_REGISTRY_UNAVAILABLE"))?
                 .push(session);
-            endpoint(&path, self.address, &token, "CLIENT")?;
+            endpoint_control(&path, self.address, &token, "CLIENT",Some(self.control_address))?;
         }
         let entry = registry
             .data

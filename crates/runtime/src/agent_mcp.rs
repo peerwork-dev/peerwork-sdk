@@ -30,8 +30,8 @@ fn argument_error(id: Value, name: &str, arguments: &Value) -> Value {
         .map(|t| t["inputSchema"].clone())
         .unwrap_or(Value::Null);
     let message=match name {
-        "reply"=>"Invalid peerwork_reply arguments. Required: scope, item {sequence, delivery_id}, operation_id, text. Copy reply.arguments from the inbox item and add operation_id/text; do not pass reply_address, reply_to or conversation_id. Nothing was submitted; keep operation_id when correcting input.".to_owned(),
-        "consume"=>"Invalid peerwork_consume arguments. Required: scope, items [{sequence, delivery_id}]. Copy consume.arguments from the handled inbox item. Nothing was submitted.".to_owned(),
+        "reply"=>"Invalid peerwork_reply arguments. Required: scope, item {sequence, delivery_id}, operation_id, text. Use the returned scope and item reference from the inbox item and add operation_id/text; do not pass reply_address, reply_to or conversation_id. Nothing was submitted; keep operation_id when correcting input.".to_owned(),
+        "consume"=>"Invalid peerwork_consume arguments. Required: scope, items [{sequence, delivery_id}]. Use the returned scope and item reference only after handling. Nothing was submitted.".to_owned(),
         _=>format!("Invalid {tool} arguments. Nothing was submitted; required keys: {}. Correct input using inputSchema and keep the original operation_id.",schema["required"]),
     };
     let mut value = error(id, -32602, &message);
@@ -95,6 +95,17 @@ async fn write<W: AsyncWrite + Unpin>(writer: &mut W, value: Value) -> Result<()
     .await
     .map_err(|_| ParticipantError::local("MCP_OUTPUT_TIMEOUT", "MCP"))?
     .map_err(|_| ParticipantError::local("MCP_OUTPUT_CLOSED", "MCP"))
+}
+async fn write_channel<W,F>(writer:&mut W,notification:Value,state:&claude_channel::State,admission:F)->Result<()>
+where W:AsyncWrite+Unpin,F:std::future::Future<Output=Result<bool>> {
+    match admission.await {
+        // Fence immediately before writing. Bytes already being written cannot
+        // be recalled by a concurrent pause.
+        Ok(true)=>{write(writer,notification).await?;state.written();},
+        Ok(false)=>{},
+        Err(error)=>{state.validation_failed(&error.code);eprintln!("Peerwork Claude channel validation: {}",error.code);},
+    }
+    Ok(())
 }
 use crate::agent_lifecycle::Lifecycle as Tools;
 /// Supports per-request MCP 2026-07-28 and negotiated 2025-11-25 hosts.
@@ -189,14 +200,21 @@ where R:AsyncBufRead+Send+Unpin+'static,W:AsyncWrite+Unpin {
     let mut initialized = false;
     let mut initializing = false;
     let mut channel_task:Option<tokio::task::JoinHandle<()>>=None;
-    let (channel_tx,mut channel_rx)=mpsc::channel(8);
+    let (channel_tx,mut channel_rx)=mpsc::channel::<Value>(8);
     let channel_state=claude_channel::State::default();
     let capabilities=if claude {json!({"tools":{},"experimental":{"claude/channel":{}}})}else{json!({"tools":{}})};
     let guidance=if claude {format!("{} {}",instructions(),claude_channel::INSTRUCTIONS)}else{instructions().to_owned()};
     let outcome=async{
     loop{
         tokio::select!{
-            notification=channel_rx.recv(),if channel_task.is_some()=>if let Some(notification)=notification {write(&mut writer,notification).await?;channel_state.written();},
+            notification=channel_rx.recv(),if channel_task.is_some()=>if let Some(notification)=notification {
+                let meta=&notification["params"]["meta"];
+                let allowed=match (meta["batch"].as_str(),meta["revision"].as_u64()) {
+                    (Some(batch),Some(revision))=>tools.notification_allowed(batch,revision).await,
+                    _=>Err(ParticipantError::local("CLAUDE_CHANNEL_BATCH_INVALID","CLAUDE_CHANNEL")),
+                };
+                write_channel(&mut writer,notification,&channel_state,async {allowed}).await?;
+            },
             joined=jobs.join_next_with_id(),if !jobs.is_empty()=>if let Some(joined)=joined{
                 match joined{
                     Ok((task,(id,response)))=>{ids.remove(&task);if calls.remove(&id).is_some()&&!cancelled.remove(&id){write(&mut writer,response).await?;}},
@@ -288,6 +306,17 @@ fn error_response(id: Value, code: &str) -> Value {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn queued_channel_notice_is_suppressed_when_final_admission_is_paused_or_stale() {
+        let state=super::claude_channel::State::default();let mut wire=Vec::new();
+        let notice=serde_json::json!({"method":"notifications/claude/channel","params":{"meta":{"batch":"queued","revision":1}}});
+        super::write_channel(&mut wire,notice.clone(),&state,async {Ok(false)}).await.unwrap();
+        assert!(wire.is_empty());assert_eq!(state.status()["notifications_written"],0);
+        super::write_channel(&mut wire,notice.clone(),&state,async {Err(crate::participant::ParticipantError::local("SYNTHETIC_VALIDATION_UNAVAILABLE","TEST"))}).await.unwrap();
+        assert!(wire.is_empty());assert_eq!(state.status()["validation_error"],"SYNTHETIC_VALIDATION_UNAVAILABLE");
+        super::write_channel(&mut wire,notice,&state,async {Ok(true)}).await.unwrap();
+        assert!(!wire.is_empty());assert_eq!(state.status()["notifications_written"],1);
+    }
     use super::*;
     use tokio::io::{AsyncBufReadExt, BufReader};
     #[tokio::test]

@@ -2996,7 +2996,7 @@ async fn runtime_bridge_reconciles_only_original_bound_receipts_across_recipient
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires synthetic PostgreSQL and real product HTTP"]
-async fn runtime_bridge_redelivers_unhandled_notification_and_stops_after_consumption() {
+async fn runtime_bridge_retries_compact_notification_and_stops_after_batch_read_without_consumption() {
     exercise_bridge_recovery(true).await;
 }
 async fn exercise_bridge_recovery(redeliver:bool) {
@@ -3153,6 +3153,44 @@ async fn exercise_bridge_recovery(redeliver:bool) {
     let (tx, rx) = oneshot::channel();
     let server = tokio::spawn(ipc::serve(runtime.clone(), stop.clone(), tx));
     let ready = rx.await.unwrap().unwrap();
+    if redeliver {
+        bridge.busy.store(false,Ordering::SeqCst);
+        async fn notice(endpoint:&std::path::Path,accepted:bool)->Value {
+            tokio::time::timeout(Duration::from_secs(25),async{loop{
+                let status=ipc::call(endpoint,json!({"method":"status"})).await.unwrap();
+                let notice=&status["value"]["hosts"][0]["notification"];
+                if !notice["batch"].is_null() && (if accepted {notice["outcome"]["state"]=="HOST_ACCEPTED"}else{!notice["code"].is_null()}) {break notice.clone();}
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }}).await.unwrap()
+        }
+        let unknown=notice(&ready.admin_endpoint,false).await;
+        assert_eq!(unknown["model_response"],"NOT_ATTESTED");
+        bridge.receipt_state.store(7,Ordering::SeqCst);
+        let accepted=notice(&ready.admin_endpoint,true).await;
+        assert_eq!(unknown["batch"],accepted["batch"]);assert!(accepted["attempt"].as_u64().unwrap()>unknown["attempt"].as_u64().unwrap());
+        let profile:crate::agent_tools::AgentProfile=serde_json::from_value(json!({"format":"peerwork.agent-profile.v1","endpoint_path":ready.client_endpoints["worker"],"expected_origin":crate::transport::canonical_lifecycle_origin(&worker_config.origin,true).unwrap(),"expected_actor":worker_config.expected_actor,"scopes":{"main":{"workspace_id":options.workspace_id,"mailbox_id":options.mailbox_id,"membership_id":options.membership_id}}})).unwrap();
+        let tools=crate::agent_tools::AgentTools::open(profile).await.unwrap();
+        let read=tools.call(crate::agent_tools::AgentRequest::parse("inbox",json!({"batch":accepted["batch"]})).unwrap()).await.unwrap();
+        assert_eq!(read["state"],"SELF_TEST_OBSERVED");
+        let backlog=tokio::time::timeout(Duration::from_secs(20),async{loop{
+            let status=ipc::call(&ready.admin_endpoint,json!({"method":"status"})).await.unwrap();let n=&status["value"]["hosts"][0]["notification"];
+            if n["batch"].is_string()&&n["batch"]!=accepted["batch"]{break n["batch"].clone();}
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }}).await.unwrap();
+        let read=tools.call(crate::agent_tools::AgentRequest::parse("inbox",json!({"batch":backlog})).unwrap()).await.unwrap();
+        assert_eq!(read["state"],"BACKLOG_AVAILABLE");
+        let active=tools.call(crate::agent_tools::AgentRequest::parse("inbox",json!({"scope":"main","view":"active","limit":32})).unwrap()).await.unwrap();
+        assert_eq!(active["items"].as_array().unwrap().len(),2);
+        for item in active["items"].as_array().unwrap(){assert_eq!(item["message"]["assurance"],"AUTHOR_SIGNATURE_AND_AEAD");assert!(item["message"]["text"].as_str().unwrap().starts_with("original-mail-"));}
+        let before=bridge.calls().iter().filter(|v|v["method"]=="notify").count();
+        tokio::time::sleep(Duration::from_secs(4)).await;
+        assert_eq!(bridge.calls().iter().filter(|v|v["method"]=="notify").count(),before,"bound read stops wake retries without consume");
+        assert!(!bridge.calls().iter().any(|v|v["method"]=="deliver"));
+        for call in bridge.calls().iter().filter(|v|v["method"]=="notify"){assert!(!call.to_string().contains("original-mail-"));}
+        let pending=ipc::call(&ready.client_endpoints["worker"],json!({"method":"inbox","options":options,"after":0,"limit":32})).await.unwrap();assert_eq!(pending["value"]["items"].as_array().unwrap().len(),2);
+        assert_eq!(service.counts().await["actions"]["structure.message.send"],2,"notification retry must not resubmit messages");
+        drop(tools);stop.cancel();server.await.unwrap().unwrap();owner.close().await.unwrap();return;
+    }
     // A known busy host cannot accept another input yet. Deferral must retain
     // that fact, without spending an input attempt or downgrading it to UNKNOWN.
     tokio::time::timeout(Duration::from_secs(15), async {
@@ -3193,32 +3231,6 @@ async fn exercise_bridge_recovery(redeliver:bool) {
         "RESULT_UNKNOWN",
     )
     .await;
-    if redeliver {
-        bridge.receipt_state.store(7,Ordering::SeqCst);
-        let accepted=wait_host(&ready.client_endpoints["worker"],&options,&items[0],"HOST_ACCEPTED").await;
-        assert_ne!(accepted["call_id"],original["call_id"]);assert_eq!(accepted["frame_digest"],original["frame_digest"]);
-        wait_host(&ready.client_endpoints["worker"],&options,&items[1],"HOST_ACCEPTED").await;
-        let calls=bridge.calls();let attempts=calls.iter().filter(|v|v["method"]=="deliver"&&v["body"]["binding"]["sequence"]==items[0].sequence).collect::<Vec<_>>();
-        assert_eq!(attempts.len(),2);assert_eq!(attempts[0]["body"]["message"],attempts[1]["body"]["message"]);
-        assert_eq!(attempts[1]["body"]["retry_of"],attempts[0]["body"]["binding"]);
-        let consumed=ipc::call(&ready.client_endpoints["worker"],json!({"method":"consume","options":options,"items":items})).await.unwrap();assert_eq!(consumed["ok"],true,"{consumed}");
-        tokio::time::timeout(Duration::from_secs(15),async{loop{
-            let counts=service.counts().await;
-            if counts["ack_batches"]["APPLICATION_CONSUMED"]["items"].as_u64().unwrap_or(0)>=2 {break;}
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }}).await.unwrap();
-        stop.cancel();server.await.unwrap().unwrap();
-        let before=bridge.calls().iter().filter(|v|v["method"]=="deliver").count();
-        let stop=KernelCancellationToken::new();let(tx,rx)=oneshot::channel();let server=tokio::spawn(ipc::serve(runtime,stop.clone(),tx));let ready=rx.await.unwrap().unwrap();
-        tokio::time::timeout(Duration::from_secs(15),async{loop{
-            let state=ipc::call(&ready.admin_endpoint,json!({"method":"status"})).await.unwrap();
-            if state["value"]["hosts"][0]["host_observation"]["ready"]==true {break;}
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }}).await.unwrap();
-        assert_eq!(bridge.calls().iter().filter(|v|v["method"]=="deliver").count(),before,"consumption survives recipient restart");
-        assert_eq!(service.counts().await["actions"]["structure.message.send"],2,"host retries never repeat a business submission");
-        stop.cancel();server.await.unwrap().unwrap();owner.close().await.unwrap();return;
-    }
     // A malicious/mismatched receipt cannot release the original lane.
     bridge.receipt_state.store(4, Ordering::SeqCst);
     let seen = bridge

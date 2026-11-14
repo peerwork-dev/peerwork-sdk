@@ -12,6 +12,9 @@ pub(crate) mod communication_host;
 mod communication_host_owner;
 pub(crate) mod communication_store;
 pub mod communication_runtime;
+pub(crate) mod notification_delivery;
+pub(crate) mod notification_fence;
+mod communication_notifications;
 pub mod agent_tools;
 pub mod agent_frontend;
 pub mod participant_connect;
@@ -135,6 +138,10 @@ mod agent_client;
 mod agent_lifecycle;
 #[cfg(test)]
 mod agent_attached_tests;
+#[cfg(test)]
+mod compact_notification_http_tests;
+#[cfg(test)]
+mod compact_notification_runtime_tests;
 
 #[cfg(test)]
 mod human_source_transport_tests;

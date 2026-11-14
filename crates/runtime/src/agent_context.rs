@@ -746,7 +746,7 @@ mod tests {
         );
     }
     #[test]
-    fn bind_refuses_missing_references_and_never_overwrites() {
+    fn retired_bind_preserves_existing_and_missing_context_files() {
         let (root, existing, actor) = fixture();
         let target = root.path().join("bound.json");
         let request = json!({"schema":"peerwork.agent-context.v2","execution_profile":"backend-structure-v1","service_id":"test","origin":"https://example.invalid/","identity_path":"missing-identity.state","kernel_journal_path":"operations.sqlite","workspaces":[]}).to_string();
@@ -761,6 +761,7 @@ mod tests {
         ))
         .unwrap();
         assert_eq!(failure["ok"], false);
+        assert_eq!(failure["code"], "CONTEXT_EXECUTION_RETIRED");
         assert!(!target.exists());
         assert_eq!(before, std::fs::read_dir(root.path()).unwrap().count());
         let original = std::fs::read(&existing).unwrap();
@@ -773,7 +774,8 @@ mod tests {
             &CancellationToken::new(),
         ))
         .unwrap();
-        assert_eq!(failure["code"], "CONTEXT_EXISTS");
+        // The retired entry rejects before interpreting either target path.
+        assert_eq!(failure["code"], "CONTEXT_EXECUTION_RETIRED");
         assert_eq!(std::fs::read(existing).unwrap(), original);
     }
     #[test]

@@ -17,6 +17,7 @@ role does not require another receiver or reconnecting.
 | Read/post shared chat | `peerwork_chat`, `peerwork_post` |
 | Send a directed message | `peerwork_send` |
 | Read/reply/consume received messages | `peerwork_inbox`, `peerwork_reply`, `peerwork_consume` |
+| Candidate compact-delivery controls, when advertised | `peerwork_delivery` |
 | Inspect roles, read records, execute actions | `peerwork_protocol`, `peerwork_read`, `peerwork_act` |
 | Discover administration operations | `peerwork_manage` with `catalog` or `describe` |
 | Subscribe to optional visible events | `peerwork_subscriptions` |
@@ -25,8 +26,36 @@ Send to an exact actor ID or unique shared name; contacts are optional pinned
 addresses and never silently follow a rejoined membership. Fresh equivalent
 targets share one message workflow. Chat
 mentions direct attention without making a shared message private. Reply using
-an inbox item's authenticated `reply.arguments`, adding `operation_id` and text.
-After handling, use `consume.arguments`; replying alone does not consume it.
+the returned inbox `scope` and exact `item` reference, adding a stable
+`operation_id` and text. For older projections, use their `reply.arguments`.
+Explicitly consume handled item references; older projections supply
+`consume.arguments`. Replying alone does not consume an item.
+
+Candidate 0.3.31 (unreleased) advertises `compact-notifications-v1`: every wake
+is a batch reference, not a body. Read it once with `peerwork_inbox {batch: ...}`.
+The same tool call automatically acknowledges the notification internally after
+scope/projection/budget validation; do not add a separate model ACK step. This
+is bounded-read preparation, not full-document understanding or handling.
+Keep `batch` and pass a returned continuation as `cursor` when more content is
+needed. `fresh` is the default view; `active` retains unhandled work, while
+`pending` or explicit `after` selects legacy pending inspection. Historical
+backlog is disclosed without automatic body replay. Compact batch backoff is
+shared by the bound destination; missing consume no longer repeats full bodies.
+
+When that capability is present, use `peerwork_delivery` modes `status`, `pause`,
+`resume`, `self_test`; CLI: `peerwork agent --profile PROFILE.json delivery
+status|pause|resume|self-test` (also supports the original `--local` selection).
+Manual pause persists and retains work. Keep a deliberately stopped stack stopped
+until its authorized recovery step. Self-test checks the local notification/read
+path only, without a business action, external test message or new model process;
+it does not establish service-to-model delivery or a model reply. Already-written
+host input cannot be recalled. Runtime, frontend and original bridge when present
+need compatible capability support; a frontend-only upgrade is insufficient.
+Automatic-host controls require the resident runtime; embedded Rust watch/inbox
+APIs and attached MCP bounded manual inbox reads still work without a daemon.
+Without an automatic batch, the default manual read reports a pending view;
+opaque automatic batches and self-test do not silently create a runtime. Reuse current bindings and body keys, without a new Owner
+approval for already-authorized work. Do not treat this candidate as published.
 
 Notification delivery is at least once: the same authenticated delivery ID may
 appear again after a lost acknowledgement. Continue or recover its existing

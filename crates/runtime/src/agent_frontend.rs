@@ -20,6 +20,7 @@ pub fn help() -> Value {
 "peerwork agent --profile PROFILE.json send --to MEMBER --id OPERATION_ID [--text-file FILE] < message.txt",
 "peerwork agent --profile PROFILE.json reply SCOPE SEQUENCE/DELIVERY_ID --id OPERATION_ID [--text-file FILE] < reply.txt",
 "peerwork agent --profile PROFILE.json inbox SCOPE",
+"peerwork agent --profile PROFILE.json delivery status|pause|resume|self-test [SCOPE]",
 "peerwork agent --profile PROFILE.json status|recover OPERATION_ID",
 "peerwork agent --profile PROFILE.json call TOOL ARGUMENTS_JSON",
 "peerwork agent --profile PROFILE.json manage [describe OPERATION]",
@@ -55,6 +56,8 @@ fn selection(args: &[String]) -> Result<AgentRequest> {
         [command] if command == "manage" => ("manage", json!({"mode":"catalog"})),
         [command, mode, operation] if command=="manage"&&mode=="describe" => ("manage",json!({"mode":"describe","operation":operation})),
         [command, scope] if command == "inbox" => ("inbox", json!({"scope":scope})),
+        [command, mode] if command == "delivery" => ("delivery",json!({"mode":mode.replace('-',"_")})),
+        [command, mode, scope] if command == "delivery" => ("delivery",json!({"mode":mode.replace('-',"_"),"scope":scope})),
         [command] if command == "reachability" => ("reachability", json!({})),
         [command, scope] if command == "reachability" => ("reachability", json!({"scope":scope})),
         [command, flag, workspace] if command == "reachability"&&flag=="--workspace" => ("reachability", json!({"workspace":workspace})),
@@ -172,5 +175,7 @@ mod tests {
         )
         .is_err());
         assert!(selection(&["status", "original"].map(str::to_owned)).is_ok());
+        assert!(matches!(selection(&["delivery","self-test"].map(str::to_owned)).unwrap(),AgentRequest::Delivery{mode,scope:None}if mode=="self_test"));
+        assert!(matches!(selection(&["inbox","main"].map(str::to_owned)).unwrap(),AgentRequest::InboxRead{scope:Some(_),..}));
     }
 }

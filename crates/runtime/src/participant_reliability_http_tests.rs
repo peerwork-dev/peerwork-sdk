@@ -494,7 +494,7 @@ async fn stop_attach_while_original_pulse_is_in_flight_preserves_current_receive
 
 #[tokio::test(flavor="multi_thread",worker_threads=2)]
 #[ignore="requires explicit synthetic PostgreSQL and real product HTTP fixture"]
-async fn direct_codex_lost_acceptance_redelivers_same_notification_without_connect_or_rebind() {
+async fn direct_codex_lost_acceptance_retries_compact_batch_and_read_stops_wakes_without_consume() {
     use crate::{communication_host::tests::CodexFixture,participant_dispatch::{self,HostConfig,HostSubscription},participant_inbox::HostBinding};
     use std::sync::atomic::Ordering;
     let fixture=CodexFixture::start();let adapter=fixture.config();
@@ -514,28 +514,40 @@ async fn direct_codex_lost_acceptance_redelivers_same_notification_without_conne
     }}).await.unwrap();
     fixture.lose_next_ack.store(true,Ordering::SeqCst);
     let hosts=participant_dispatch::start(&configs,&clients,c._temp.path(),cancel.clone()).unwrap();
-    tokio::time::timeout(Duration::from_secs(15),async{loop{
-        match c.client.delivery_status(&options,item.clone()).await {
-            Ok(value) if value["host"]=="RESULT_UNKNOWN"=>break,
-            Ok(_)=>(),
-            Err(problem) if problem.code=="HOST_BINDING_NOT_CONFIGURED"=>(),
-            Err(problem)=>panic!("unexpected original-host observation failure: {problem:?}"),
-        }
+    let unknown=tokio::time::timeout(Duration::from_secs(15),async{loop{
+        let value=hosts[0].status.lock().unwrap().clone();let notice=&value["notification"];
+        if notice["batch"].is_string()&&!notice["code"].is_null(){break notice.clone();}
         tokio::time::sleep(Duration::from_millis(20)).await;
     }}).await.unwrap();
+    assert_eq!(unknown["code"],"HOST_ACK_UNKNOWN");assert_eq!(unknown["model_response"],"NOT_ATTESTED");
     assert_eq!(fixture.calls().iter().filter(|v|matches!(v["method"].as_str(),Some("turn/start"|"turn/steer"))).count(),1);
-    // The fixture was actually processing the first input. Finish that turn;
-    // recovery must not require Connect, a new session or manual replay.
     *fixture.status_override.lock().unwrap()=Some("idle".into());
     let accepted=tokio::time::timeout(Duration::from_secs(20),async{loop{
-        let status=c.client.delivery_status(&options,item.clone()).await.unwrap();
-        if status["host"]=="HOST_ACCEPTED" {break status;}
+        let value=hosts[0].status.lock().unwrap().clone();let notice=&value["notification"];
+        if notice["outcome"]["state"]=="HOST_ACCEPTED"{break notice.clone();}
         tokio::time::sleep(Duration::from_millis(25)).await;
     }}).await.unwrap();
-    assert_eq!(accepted["delivery"]["attempt"],2,"the missing original reply must recover automatically");
+    assert_eq!(accepted["batch"],unknown["batch"]);assert_eq!(accepted["attempt"],2);
     let inputs=fixture.calls().into_iter().filter(|v|matches!(v["method"].as_str(),Some("turn/start"|"turn/steer"))).collect::<Vec<_>>();
-    assert_eq!(inputs.len(),2);assert_eq!(inputs[0]["params"]["clientUserMessageId"],inputs[1]["params"]["clientUserMessageId"]);assert_eq!(inputs[0]["params"]["input"],inputs[1]["params"]["input"]);
-    c.client.consume(&options,vec![item]).await.unwrap();
+    assert_eq!(inputs.len(),2);assert_eq!(inputs[0]["params"]["input"],inputs[1]["params"]["input"]);
+    assert!(!inputs[0].to_string().contains("one-business-message"));
+    let hub=crate::communication_notifications::Hub::open(c._temp.path()).unwrap();
+    let batch=accepted["batch"].as_str().unwrap();
+    let read=hub.read(&c.client,batch,"fresh",None,0,None,8,16384).await.unwrap();assert_eq!(read["state"],"SELF_TEST_READY");
+    hub.observe(&c.client,batch).await.unwrap();
+    let backlog=tokio::time::timeout(Duration::from_secs(20),async{loop{
+        let value=hosts[0].status.lock().unwrap().clone();let notice=&value["notification"];
+        if notice["batch"].is_string()&&notice["batch"]!=accepted["batch"]{break notice["batch"].as_str().unwrap().to_owned();}
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }}).await.unwrap();
+    let read=hub.read(&c.client,&backlog,"fresh",None,0,None,8,16384).await.unwrap();assert_eq!(read["state"],"BACKLOG_AVAILABLE");hub.observe(&c.client,&backlog).await.unwrap();
+    let page=hub.read(&c.client,"","active",Some(&options),0,None,32,16384).await.unwrap();
+    let found=page["items"].as_array().unwrap().iter().find(|v|v["item"]["delivery_id"]==item.delivery_id).unwrap();
+    assert_eq!(found["message"]["assurance"],"AUTHOR_SIGNATURE_AND_AEAD");assert_eq!(found["message"]["text"],"one-business-message");
+    let before=fixture.calls().iter().filter(|v|matches!(v["method"].as_str(),Some("turn/start"|"turn/steer"))).count();
+    tokio::time::sleep(Duration::from_secs(4)).await;
+    assert_eq!(fixture.calls().iter().filter(|v|matches!(v["method"].as_str(),Some("turn/start"|"turn/steer"))).count(),before);
+    assert!(c.client.inbox(&options,0,32).await.unwrap().items.iter().any(|v|v["delivery_id"]==item.delivery_id),"read must retain unconsumed work");
     assert_eq!(c.service.counts().await["actions"]["structure.message.send"],1);
     cancel.cancel();for host in hosts{host.task.await.unwrap();}c.client.close().await.unwrap();
 }

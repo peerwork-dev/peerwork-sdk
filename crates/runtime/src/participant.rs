@@ -1125,6 +1125,15 @@ impl ParticipantClient {
         })?;
         rx.await.map_err(|_| ParticipantError::unavailable())?
     }
+    /// Local delivery metadata only; no body decryption or service request.
+    pub async fn inbox_metadata(&self, options: &WatchOptions) -> Result<Value> {
+        options.authorize(&self.capability)?;
+        let (tx,rx)=oneshot::channel();
+        self.send(Command::Watch{context:self.context(),request:crate::participant_watch::Command::Metadata{
+            namespace:self.namespace.clone(),options:options.clone(),reply:tx,
+        }})?;
+        rx.await.map_err(|_|ParticipantError::unavailable())?
+    }
     /// Record application consumption locally. Fenced remote ACK upload is
     /// automatic and independent; this is not a business/model completion claim.
     pub async fn consume(
@@ -1334,7 +1343,7 @@ async fn engine_loop(
                     let authorized=match &request{
                         crate::participant_watch::Command::Resident{..}=>Err(ParticipantError::local("RUNTIME_OWNER_REQUIRED","HOST_REBIND")),
                         crate::participant_watch::Command::Bindings{..}=>Ok(()),
-                        crate::participant_watch::Command::Attach{options,..}|crate::participant_watch::Command::Snapshot{options,..}|crate::participant_watch::Command::Consume{options,..}|crate::participant_watch::Command::Stop{options,..}|crate::participant_watch::Command::Host{options,..}=>options.authorize(&context.capability),
+                        crate::participant_watch::Command::Attach{options,..}|crate::participant_watch::Command::Snapshot{options,..}|crate::participant_watch::Command::Metadata{options,..}|crate::participant_watch::Command::Consume{options,..}|crate::participant_watch::Command::Stop{options,..}|crate::participant_watch::Command::Host{options,..}=>options.authorize(&context.capability),
                     };
                     if let Err(e)=authorized{crate::participant_watch::reject(request,e);}
                     else if let Err(e)=watch_tx.try_send(request){crate::participant_watch::reject(e.into_inner(),ParticipantError::local("WATCH_QUEUE_FULL","ADMISSION"));}

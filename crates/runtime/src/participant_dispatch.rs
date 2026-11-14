@@ -8,6 +8,8 @@ use crate::{
     secure_state::SecureStateStore,
     KernelCancellationToken,
 };
+#[path="participant_notification_dispatch.rs"]
+mod compact_notifications;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
@@ -559,6 +561,7 @@ async fn run_owned(
     published_adapter:SharedAdapter,
     progress:crate::communication_host::operation::Budget,
 ) -> Result<()> {
+    let notification_hub=crate::communication_notifications::Hub::open(launch_fence.parent().ok_or_else(||error("HOST_STATE_INVALID"))?)?;
     let handle = tokio::runtime::Handle::current();
     // The adapter owns only an executor Handle, not a nested runtime. Blocking
     // socket/helper work stays counted in this one owned dispatcher future.
@@ -708,6 +711,9 @@ async fn run_owned(
                 client
                     .host_operation(&options, HostOperation::Attach(binding.clone()))
                     .await?;
+                if config.adapter["kind"]!="bridge"{
+                    notification_hub.register_local(&crate::communication_notifications::owner(&client,&options))?;
+                }
                 if config.adapter["kind"] == "bridge" {
                     let access = match client
                         .host_operation(&options, HostOperation::AccessScope)
@@ -716,6 +722,10 @@ async fn run_owned(
                         HostReply::AccessScope(v) => v,
                         _ => return Err(error("HOST_STATE_INVALID")),
                     };
+                    let notice_owner=crate::communication_notifications::owner(&client,&options);
+                    notification_hub.register_remote(&notice_owner,config.adapter.clone(),access.clone())?;
+                    let current=notification_hub.store.current(&notice_owner)?;
+                    notification_hub.sync_remote(&notice_owner,current.as_ref()).await?;
                     tokio::task::spawn_blocking(move || {
                         crate::communication_host::operation::with_host(&selected,std::time::Instant::now()+Duration::from_secs(10),|host|host.health(&access))
                     })
@@ -780,12 +790,13 @@ async fn run_owned(
             let source_observed_at=observed_at.checked_sub(Duration::from_millis(age)).unwrap_or(observed_at);
             let mut obligations=Vec::new();
             for (client, options) in watches.iter() {
+                let delivery=notification_hub.store.status(&crate::communication_notifications::owner(client,options))?;
                 if let Ok(HostReply::Status(summary))=client.host_operation(options,HostOperation::Summary).await{obligations.push(summary);}
                 if let Err(problem) = client
                     .host_operation(
                         options,
                         HostOperation::Presence {
-                            value: json!({"mode":value["mode"],"ready":value["ready"],"execution_state":value["execution_state"]}),
+                            value: json!({"mode":value["mode"],"ready":value["ready"]==true&&delivery["state"]=="RUNNING","execution_state":value["execution_state"]}),
                             observed_at:source_observed_at,
                         },
                     )
@@ -850,211 +861,16 @@ async fn run_owned(
             });
             next_retire = std::time::Instant::now() + Duration::from_secs(1);
         }
-        let mut progressed = false;
-        let mut receipt_probed = false;
-        let round_start = next;
-        for offset in 0..watches.len() {
-            let index = (round_start + offset) % watches.len();
-            let (client, options) = &watches[index];
-            if pending_finishes.contains_key(&options.key())
-                || pending_finishes.len() >= 8
-                || !selected(sources, client, options)?
-            {
-                continue;
-            }
-            let scope_result:Result<bool>=async {
-            let mut recovery_call=None;
-            if !receipt_probed {
-                let original=match client.host_operation(options,HostOperation::ReconcileDue).await? {
-                    HostReply::Call(call)=>call,_=>return Err(error("HOST_STATE_INVALID")),
-                };
-                if let Some(call)=original {
-                    receipt_probed=true;
-                    let selected=adapter.as_ref().ok_or_else(||error("HOST_NOT_READY"))?.clone();
-                    let binding=call.scope.clone();let id=call.frame["message_id"].as_str().ok_or_else(||error("HOST_FRAME_INVALID"))?.to_owned();let digest=call.frame_digest.clone();
-                    let observed=tokio::task::spawn_blocking(move||crate::communication_host::operation::with_host(&selected,std::time::Instant::now()+Duration::from_secs(10),|host|host.reconcile(&binding,&id,&digest))).await.unwrap_or(Err("HOST_RECEIPT_UNAVAILABLE"));
-                    let allow_retry = config.adapter["kind"]!="bridge" || observed.as_ref().is_ok_and(|value|value.as_ref().is_some_and(|v|v["retry_allowed"]==true));
-                    if let Ok(Some(value))=observed {
-                        let outcome=host_outcome(config.adapter["kind"].as_str().unwrap_or(""),Ok(value));
-                        if !matches!(outcome,HostOutcome::Unknown{..}) && call.outcome.as_ref()!=serde_json::to_value(&outcome).ok().as_ref() {
-                            finish(pending_finishes,client,options,call,outcome).await?;
-                            next=(index+1)%watches.len();return Ok(true);
-                        }
-                    }
-                    let now=crate::participant_store::now();
-                    let eligible=status.lock().ok().is_some_and(|s| {
-                        let host=&s["host_observation"];
-                        match host["execution_state"].as_str() {
-                            Some("WAITING_APPROVAL")=>false,
-                            Some("BUSY")=>host["ready"]==true && now>=call.retry_at.saturating_add(60_000),
-                            _=>true,
-                        }
-                    });
-                    if allow_retry && call.retry_at<=now && eligible { recovery_call=Some(call); }
-                }
-            }
-            let (item,frame) = if let Some(call)=&recovery_call {
-                (crate::participant_watch::DeliveryReference{sequence:call.scope["sequence"].as_u64().ok_or_else(||error("HOST_FRAME_INVALID"))?,delivery_id:call.scope["delivery_id"].as_str().ok_or_else(||error("HOST_FRAME_INVALID"))?.into()},call.frame.clone())
-            }else{
-            let due = match client
-                .host_operation(options, HostOperation::Due { limit: 1 })
-                .await
-            {
-                Ok(HostReply::Due(due)) => due,
-                Err(e)=>return Err(e),
-                _ => return Err(error("HOST_STATE_INVALID")),
-            };
-            let Some(item) = due.into_iter().next() else {
-                return Ok(false);
-            };
-            let page = client
-                .inbox(options, item.sequence.saturating_sub(1), 1)
-                .await?;
-            let Some(entry) = page
-                .items
-                .first()
-                .filter(|e| e["delivery_id"] == item.delivery_id)
-            else {
-                client
-                    .host_operation(
-                        options,
-                        HostOperation::Defer {
-                            item,
-                            code: "HOST_DELIVERY_NOT_AVAILABLE".into(),
-                        },
-                    )
-                    .await?;
-                return Ok(false);
-            };
-            let frame = if entry["state"] == "PENDING" {
-                match render(client, options, entry) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        client
-                            .host_operation(options, HostOperation::Defer { item, code: e.code })
-                            .await?;
-                        return Ok(false);
-                    }
-                }
-            } else {
-                json!({})
-            };
-            (item,frame)
-            };
-            if matches!(config.adapter["kind"].as_str(),Some("codex"|"bridge"|"agy-stdio")) {
-                // Metadata-only preflight precedes a durable input attempt.
-                // Waiting for user approval must not burn delivery attempts.
-                let selected = adapter.as_ref().unwrap().clone();
-                let observed_at=std::time::Instant::now();
-                let deadline=observed_at+Duration::from_secs(10);
-                let health=tokio::task::spawn_blocking(move||crate::communication_host::operation::with_host(&selected,deadline,|host|{
-                    let mut value=crate::communication_host::sanitized_health(&host.health(&json!({}))?);
-                    value["can_attempt_queued"]=json!(host.mode=="TOOL_ONLY"&&value["can_attempt"]==true);Ok(value)
-                })).await.unwrap_or(Err("HOST_TASK_FAILED"));
-                if let Ok(value)=&health{if let Ok(mut current)=status.lock(){current["host_observation"]=value.clone();}}
-                match health {
-                    Ok(value) if value["ready"] == true||value["can_attempt_queued"]==true => (),
-                    other => {
-                        let execution=other.as_ref().ok()
-                            .and_then(|value|value["execution_state"].as_str())
-                            .filter(|state|matches!(*state,"IDLE"|"BUSY"|"WAITING_APPROVAL"|"OFFLINE"))
-                            .unwrap_or("UNKNOWN");
-                        let code=match &other {
-                            Err(code)=>(*code).to_owned(),
-                            Ok(value)=>value["reason"].as_str().map(str::to_owned).unwrap_or_else(||match execution {"BUSY"=>"HOST_BUSY","WAITING_APPROVAL"=>"HOST_WAITING_APPROVAL",_=>"HOST_NOT_READY"}.to_owned()),
-                        };
-                        for (target,scope) in watches.iter(){if let Err(problem)=target.host_operation(scope,HostOperation::Presence{value:json!({"mode":if config.adapter["destination"]["host"]=="ANTIGRAVITY_APP"{"QUEUED_ONLY"}else{"LIVE"},"ready":false,"execution_state":execution}),observed_at}).await{scope_error(&status,scope,&problem);}}
-                        client
-                            .host_operation(
-                                options,
-                                HostOperation::Defer {
-                                    item,
-                                    code: code.clone(),
-                                },
-                            )
-                            .await?;
-                        if other.is_ok() {
-                            if let Ok(mut current)=status.lock() {
-                                current["state"]=json!("BLOCKED");current["code"]=json!(code);
-                            }
-                        }else{
-                            set(&status,json!({"state":"BLOCKED","code":code,"model_response":"NOT_ATTESTED"}));
-                        }
-                        if other.is_err() {
-                            close_adapter(adapter).await?;
-                            return Ok(true);
-                        }
-                        return Ok(false);
-                    }
-                }
-            }
-            if !selected(sources,client,options)?{return Ok(false);}
-            let call = match client
-                .host_operation(options, if let Some(call)=recovery_call { HostOperation::Retry{call} } else { HostOperation::Begin { item, frame } })
-                .await?
-            {
-                HostReply::Call(Some(call)) => call,
-                HostReply::Call(None) => return Ok(false),
-                _ => return Err(error("HOST_STATE_INVALID")),
-            };
-            // The final selected-source check is the admission boundary for
-            // this in-flight call. Revocation after it may not erase its result.
-            if !selected(sources,client,options)? {
-                finish(pending_finishes,client,options,call,HostOutcome::NotSent{code:"LOCAL_CLIENT_REVOKED".into(),proof:"LOCAL_PREFLIGHT_NO_IO".into()}).await?;
-                return Ok(false);
-            }
-            let selected = adapter.as_ref().unwrap().clone();
-            let message = call.frame.clone();
-            let binding = call.scope.clone();
-            let deadline=std::time::Instant::now()+Duration::from_secs(10);
-            let previous=call.retry_of.clone();
-            let delivered = tokio::task::spawn_blocking(move ||crate::communication_host::operation::with_host(&selected,deadline,|host|{
-                let result=host.deliver_attempt(&binding,&message,previous.as_ref());
-                Ok((result,host.progress.snapshot()))
-            })).await.unwrap_or(Err("HOST_ACK_UNKNOWN"));
-            let (delivered,diagnostic)=delivered.unwrap_or_else(|code|(Err(code),progress.snapshot()));
-            if let Err(problem)=client.host_operation(options,HostOperation::Diagnostic{call:call.clone(),value:diagnostic}).await {scope_error(&status,options,&problem);}
-            let outcome = host_outcome(config.adapter["kind"].as_str().unwrap_or(""), delivered);
-            let unknown = matches!(outcome, HostOutcome::Unknown { .. });
-            // Persist before allowing another host call. If storage fails, the
-            // original CALL_OPEN remains uncertain. Recovery uses a separate
-            // durable attempt with the same frozen notification ID.
-            if unknown && config.adapter["kind"]!="agy-stdio" {close_adapter(adapter).await?;}
-            finish(pending_finishes,client,options,call.clone(),outcome).await?;
-            // Input acceptance can change host eligibility immediately. Refresh
-            // its observed state before dispatching another eligible message.
-            next_health = std::time::Instant::now();
-            // Progress must retain the verified physical destination and source
-            // observations. Replacing the entire status here erased them after
-            // the first delivery, making current-host checks unverifiable.
-            if let Ok(mut current)=status.lock() {
-                current["state"]=json!(if unknown{"HOST_RESULT_UNKNOWN"}else{"HOST_ATTACHED"});
-                if unknown {current["code"]=json!("HOST_ACCEPTANCE_UNRESOLVED");current["recovery"]=json!("AUTOMATIC_RECEIPT_RECONCILIATION_OR_SAME_MESSAGE_REDELIVERY");}
-                else if let Some(fields)=current.as_object_mut(){fields.remove("code");fields.remove("recovery");}
-                current["last_call_id"]=json!(call.call_id);
-                current["model_response"]=json!("NOT_ATTESTED");
-            }
-            if unknown && config.adapter["kind"]!="agy-stdio" {
-                close_adapter(adapter).await?;
-            }
-            next = (index + 1) % watches.len();
-            progressed = true;
-            Ok(true)
-            }.await;
-            match scope_result {
-                Ok(true) => {
-                    progressed = true;
-                    break;
-                }
-                Ok(false) => (),
-                Err(problem) => scope_error(&status, options, &problem),
-            }
-            if adapter.is_none() {
-                break;
-            }
+        // Legacy call facts remain available for reporting/retirement. They
+        // never replay historical bodies through the new notification path.
+        if let Err(problem)=compact_notifications::step(&config,&notification_hub,watches,adapter,&status,&mut next).await {
+            if let Ok(mut value)=status.lock(){value["notification_error"]=json!(problem.code);}
         }
-        if !progressed {
-            tokio::select! {_=cancel.cancelled()=>break,_=changed.notified()=>{},_=tokio::time::sleep(Duration::from_millis(500))=>{}}
+        tokio::select! {
+            _=cancel.cancelled()=>break,
+            _=changed.notified()=>{},
+            _=notification_hub.changed.notified()=>{},
+            _=tokio::time::sleep(Duration::from_secs(3))=>{},
         }
     }
     // Dropping handles stops observation; persisted receiver custody/claims
@@ -1073,7 +889,9 @@ mod tests {
         let executable = root.path().join("owned-agy.sh");
         std::fs::write(&executable, "#!/bin/sh\nprintf '%s\\n' '{\"event\":\"init\",\"conversation_id\":\"owned-conversation\"}'\nwhile IFS= read -r line; do :; done\n").unwrap();
         std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let path = root.path().join("host.state");
+        let state_directory=root.path().join("host-state");
+        crate::secure_state::create_private_state_directory(&state_directory).unwrap();
+        let path = state_directory.join("host.state");
         let config = HostConfig {
             name: "selected".into(),
             adapter: json!({"kind":"agy-stdio","managed":true,"executable":executable,"working_directory":root.path(),"conversation_id":"owned-conversation"}),

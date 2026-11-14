@@ -338,6 +338,8 @@ struct Credential {
 }
 type Credentials = Arc<BTreeMap<String, Credential>>;
 type CachedStatus=Arc<Mutex<(Value,std::time::Instant)>>;
+#[path="communication_bridge_notifications.rs"]
+mod notices;
 fn coordinator_phase(cache:&CachedStatus,phase:&'static str){if let Ok(mut value)=cache.lock(){value.0["health"]["coordinator_phase"]=json!(phase);}}
 
 struct Work {
@@ -574,6 +576,8 @@ async fn http(
     operation_limit:Duration,
     cached:CachedStatus,
     progress:crate::communication_host::operation::Budget,
+    notice_fence:Arc<crate::notification_fence::Fence>,
+    notice_provider:mpsc::Sender<ProviderRequest>,
 ) -> std::result::Result<Response<Full<Bytes>>, Infallible> {
     let deadline=std::time::Instant::now()+operation_limit;
     let mut authenticated = None;
@@ -600,6 +604,8 @@ async fn http(
             "/deliver" => "deliver",
             "/receipt" => "receipt",
             "/retire" => "retire",
+            "/notify" => "notify",
+            "/notice-control" => "notice-control",
             _ => return Err("BRIDGE_METHOD_REJECTED"),
         }
         .to_string();
@@ -617,6 +623,10 @@ async fn http(
         let value =
             channel::open_request(&access.key, &method, &bytes).map_err(|_| "BRIDGE_FORBIDDEN")?;
         authenticated = Some((method.clone(), bytes.to_vec(), access.key.clone()));
+        if matches!(method.as_str(),"notify"|"notice-control"){
+            let destination=cached.lock().map_err(|_|"BRIDGE_STATE_INVALID")?.0["destination"].clone();
+            return notices::request(value,&method,&access.grants,&destination,&notice_fence,&notice_provider,deadline).await;
+        }
         let query:Query = serde_json::from_value(value).map_err(|_| "BRIDGE_REQUEST_INVALID")?;
         if method=="health" {
             let (mut snapshot,at)=cached.lock().map_err(|_|"BRIDGE_STATE_INVALID")?.clone();
@@ -625,6 +635,8 @@ async fn http(
             if age>=Duration::from_secs(10){snapshot["health"]["ready"]=json!(false);snapshot["health"]["execution_state"]=json!("UNKNOWN");snapshot["health"]["reason"]=json!("BRIDGE_COORDINATOR_STALE");}
             snapshot["health"]["coordinator_age_ms"]=json!(age.as_millis() as u64);
             snapshot["health"]["diagnostic"]=progress.snapshot();
+            snapshot["features"]=json!(["compact-notifications-v1"]);
+            snapshot["sdk_version"]=json!(env!("CARGO_PKG_VERSION"));
             return Ok(snapshot);
         }
         let (tx, rx) = oneshot::channel();
@@ -673,11 +685,12 @@ struct ProviderRequest {
 }
 // The physical host never enters an async task: its owned proxy/process Drop
 // may synchronously reap children using the runtime handle.
-fn provider_loop(config:Value,executor:tokio::runtime::Handle,progress:crate::communication_host::operation::Budget,mut requests:mpsc::Receiver<ProviderRequest>)->R<()> {
+fn provider_loop(config:Value,executor:tokio::runtime::Handle,progress:crate::communication_host::operation::Budget,mut requests:mpsc::Receiver<ProviderRequest>,notice_fence:Arc<crate::notification_fence::Fence>)->R<()> {
     let mut host:Option<Host>=None;
     let mut pending_receipt:Option<(Value,Value)>=None;
     #[cfg(test)] let mut injected=false;
     while let Some(request)=requests.blocking_recv(){
+        let mut notice_admitted=false;
         let _operation=progress.scope(if request.frame.is_some(){"DELIVER"}else{"HEALTH"});progress.clamp(request.deadline);
         let result=std::panic::catch_unwind(std::panic::AssertUnwindSafe(||->R<(Value,Value)>{
             if progress.remaining().is_err(){
@@ -699,6 +712,14 @@ fn provider_loop(config:Value,executor:tokio::runtime::Handle,progress:crate::co
                 selected.destination=actual;
             }
             let result=if let Some(frame)=&request.frame {
+                if let Some(n)=request.binding.get("notification"){
+                    let owner=n["owner"].as_str().ok_or("BRIDGE_REQUEST_INVALID")?;
+                    let batch=n["batch"].as_str().ok_or("BRIDGE_REQUEST_INVALID")?;
+                    if let Some(known)=notice_fence.begin(owner,n["revision"].as_u64().ok_or("BRIDGE_REQUEST_INVALID")?,batch,n["attempt"].as_u64().ok_or("BRIDGE_REQUEST_INVALID")?)?{return Ok((selected.destination.clone(),known));}
+                    notice_admitted=true;
+                }else if request.binding["format"]=="peerwork.host-call.v1"&&!notice_fence.legacy_allowed(&notices::owner(&request.binding)?)?{
+                    return Ok((selected.destination.clone(),json!({"state":"NOT_SENT","code":"COMPACT_NOTIFICATION_DELIVERY_REQUIRED","proof":"LOCAL_PREFLIGHT_NO_IO"})));
+                }
                 let delivered=selected.deliver(&request.binding,frame);
                 let disconnect=delivered.as_ref().is_err_and(|code|!matches!(*code,"HOST_NOT_READY"|"HOST_INPUT_TOO_LARGE"|"HOST_INPUT_CONFLICT"|"HOST_INBOX_FULL") && !(config["kind"]=="agy-stdio" && *code=="HOST_ACK_UNKNOWN"));
                 if config["kind"]=="agy-stdio" {
@@ -723,6 +744,12 @@ fn provider_loop(config:Value,executor:tokio::runtime::Handle,progress:crate::co
             };
             result.map(|value|(selected.destination.clone(),value))
         })).unwrap_or(Err("HOST_PROVIDER_PANICKED"));
+        if let Some(n)=request.binding.get("notification").filter(|_|notice_admitted){
+            if let (Some(owner),Some(batch),Some(attempt))=(n["owner"].as_str(),n["batch"].as_str(),n["attempt"].as_u64()){
+                let value=result.as_ref().map(|(_,v)|v.clone()).unwrap_or_else(|_|json!({"state":"RESULT_UNKNOWN","code":"HOST_ACK_UNKNOWN"}));
+                let _=notice_fence.finish(owner,batch,attempt,&value);
+            }
+        }
         if let Err(code)=&result{progress.failure(code,None);drop(host.take());}
         let _=request.reply.send(result);
     }
@@ -798,7 +825,10 @@ async fn serve_limit(mut config:BridgeConfig,cancel:KernelCancellationToken,read
     let mut provider_config=config.host.clone();
     if provider_config["kind"]=="agy-stdio"{provider_config["launch_fence"]=json!(config.state_directory.join("agy-stdio-launch.state"));}
     let (provider_tx,provider_rx)=mpsc::channel(1);
-    let provider=tokio::task::spawn_blocking(move||provider_loop(provider_config,provider_executor,provider_progress,provider_rx));
+    let notice_fence=crate::notification_fence::Fence::open(&config.state_directory)?;
+    let provider_fence=notice_fence.clone();
+    let http_provider=provider_tx.clone();
+    let provider=tokio::task::spawn_blocking(move||provider_loop(provider_config,provider_executor,provider_progress,provider_rx,provider_fence));
     let cached:CachedStatus=Arc::new(Mutex::new((json!({}),std::time::Instant::now())));
     let worker_cache=cached.clone();let http_progress=progress.clone();
     let coordinator_executor=executor.clone();
@@ -1089,7 +1119,7 @@ async fn serve_limit(mut config:BridgeConfig,cancel:KernelCancellationToken,read
         Ok(Ok(value))=>value,
         other=>{
             let code=match other {Ok(Err(code))=>code,_=>match worker.await {Ok(Err(code))=>code,_=>"BRIDGE_START_FAILED"}};
-            let _=provider.await;let _=ready.send(Err(code));return Err(code);
+            drop(http_provider);let _=provider.await;let _=ready.send(Err(code));return Err(code);
         }
     };
     let (initialized, keys) = initialized;
@@ -1102,8 +1132,8 @@ async fn serve_limit(mut config:BridgeConfig,cancel:KernelCancellationToken,read
             _=cancel.cancelled()=>break,
             result=&mut worker=>{worker_result=Some(result);break;},
             _=connections.join_next(),if !connections.is_empty()=>{},
-            accepted=listener.accept(),if connections.len()<16=>{let(stream,_)=match accepted{Ok(value)=>value,Err(_)=>{listener_error=Some("BRIDGE_LISTEN_FAILED");cancel.cancel();break;}};let sender=tx.clone();let auth=keys.clone();let cache=cached.clone();let live=http_progress.clone();connections.spawn(async move{
-                let service=hyper::service::service_fn(move|request|http(request,sender.clone(),auth.clone(),operation_limit,cache.clone(),live.clone()));
+            accepted=listener.accept(),if connections.len()<16=>{let(stream,_)=match accepted{Ok(value)=>value,Err(_)=>{listener_error=Some("BRIDGE_LISTEN_FAILED");cancel.cancel();break;}};let sender=tx.clone();let auth=keys.clone();let cache=cached.clone();let live=http_progress.clone();let connection_fence=notice_fence.clone();let connection_provider=http_provider.clone();connections.spawn(async move{
+                let service=hyper::service::service_fn(move|request|http(request,sender.clone(),auth.clone(),operation_limit,cache.clone(),live.clone(),connection_fence.clone(),connection_provider.clone()));
                 let connection=hyper::server::conn::http1::Builder::new().timer(hyper_util::rt::TokioTimer::new()).header_read_timeout(Duration::from_secs(2)).max_buf_size(16384).max_headers(32).serve_connection(hyper_util::rt::TokioIo::new(stream),service);
                 let _=tokio::time::timeout(Duration::from_secs(30),connection).await;
             });}
@@ -1118,6 +1148,7 @@ async fn serve_limit(mut config:BridgeConfig,cancel:KernelCancellationToken,read
         None=>worker.await.map_err(|_|"BRIDGE_TASK_FAILED").and_then(|value|value),
     };
     // Never detach a provider writer on cancellation, coordinator error or panic.
+    drop(http_provider);
     let provider_result=provider.await.map_err(|_|"HOST_PROVIDER_TASK_FAILED").and_then(|value|value);
     result.and(provider_result)?;
     if let Some(code)=listener_error{return Err(code);}Ok(())

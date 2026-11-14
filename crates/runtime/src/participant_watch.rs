@@ -205,6 +205,11 @@ pub(crate) enum Command {
         limit: usize,
         reply: oneshot::Sender<Result<WatchSnapshot>>,
     },
+    Metadata {
+        namespace: String,
+        options: WatchOptions,
+        reply: oneshot::Sender<Result<Value>>,
+    },
     Consume {
         namespace: String,
         options: WatchOptions,
@@ -214,6 +219,7 @@ pub(crate) enum Command {
 }
 pub(crate) fn reject(command: Command, e: ParticipantError) {
     match command {
+        Command::Metadata {reply,..} => {let _=reply.send(Err(e));},
         Command::Resident { reply, .. } => { let _ = reply.send(Err(e)); },
         Command::Bindings { reply, .. } => {
             let _ = reply.send(Err(e));
@@ -729,6 +735,16 @@ pub(crate) async fn run(
                         let entry=slots.get_mut(&key).unwrap();entry.enabled=true;
                         let (tx,rx)=mpsc::channel(1);let _=tx.try_send(());entry.signals.push(tx);Ok(rx)
                     })();let _=reply.send(attached);
+                },
+                Some(Command::Metadata{namespace,options,reply})=>{
+                    let value=(||->Result<Value>{
+                        let slot=slots.get(&options.key()).filter(|s|s.binding.namespace==namespace&&s.binding.options==options).ok_or_else(||error("WATCH_NOT_FOUND"))?;
+                        let mut value=store.notification_head(&options.workspace_id,&options.mailbox_id)?;
+                        value["state"]=json!(slot.state);value["code"]=json!(slot.code);
+                        value["receiver_link_verified"]=json!(slot.link_verified);
+                        value["verification_failure"]=json!(slot.receive_fault);
+                        value["presence"]=slot.presence.local();Ok(value)
+                    })();let _=reply.send(value);
                 },
                 Some(Command::Snapshot{namespace,options,after,limit,reply})=>{
                     let value=(||->Result<WatchSnapshot>{

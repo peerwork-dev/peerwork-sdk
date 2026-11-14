@@ -24,6 +24,7 @@ pub struct RuntimeClient {
     expected_origin: String,
     verified: Mutex<Option<String>>,
     binding: Option<Value>,
+    compact_notifications:std::sync::atomic::AtomicBool,
 }
 impl RuntimeClient {
     pub async fn connect(
@@ -42,6 +43,7 @@ impl RuntimeClient {
             expected_origin: origin,
             verified: Mutex::new(None),
             binding: None,
+            compact_notifications:std::sync::atomic::AtomicBool::new(false),
         };
         client.call(json!({"method":"capabilities"})).await?;
         Ok(client)
@@ -85,6 +87,7 @@ impl RuntimeClient {
                 if observed[field]!=expected[field] {return Err(local("ORIGINAL_RUNTIME_BINDING_CHANGED"));}
             }
         }
+        self.compact_notifications.store(caps["features"].as_array().is_some_and(|features|features.iter().any(|v|v=="compact-notifications-v1")),std::sync::atomic::Ordering::Release);
         *self.verified.lock().await = Some(fingerprint.into());
         Ok(caps)
     }
@@ -119,6 +122,9 @@ impl RuntimeClient {
         let verified = { self.verified.lock().await.clone() };
         if verified.as_deref() != Some(fingerprint.as_str()) {
             self.verify(&endpoint, &fingerprint).await?;
+        }
+        if request["method"].as_str().is_some_and(|method|method=="delivery"||method.starts_with("notification_"))&&!self.compact_notifications.load(std::sync::atomic::Ordering::Acquire){
+            let mut problem=local("NOTIFICATION_RUNTIME_UPGRADE_REQUIRED");problem.details=Some(serde_json::json!({"required_feature":"compact-notifications-v1","component":"ORIGINAL_RESIDENT_RUNTIME","identity_replacement_required":false}));return Err(problem);
         }
         let original = request["request"]["operation_id"]
             .as_str()

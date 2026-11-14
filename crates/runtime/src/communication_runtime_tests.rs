@@ -1,6 +1,25 @@
 use super::*;
 use crate::kernel_identity::KernelIdentity;
 
+#[tokio::test(flavor="multi_thread",worker_threads=3)]
+#[ignore="requires synthetic loopback IPC"]
+async fn compact_notice_control_ingress_survives_full_ordinary_connection_pool(){
+    let temp=crate::test_support::protected_test_dir();let options=config(temp.path());
+    let(ready,cancel,task)=start(options.clone()).await;
+    let endpoint=load_endpoint(&ready.client_endpoints["reader"]).unwrap();
+    assert!(endpoint.control_address.is_some());assert_ne!(endpoint.control_address,Some(endpoint.address));
+    let mut held=Vec::new();
+    for _ in 0..MAX_CONNECTIONS{
+        let mut stream=BufReader::new(TcpStream::connect(endpoint.address).await.unwrap());
+        client_handshake(&mut stream,&endpoint.token).await.unwrap();held.push(stream);
+    }
+    let result=tokio::time::timeout(Duration::from_secs(2),call(&ready.client_endpoints["reader"],json!({"method":"delivery","mode":"pause"}))).await.expect("selected-client pause must not queue behind ordinary IPC connections").unwrap();
+    assert_eq!(result["ok"],true,"{result}");assert_eq!(result["value"]["state"],"NOT_CONFIGURED");
+    let denied=call(&ready.client_endpoints["reader"],json!({"method":"stop"})).await.unwrap();
+    assert_eq!(denied["error"]["code"],"CLIENT_REQUEST_INVALID","reserved ingress does not grant runtime administration");
+    drop(held);cancel.cancel();task.await.unwrap().unwrap();
+}
+
 #[tokio::test(flavor="multi_thread",worker_threads=2)]
 #[ignore="requires loopback IPC permission"]
 async fn optional_agent_routes_do_not_block_context_and_failed_routes_can_recover() {

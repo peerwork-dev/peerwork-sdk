@@ -53,6 +53,11 @@ impl Lifecycle {
         *self.source_directory.lock().map_err(|_|ParticipantError::local("CONNECT_RECOVERY_REQUIRED","CONNECT"))?=Some(directory.clone());
         Ok(Some((directory,connect,handle)))
     }
+    /// Reuse normal selected-client resolution; never adopt an alternate profile.
+    pub(crate) async fn notification_allowed(&self,batch:&str,revision:u64)->Result<bool> {
+        let value=self.call(AgentRequest::NotificationValidate{batch:batch.into(),revision}).await?;
+        Ok(value["allowed"]==true)
+    }
     pub(crate) async fn call(&self,request:AgentRequest)->Result<Value> {
         if let Some(profile)=&self.profile {
             if let Some((directory,connect,handle))=self.source_selection(profile)? {

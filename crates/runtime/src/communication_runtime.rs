@@ -41,7 +41,8 @@ use tokio::{
     task::JoinSet,
 };
 
-pub(crate) const CONNECT_FEATURES: [&str; 12] = [
+pub(crate) const CONNECT_FEATURES: [&str; 13] = [
+    "compact-notifications-v1",
     "participant-connect-v1",
     "derived-client-generation-v1",
     "scoped-host-revocation-v1",
@@ -91,6 +92,9 @@ fn defaults_pending() -> usize {
 fn defaults_bytes() -> usize {
     32 * 1024 * 1024
 }
+fn notification_view()->String{"fresh".into()}
+fn notification_limit()->usize{8}
+fn notification_bytes()->usize{16384}
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -208,6 +212,8 @@ struct Session {
     watches: Arc<tokio::sync::Mutex<BTreeMap<String, Arc<tokio::sync::Mutex<ProgramWatch>>>>>,
 }
 struct Runtime {
+    notifications: Arc<crate::communication_notifications::Hub>,
+    control_address:SocketAddr,
     config:RuntimeConfig,
     rebind_tasks:tokio::sync::Mutex<BTreeMap<String,tokio::task::JoinHandle<()>>>,
     owners: BTreeMap<String, ParticipantClient>,
@@ -227,6 +233,19 @@ struct Runtime {
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "method", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ClientRequest {
+    Delivery { mode:String, #[serde(default)] options:Option<WatchOptions> },
+    NotificationPoll { options:WatchOptions, #[serde(default)] wait_ms:u64 },
+    NotificationValidate { batch:String, revision:u64 },
+    NotificationObserve { batch:String },
+    NotificationRead {
+        #[serde(default)] batch:String,
+        #[serde(default="notification_view")] view:String,
+        #[serde(default)] options:Option<WatchOptions>,
+        #[serde(default)] after:u64,
+        #[serde(default)] cursor:Option<String>,
+        #[serde(default="notification_limit")] limit:usize,
+        #[serde(default="notification_bytes")] max_bytes:usize,
+    },
     HostStatus,
     Derive {
         name: String,
@@ -330,7 +349,10 @@ struct Endpoint {
     address: SocketAddr,
     token: String,
     access: String,
+    #[serde(default,skip_serializing_if="Option::is_none")]
+    control_address:Option<SocketAddr>,
 }
+fn control_method(method:&str)->bool{matches!(method,"capabilities"|"binding"|"delivery"|"notification_validate"|"notification_observe"|"stop")}
 fn equal(a: &str, b: &str) -> bool {
     a.len() == b.len() && a.bytes().zip(b.bytes()).fold(0, |v, (a, b)| v | (a ^ b)) == 0
 }
@@ -437,6 +459,19 @@ impl Runtime {
             let request=ClientRequest::parse(frame.request)?;
             let client=&session.client;
             match request{
+                ClientRequest::Delivery{mode,options}=>self.notifications.control(client,options.as_ref(),&mode).await,
+                ClientRequest::NotificationPoll{options,wait_ms}=>{
+                    let wake=self.notifications.wait_poll(client,&options,wait_ms).await?;
+                    Ok(match wake{Some((_,wake))=>json!({"state":"NOTIFICATION_DUE","batch":wake.batch,"revision":wake.revision,"attempt":wake.attempt,"self_test":wake.self_test}),None=>json!({"state":"WAITING_NATIVE_INBOX"})})
+                },
+                ClientRequest::NotificationValidate{batch,revision}=>Ok(json!({"allowed":self.notifications.validate(client,&batch,revision).await?})),
+                ClientRequest::NotificationObserve{batch}=>self.notifications.observe(client,&batch).await,
+                ClientRequest::NotificationRead{batch,view,options,after,cursor,limit,max_bytes}=>self.notifications.read(client,&batch,&view,options.as_ref(),after,cursor.as_deref(),limit,max_bytes).await,
+                request @ (ClientRequest::Inbox{..}|ClientRequest::Watch{..}|ClientRequest::WaitInbox{..})=>{
+                    let options=match &request{ClientRequest::Inbox{options,..}|ClientRequest::Watch{options}|ClientRequest::WaitInbox{options,..}=>options.clone(),_=>unreachable!()};
+                    let mut value=crate::participant_client_tools::call(client,&session.watches,request).await?;
+                    value["notification_delivery"]=self.notifications.store.status(&crate::communication_notifications::owner(client,&options))?;Ok(value)
+                },
                 ClientRequest::Derive{name,capability,expected_capability}=>{
                     let runtime=self.clone();let parent=session.clone();
                     tokio::task::spawn_blocking(move||runtime.derive_client(&parent,&name,capability,expected_capability)).await.map_err(|_|local("CLIENT_DERIVATION_TASK_FAILED"))?
@@ -724,7 +759,7 @@ pub(crate) fn decode_response(
     }
     Ok(value)
 }
-async fn connection(stream: TcpStream, runtime: Arc<Runtime>) -> Result<()> {
+async fn connection(stream: TcpStream, runtime: Arc<Runtime>,control_only:bool) -> Result<()> {
     stream
         .set_nodelay(true)
         .map_err(|_| local("IPC_DISCONNECTED"))?;
@@ -757,6 +792,7 @@ async fn connection(stream: TcpStream, runtime: Arc<Runtime>) -> Result<()> {
                     buffer.extend_from_slice(&available[..count]);read.consume(count);
                     if end.is_some(){
                         let(frame,request)=decode_request(&auth,&buffer)?;buffer.clear();
+                        if control_only&&!control_method(frame.request["method"].as_str().unwrap_or("")){return Err(local("CONTROL_METHOD_REJECTED"));}
                         if seen.len()>=MAX_CONNECTION_REQUESTS||!seen.insert(frame.request_id.clone()){return Err(local("IPC_REQUEST_ID_CONFLICT"));}
                         let id=frame.request_id.clone();let handler=runtime.clone();let credential=auth.credential.clone();calls.spawn(async move{let out=handler.request(frame,&credential).await;(id,request,out)});
                     }
@@ -772,6 +808,9 @@ async fn connection(stream: TcpStream, runtime: Arc<Runtime>) -> Result<()> {
     Ok(())
 }
 fn endpoint(path: &Path, address: SocketAddr, token: &str, access: &str) -> Result<()> {
+    endpoint_control(path,address,token,access,None)
+}
+fn endpoint_control(path: &Path, address: SocketAddr, token: &str, access: &str,control_address:Option<SocketAddr>) -> Result<()> {
     if path.exists() {
         private_json(path, 4096).map_err(|_| local("ENDPOINT_NOT_PRIVATE"))?;
         std::fs::remove_file(path).map_err(|_| local("ENDPOINT_WRITE_FAILED"))?;
@@ -781,6 +820,7 @@ fn endpoint(path: &Path, address: SocketAddr, token: &str, access: &str) -> Resu
         address,
         token: token.into(),
         access: access.into(),
+        control_address,
     })
     .map_err(|_| local("ENDPOINT_WRITE_FAILED"))?;
     write_private(path, &wire).map_err(|_| local("ENDPOINT_WRITE_FAILED"))
@@ -865,19 +905,21 @@ pub async fn serve(
     let address = listener
         .local_addr()
         .map_err(|_| local("IPC_BIND_FAILED"))?;
+    let control_listener=TcpListener::bind("127.0.0.1:0").await.map_err(|_|local("IPC_BIND_FAILED"))?;
+    let control_address=control_listener.local_addr().map_err(|_|local("IPC_BIND_FAILED"))?;
     let derived = derived::Clients::open(&config.state_directory)?;
     derived.restore(&mut sessions)?;
     let admin_token = random_token().map_err(|_| local("ENTROPY_UNAVAILABLE"))?;
     let admin_endpoint = config.state_directory.join("admin.json");
     let mut paths = BTreeMap::new();
     let published: Result<()> = (|| {
-        endpoint(&admin_endpoint, address, &admin_token, "ADMIN")?;
+        endpoint_control(&admin_endpoint, address, &admin_token, "ADMIN",Some(control_address))?;
         for session in &sessions {
             if internal_names.contains(&session.name){continue;}
             let path = config
                 .state_directory
                 .join(format!("client-{}.json", session.name));
-            endpoint(&path, address, &session.token, "CLIENT")?;
+            endpoint_control(&path, address, &session.token, "CLIENT",Some(control_address))?;
             paths.insert(session.name.clone(), path);
         }
         Ok(())
@@ -916,6 +958,8 @@ pub async fn serve(
     };
     let pending_revocations = derived.pending();
     let runtime = Arc::new(Runtime {
+        notifications:crate::communication_notifications::Hub::open(&config.state_directory)?,
+        control_address,
         config:config.clone(),rebind_tasks:Default::default(),
         engine_bindings: config.engines.iter().map(|engine| {
             let owner = &owners[&engine.name];
@@ -941,23 +985,31 @@ pub async fn serve(
         client_endpoints: paths.clone(),
     }));
     let cleanup_job = tokio::spawn(runtime.clone().resume_revocations());
+    let notification_job=tokio::spawn(runtime.notifications.clone().maintain(runtime.cancel.clone()));
     let mut connections = JoinSet::new();
+    let mut control_connections=JoinSet::new();
     loop {
         tokio::select! {
             _=runtime.cancel.cancelled()=>break,
             _=connections.join_next(),if !connections.is_empty()=>{},
+            _=control_connections.join_next(),if !control_connections.is_empty()=>{},
+            incoming=control_listener.accept(),if control_connections.len()<4=>{
+                match incoming{Ok((stream,_))=>{let runtime=runtime.clone();control_connections.spawn(async move{let _=tokio::time::timeout(Duration::from_secs(15),connection(stream,runtime,true)).await;});},Err(_)=>{runtime.cancel.cancel();break;}}
+            },
             incoming=listener.accept(),if connections.len()<MAX_CONNECTIONS=>{
-                match incoming{Ok((stream,_))=>{let runtime=runtime.clone();connections.spawn(async move{let _=tokio::time::timeout(Duration::from_secs(300),connection(stream,runtime)).await;});},Err(_)=>{runtime.cancel.cancel();break;}}
+                match incoming{Ok((stream,_))=>{let runtime=runtime.clone();connections.spawn(async move{let _=tokio::time::timeout(Duration::from_secs(300),connection(stream,runtime,false)).await;});},Err(_)=>{runtime.cancel.cancel();break;}}
             },
         }
     }
     connections.abort_all();
     while connections.join_next().await.is_some() {}
+    control_connections.abort_all();while control_connections.join_next().await.is_some(){}
     let maintenance=std::mem::take(&mut *runtime.rebind_tasks.lock().await);
     for (_,task) in maintenance {let _=task.await;}
     // A host call may already have reached the selected session. Finish its
     // evidence write while the owning engine remains available.
     let _ = cleanup_job.await;
+    let _ = notification_job.await;
     runtime.hosts.lock().await.close().await;
     let mut close_error = None;
     for owner in runtime.owners.values() {
@@ -989,6 +1041,7 @@ fn load_endpoint(endpoint_path: &Path) -> Result<Endpoint> {
     if !opaque_token(&endpoint.token) {
         return Err(local("ENDPOINT_INVALID"));
     }
+    if endpoint.control_address.is_some_and(|address|!address.ip().is_loopback()||address.port()==0){return Err(local("ENDPOINT_INVALID"));}
     Ok(endpoint)
 }
 /// Low-level local RPC, including the separately authorized admin interface.
@@ -997,7 +1050,8 @@ pub async fn call(endpoint_path: &Path, request: Value) -> Result<Value> {
     call_endpoint(&endpoint, request).await
 }
 async fn call_endpoint(endpoint: &Endpoint, request: Value) -> Result<Value> {
-    let stream = tokio::time::timeout(Duration::from_secs(1), TcpStream::connect(endpoint.address))
+    let address=if control_method(request["method"].as_str().unwrap_or("")){endpoint.control_address.unwrap_or(endpoint.address)}else{endpoint.address};
+    let stream = tokio::time::timeout(Duration::from_secs(1), TcpStream::connect(address))
         .await
         .map_err(|_| local("RUNTIME_UNAVAILABLE"))?
         .map_err(|_| local("RUNTIME_UNAVAILABLE"))?;

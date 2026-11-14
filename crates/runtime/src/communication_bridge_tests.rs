@@ -1,6 +1,63 @@
 use super::*;
 use crate::communication_host::tests::CodexFixture;
 use std::sync::atomic::Ordering;
+
+#[tokio::test(flavor="multi_thread",worker_threads=3)]
+#[ignore="requires synthetic loopback host and authenticated bridge"]
+async fn compact_notice_bridge_is_scoped_deduplicated_and_pause_survives_restart(){
+    let fixture=CodexFixture::start();fixture.emit_events.store(false,Ordering::SeqCst);
+    let directory=crate::test_support::protected_test_dir();
+    let config=BridgeConfig{format:"peerwork.host-bridge.v1".into(),state_directory:directory.path().join("bridge"),host:fixture.config(),bindings:vec![grant()]};
+    let (ready,stop,task)=start(config.clone()).await;wait_ready(&ready).await;
+    let (binding,_)=frame(&ready.adapter["destination"],1);
+    let scope=access_scope(&binding);let owner=notices::owner(&scope).unwrap();
+    let batch="B".repeat(43);
+    let control=json!({"notification":{"owner":owner,"revision":1,"paused":true,"batch":batch,"allow_probe":true}});
+    let installed=call(&ready,"notice-control",&scope,control).await;
+    assert_eq!(installed["state"],"FENCE_INSTALLED","{installed}");
+    let notice=json!({"notification":{"batch":batch,"attempt":1,"revision":1}});
+    let delivered=call(&ready,"notify",&scope,notice.clone()).await;
+    assert_eq!(delivered["outcome"]["state"],"HOST_ACCEPTED","{delivered}");
+    let duplicate=call(&ready,"notify",&scope,notice.clone()).await;
+    assert_eq!(duplicate["outcome"]["state"],"HOST_ACCEPTED","{duplicate}");
+    let inputs=fixture.calls().into_iter().filter(|v|matches!(v["method"].as_str(),Some("turn/start"|"turn/steer"))).collect::<Vec<_>>();
+    assert_eq!(inputs.len(),1,"same authenticated attempt must not enter twice");
+    let text=inputs[0]["params"]["input"][0]["text"].as_str().unwrap();
+    assert!(text.contains(&batch)&&text.contains("peerwork_inbox"));
+    assert!(text.len()<512);assert!(!text.contains("private_host_bridge_test_payload"));
+    let mut wrong=scope.clone();wrong["namespace"]=json!("program:other");
+    assert_eq!(call(&ready,"notify",&wrong,notice.clone()).await["error"],"HOST_BINDING_MISMATCH");
+    let pause=call(&ready,"notice-control",&scope,json!({"notification":{"owner":owner,"revision":2,"paused":true,"batch":null,"allow_probe":false}})).await;
+    assert_eq!(pause["state"],"FENCE_INSTALLED");
+    assert_eq!(call(&ready,"notify",&scope,notice.clone()).await["error"],"DELIVERY_PAUSED_OR_SUPERSEDED");
+    stop.cancel();task.await.unwrap().unwrap();
+    let (ready,stop,task)=start(config).await;
+    assert_eq!(call(&ready,"notify",&scope,notice).await["error"],"DELIVERY_PAUSED_OR_SUPERSEDED");
+    assert_eq!(fixture.calls().iter().filter(|v|matches!(v["method"].as_str(),Some("turn/start"|"turn/steer"))).count(),1);
+    stop.cancel();task.await.unwrap().unwrap();
+}
+
+#[tokio::test(flavor="multi_thread",worker_threads=3)]
+#[ignore="requires synthetic loopback host and authenticated bridge"]
+async fn compact_notice_pause_control_does_not_wait_for_stalled_provider(){
+    let fixture=CodexFixture::start();fixture.emit_events.store(false,Ordering::SeqCst);
+    let directory=crate::test_support::protected_test_dir();
+    let config=BridgeConfig{format:"peerwork.host-bridge.v1".into(),state_directory:directory.path().join("bridge"),host:fixture.config(),bindings:vec![grant()]};
+    let (ready,stop,task)=start(config).await;wait_ready(&ready).await;
+    let (binding,_)=frame(&ready.adapter["destination"],1);let scope=access_scope(&binding);let owner=notices::owner(&scope).unwrap();let batch="C".repeat(43);
+    assert_eq!(call(&ready,"notice-control",&scope,json!({"notification":{"owner":owner,"revision":1,"paused":false,"batch":batch,"allow_probe":false}})).await["state"],"FENCE_INSTALLED");
+    fixture.stall_health.store(true,Ordering::SeqCst);
+    let selected=ready.clone();let selected_scope=scope.clone();let selected_batch=batch.clone();
+    let input=tokio::spawn(async move{call(&selected,"notify",&selected_scope,json!({"notification":{"batch":selected_batch,"attempt":1,"revision":1}})).await});
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let pause=tokio::time::timeout(Duration::from_secs(1),call(&ready,"notice-control",&scope,json!({"notification":{"owner":owner,"revision":2,"paused":true,"batch":null,"allow_probe":false}}))).await.expect("pause must bypass blocked provider IO");
+    assert_eq!(pause["state"],"FENCE_INSTALLED","{pause}");
+    assert_eq!(call(&ready,"notify",&scope,json!({"notification":{"batch":batch,"attempt":2,"revision":1}})).await["error"],"DELIVERY_PAUSED_OR_SUPERSEDED");
+    fixture.stall_health.store(false,Ordering::SeqCst);let _=input.await.unwrap();
+    // One previously admitted input can still finish; pause does not retract it.
+    assert!(fixture.calls().iter().filter(|v|matches!(v["method"].as_str(),Some("turn/start"|"turn/steer"))).count()<=1);
+    stop.cancel();task.await.unwrap().unwrap();
+}
 fn grant() -> BridgeGrant {
     BridgeGrant {
         expected_origin: "https://example.invalid/".into(),
@@ -1118,7 +1175,9 @@ async fn owned_provider_recovers_after_panic_without_reinjecting_original_input(
     let mut config=fixture.config();config["_test_panic_after_input"]=json!(true);
     let progress=crate::communication_host::operation::Budget::new(Duration::from_secs(2));
     let executor=tokio::runtime::Handle::current();let (sender,receiver)=mpsc::channel(1);
-    let worker=tokio::task::spawn_blocking(move||provider_loop(config,executor,progress,receiver));
+    let fence_directory=crate::test_support::protected_test_dir();
+    let fence=crate::notification_fence::Fence::open(fence_directory.path()).unwrap();
+    let worker=tokio::task::spawn_blocking(move||provider_loop(config,executor,progress,receiver,fence));
     let destination=provider_request(&sender,None,None,json!({}),std::time::Instant::now()+Duration::from_secs(2)).unwrap().await.unwrap().unwrap().0;
     let (_,frame)=self::frame(&destination,1);
     let failed=provider_request(&sender,Some(destination.clone()),Some(frame),json!({}),std::time::Instant::now()+Duration::from_secs(2)).unwrap().await.unwrap();

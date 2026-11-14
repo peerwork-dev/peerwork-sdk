@@ -575,6 +575,11 @@ impl BridgeFixture {
                     .push(json!({"method":method,"body":body}));
                 let busy = occupied.load(Ordering::SeqCst);
                 let mut out = json!({"destination":body["destination"],"health":{"ready":!busy,"execution_state":if busy {"BUSY"} else {"IDLE"}}});
+                if method == "notify" {
+                    let notice=&body["notification"];
+                    if notice["attempt"]==1 && state.load(Ordering::SeqCst)==0 {continue;}
+                    out=json!({"format":"peerwork.host-notice-result.v1","destination":body["destination"],"batch":notice["batch"],"attempt":notice["attempt"],"revision":notice["revision"],"outcome":{"state":"HOST_ACCEPTED","receipt":"synthetic-compact-input","model_response":"NOT_ATTESTED"}});
+                }
                 if method == "deliver" || method == "receipt" {
                     let id = body["binding"]["call_id"].as_str().unwrap().to_owned();
                     if method == "deliver" {
