@@ -1,10 +1,10 @@
 # Host bridge recovery
 
-## Candidate 0.3.31 policy (unreleased)
+## Native 0.3.31 policy
 
-The compact-delivery implementation candidate replaces full-body reminders with
+Compact delivery replaces full-body reminders with
 one minimal notification followed by `peerwork_inbox` using its batch reference.
-See [compact delivery and controls](agent-delivery.md#candidate-0331-compact-notification-delivery-unreleased)
+See [compact delivery and controls](agent-delivery.md#native-0331-compact-notification-delivery)
 for bounded reads, fresh/active views and the distinction between automatic local
 notification acknowledgement and explicit application consumption.
 
@@ -32,9 +32,9 @@ batch, preventing each old unconsumed document from generating another full-body
 reminder. Unknown host acceptance remains unknown, and exactly-once model input
 is not promised.
 
-The candidate is not a released download. The remaining sections document the
-published recovery foundation and original-stack boundaries; the legacy
-per-item body-reminder policy below is historical for the compact candidate.
+The remaining sections preserve the original recovery foundation and stack
+boundaries. The per-item body-reminder policy below applies to 0.3.23–0.3.30;
+0.3.31 uses the compact batch policy above.
 
 ## Published 0.3.23–0.3.30 notification policy
 

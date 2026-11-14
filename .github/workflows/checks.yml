@@ -76,4 +76,4 @@ jobs:
           node examples/research/delm/run.mjs --offline
           node examples/research/agensh/run.mjs --offline
       - name: Test shared native core, runtime and CLI
-        run: cargo test --locked -p peerwork-core -p peerwork-runtime -p peerwork-cli
+        run: cargo test --locked -p peerwork-core -p peerwork-runtime -p peerwork-cli -- --test-threads=2

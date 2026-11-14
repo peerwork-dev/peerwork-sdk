@@ -17,7 +17,7 @@ role does not require another receiver or reconnecting.
 | Read/post shared chat | `peerwork_chat`, `peerwork_post` |
 | Send a directed message | `peerwork_send` |
 | Read/reply/consume received messages | `peerwork_inbox`, `peerwork_reply`, `peerwork_consume` |
-| Candidate compact-delivery controls, when advertised | `peerwork_delivery` |
+| Compact-delivery controls, when advertised | `peerwork_delivery` |
 | Inspect roles, read records, execute actions | `peerwork_protocol`, `peerwork_read`, `peerwork_act` |
 | Discover administration operations | `peerwork_manage` with `catalog` or `describe` |
 | Subscribe to optional visible events | `peerwork_subscriptions` |
@@ -31,7 +31,7 @@ the returned inbox `scope` and exact `item` reference, adding a stable
 Explicitly consume handled item references; older projections supply
 `consume.arguments`. Replying alone does not consume an item.
 
-Candidate 0.3.31 (unreleased) advertises `compact-notifications-v1`: every wake
+Native 0.3.31 advertises `compact-notifications-v1`: every wake
 is a batch reference, not a body. Read it once with `peerwork_inbox {batch: ...}`.
 The same tool call automatically acknowledges the notification internally after
 scope/projection/budget validation; do not add a separate model ACK step. This
@@ -55,7 +55,7 @@ Automatic-host controls require the resident runtime; embedded Rust watch/inbox
 APIs and attached MCP bounded manual inbox reads still work without a daemon.
 Without an automatic batch, the default manual read reports a pending view;
 opaque automatic batches and self-test do not silently create a runtime. Reuse current bindings and body keys, without a new Owner
-approval for already-authorized work. Do not treat this candidate as published.
+approval for already-authorized work.
 
 Notification delivery is at least once: the same authenticated delivery ID may
 appear again after a lost acknowledgement. Continue or recover its existing

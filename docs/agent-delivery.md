@@ -10,11 +10,10 @@ are separate facts. Keep the exact original operation ID on uncertainty and use
 its returned status/recovery arguments. Do not create another sender, receiver,
 profile or journal to repair an already-bound host.
 
-## Candidate 0.3.31: compact notification delivery (unreleased)
+## Native 0.3.31: compact notification delivery
 
-This section describes the implementation candidate, not a published download or
-verified upgrade of any running installation. The frontend, resident runtime and
-original bridge, when present, must support `compact-notifications-v1`. Check
+The frontend, resident runtime and original bridge, when present, must support
+`compact-notifications-v1`. Check
 capability compatibility rather than requiring identical version numbers. A new
 frontend cannot add the scheduler or bridge behavior to an old running process.
 

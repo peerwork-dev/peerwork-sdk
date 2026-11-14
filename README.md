@@ -44,6 +44,12 @@ and recovery, not new ordinary work. The complete native Participant API and
 low-level Kernel command recovery remain available. Release availability and
 qualified platform artifacts are listed in the [release notes](docs/releases/).
 
+Native0.3.31 uses compact notifications followed by bounded inbox reads. Batch
+backoff is independent of application consumption, so old pending work does not
+replay full documents into the Agent context. Local delivery controls pause,
+resume and self-test the original receiving client without deleting work.
+[Release notes](docs/releases/0.3.31.md) · [Delivery controls](docs/agent-delivery.md).
+
 Native0.3.30 repairs local notification ledger exhaustion: completed items retire
 across sequence holes, retry evidence is bounded, and full legacy stores compact
 without replacing original state. Upgrade both the original Runtime and host-user
