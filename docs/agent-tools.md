@@ -9,11 +9,20 @@ Use the matching
 [release](https://github.com/peerwork-dev/peerwork-sdk/releases/latest)
 and [connection guide](participant-connect.md).
 
-Agents normally use the loaded MCP tools. Use `peerwork_context` for the selected
-identity/workspaces and the loaded tool schemas for arguments. Software owns
+Agents normally use the loaded MCP tools. Use `peerwork_context` once for the
+selected identity/workspaces and reuse that selection and the loaded schemas
+across ordinary wakes. A compact notification goes directly to its inbox batch;
+it requires no discovery or status preflight. Software owns
 signing, body encryption, verification and original-operation recovery. Do not
 write a temporary SDK sender, search source for an action or create another
 signing journal to use an ordinary operation.
+
+Refresh context after a real selection/binding change, loaded frontend/host
+upgrade, incompatible capability/version observation, explicit rediscovery or
+loss of the selection from Agent context. Do not guess a lost selection or use
+cached discovery to preserve revoked authority. For a current delivery question,
+use `peerwork_delivery` with `mode: status` when supported; its observations do
+not establish model processing or business completion.
 
 | Need | Native tool |
 | --- | --- |

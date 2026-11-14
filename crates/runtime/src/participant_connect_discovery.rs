@@ -47,7 +47,7 @@ pub(super) fn open_original_store(path:&Path)->Result<(crate::onboarding_store::
     }
     if crate::onboarding_files::check_directory(path,true).is_ok(){
         let directory=ProjectDirectory::private(path)?;
-        return Ok((crate::onboarding_store::Store::protected(&path.join("connect.state")).map_err(|_|local("CONNECT_STATE_ALREADY_OWNED_OR_UNSAFE"))?,directory));
+        return Ok((crate::onboarding_store::Store::protected(&path.join("connect.state")).map_err(|mut error|{error.code="CONNECT_STATE_ALREADY_OWNED_OR_UNSAFE".into();error.phase="CONNECT".into();error})?,directory));
     }
     let directory=ProjectDirectory::private(path)?;
     require_original_association(&directory)?;
@@ -721,6 +721,50 @@ impl Connect {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    fn state_diagnostic(error:&ParticipantError,cause:&str,operation:&str,path:&Path) {
+        assert_eq!(error.phase,"CONNECT");
+        assert_eq!(error.details.as_ref().unwrap()["local_state"]["cause"],cause);
+        assert_eq!(error.details.as_ref().unwrap()["local_state"]["operation"],operation);
+        assert_eq!(error.details.as_ref().unwrap()["local_state"]["next_action"],error.recovery);
+        assert_eq!(error.effect_certainty,"NOT_SUBMITTED");assert!(error.operation_id.is_none());
+        let wire=serde_json::to_string(error).unwrap();assert!(!wire.contains(path.to_str().unwrap()));assert!(!wire.contains("private-payload"));
+    }
+    #[cfg(unix)]
+    #[test]
+    fn original_connect_open_retains_distinct_state_causes_and_original_files() {
+        use std::os::unix::fs::PermissionsExt;
+        let t=crate::test_support::protected_test_dir();let local=t.path().join("local");
+        let c=Connect::open(&local).unwrap();c.save().unwrap();let path=local.join("connect.state");let original=std::fs::read(&path).unwrap();
+        let error=Connect::open(&local).err().unwrap();assert_eq!(error.code,"CONNECT_STATE_ALREADY_OWNED_OR_UNSAFE");state_diagnostic(&error,"BUSY","OPEN",&local);drop(c);
+        std::fs::set_permissions(&path,std::fs::Permissions::from_mode(0o644)).unwrap();
+        state_diagnostic(&Connect::open(&local).err().unwrap(),"PROTECTION","OPEN",&local);assert_eq!(std::fs::read(&path).unwrap(),original);
+        std::fs::set_permissions(&path,std::fs::Permissions::from_mode(0o600)).unwrap();
+        let mut corrupt=SecureStateStore::snapshot_wire(b"x").unwrap();corrupt.pop();
+        for (bytes,cause) in [(b"legacy private-payload without native state envelope".as_slice(),"MIGRATION_REQUIRED"),(corrupt.as_slice(),"CORRUPT")] {
+            std::fs::write(&path,bytes).unwrap();let error=Connect::open(&local).err().unwrap();assert_eq!(error.code,"CONNECT_STATE_ALREADY_OWNED_OR_UNSAFE");state_diagnostic(&error,cause,"OPEN",&local);assert_eq!(std::fs::read(&path).unwrap(),bytes);
+        }
+        let unavailable=t.path().join("unavailable");crate::secure_state::create_private_state_directory(&unavailable).unwrap();
+        let lock=unavailable.join("connect.state.lock");std::fs::create_dir(&lock).unwrap();
+        state_diagnostic(&Connect::open(&unavailable).err().unwrap(),"IO","OPEN",&unavailable);assert!(lock.is_dir());assert!(!unavailable.join("connect.state").exists());
+    }
+    #[cfg(unix)]
+    #[test]
+    fn original_connect_save_retains_state_diagnostics_without_replacing_registry() {
+        use std::os::unix::fs::PermissionsExt;
+        let t=crate::test_support::protected_test_dir();let local=t.path().join("local");let c=Connect::open(&local).unwrap();c.save().unwrap();
+        let path=local.join("connect.state");let original=std::fs::read(&path).unwrap();let marker=std::fs::read(local.join("initialized.json")).unwrap();
+        std::fs::set_permissions(&path,std::fs::Permissions::from_mode(0o644)).unwrap();
+        let error=c.save().unwrap_err();assert_eq!(error.code,"CONNECT_STATE_WRITE_FAILED");state_diagnostic(&error,"PROTECTION","WRITE",&local);assert_eq!(std::fs::read(&path).unwrap(),original);
+        std::fs::set_permissions(&path,std::fs::Permissions::from_mode(0o600)).unwrap();
+        let mut corrupt=SecureStateStore::snapshot_wire(b"x").unwrap();corrupt.pop();
+        for (bytes,cause) in [(b"legacy private-payload without native state envelope".as_slice(),"MIGRATION_REQUIRED"),(corrupt.as_slice(),"CORRUPT")] {
+            std::fs::write(&path,bytes).unwrap();let error=c.save().unwrap_err();assert_eq!(error.code,"CONNECT_STATE_WRITE_FAILED");state_diagnostic(&error,cause,"WRITE",&local);assert_eq!(std::fs::read(&path).unwrap(),bytes);
+        }
+        std::fs::write(&path,&original).unwrap();let preserved=t.path().join("preserved-original");std::fs::rename(&local,&preserved).unwrap();std::fs::write(&local,b"blocked directory entry").unwrap();
+        let error=c.save().unwrap_err();assert_eq!(error.code,"CONNECT_STATE_WRITE_FAILED");state_diagnostic(&error,"IO","WRITE",&local);
+        assert_eq!(std::fs::read(preserved.join("connect.state")).unwrap(),original);assert_eq!(std::fs::read(preserved.join("initialized.json")).unwrap(),marker);
+    }
     fn engine(project: &Path) -> EngineConfig {
         let identity_path = project.join("identity");
         let id = crate::kernel_identity::KernelIdentity::create(&identity_path).unwrap();

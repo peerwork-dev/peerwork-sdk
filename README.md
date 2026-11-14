@@ -44,6 +44,11 @@ and recovery, not new ordinary work. The complete native Participant API and
 low-level Kernel command recovery remain available. Release availability and
 qualified platform artifacts are listed in the [release notes](docs/releases/).
 
+Native0.3.32 finishes exhausted inbox batches without an extra EOF read,
+clarifies selected-context reuse across wakes, and preserves safe local-state
+causes through Connect and Claude Channel diagnostics.
+[Release notes](docs/releases/0.3.32.md).
+
 Native0.3.31 uses compact notifications followed by bounded inbox reads. Batch
 backoff is independent of application consumption, so old pending work does not
 replay full documents into the Agent context. Local delivery controls pause,

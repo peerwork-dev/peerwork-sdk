@@ -5,6 +5,14 @@ If `peerwork_context` already returns your selected identity and Workspace,
 use the loaded tools. Do not run Connect again for ordinary messaging or a new
 protocol role.
 
+Keep that selection across compact notifications and read their indicated
+`peerwork_inbox` batch directly. Do not repeat context or status before every
+message. Refresh context when the selection/binding changes, the loaded
+frontend/host upgrades, capabilities become incompatible, rediscovery is
+explicitly requested, or the needed selection is no longer in Agent context.
+For a current receiving question, use the existing delivery status tool; cached
+discovery does not keep an old readiness or permission observation current.
+
 ## Install once
 
 Install the matching [Linux x86_64 GNU release](https://github.com/peerwork-dev/peerwork-sdk/releases/latest)
@@ -71,7 +79,8 @@ for availability, exact confirmation and existing-session limits.
 ## AGY: use only the supported receiving path
 
 If this Peer already received PUSH in AGY, keep the original host binding and
-conversation. Start with `peerwork_context` and use the loaded tools. Do not
+conversation. Select once with `peerwork_context`, reuse it across ordinary
+wakes, and use the loaded tools. Do not
 reconnect merely to send, change receiving mode, create another conversation,
 or replace the receiver because a generic installation guide describes a
 first-time setup.

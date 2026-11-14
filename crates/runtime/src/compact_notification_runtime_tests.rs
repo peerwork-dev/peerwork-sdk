@@ -151,6 +151,7 @@ async fn real_runtime_compact_read_preserves_backlog_scope_chunks_and_pause_acro
     drop(other);
     let mut cursor = None;
     let mut assembled = String::new();
+    let mut terminal = false;
     for _ in 0..100 {
         let mut args = json!({"batch":wake.batch,"max_bytes":2048,"limit":1});
         if let Some(cursor) = cursor.take() {
@@ -158,17 +159,32 @@ async fn real_runtime_compact_read_preserves_backlog_scope_chunks_and_pause_acro
         }
         let page = invoke(&tools, "inbox", args).await;
         assert!(page.to_string().len() <= 2048);
+        assert_eq!(page["items"].as_array().unwrap().len(), 1);
         for item in page["items"].as_array().unwrap() {
             assert_eq!(item["item"]["sequence"], 634);
             assert_eq!(page["scope"], "main");
+            assert_eq!(item["message"]["offset"], assembled.len());
             assembled.push_str(item["message"]["text"].as_str().unwrap());
         }
         if page["more"] != true {
+            assert!(page.get("continuation").is_none());
+            terminal = true;
             break;
         }
         cursor = Some(page["continuation"].clone());
     }
+    assert!(
+        terminal,
+        "the complete batch must end on its final content page"
+    );
     assert_eq!(serde_json::from_str::<Value>(&assembled).unwrap(), event);
+    assert!(
+        hub.store
+            .due(&key, &heads(634), crate::participant_store::now() + 600_000)
+            .unwrap()
+            .is_none(),
+        "observed notification must not replay unconsumed work"
+    );
     let active = invoke(
         &tools,
         "inbox",
@@ -188,7 +204,10 @@ async fn real_runtime_compact_read_preserves_backlog_scope_chunks_and_pause_acro
         .unwrap();
     let status = invoke(&tools, "delivery", json!({"mode":"status"})).await;
     assert_eq!(status["destinations"][0]["state"], "PAUSED");
-    let _ = invoke(&tools, "inbox", json!({"batch":wake.batch,"limit":1})).await;
+    let complete = invoke(&tools, "inbox", json!({"batch":wake.batch,"limit":1})).await;
+    assert_eq!(complete["items"].as_array().unwrap().len(), 1);
+    assert_eq!(complete["more"], false);
+    assert!(complete.get("continuation").is_none());
     assert_eq!(
         invoke(&tools, "delivery", json!({"mode":"status"})).await["destinations"][0]["state"],
         "PAUSED"

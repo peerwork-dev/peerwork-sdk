@@ -279,7 +279,7 @@ impl Connect {
         let (store,private_directory) = discovery::open_original_store(directory)?;
         let registry: Registry = match store
             .read_exact()
-            .map_err(|_| local("CONNECT_RECOVERY_REQUIRED"))?
+            .map_err(|mut error| {error.code="CONNECT_RECOVERY_REQUIRED".into();error.phase="CONNECT".into();error})?
         {
             None => {
                 if std::fs::symlink_metadata(directory.join("initialized.json")).is_ok() {
@@ -329,7 +329,7 @@ impl Connect {
             .write_exact(
                 &serde_json::to_vec(&self.registry).map_err(|_| local("CONNECT_STATE_INVALID"))?,
             )
-            .map_err(|_| local("CONNECT_STATE_WRITE_FAILED"))?;
+            .map_err(|mut error| {error.code="CONNECT_STATE_WRITE_FAILED".into();error.phase="CONNECT".into();error})?;
         let expected=json!({"format":"peerwork.connect-initialized.v1"});
         match self.private_directory.read("initialized.json",1024,true)? {
             Some(bytes) if peerwork_core::strict_json::parse_strict_json(&bytes).ok().as_ref()!=Some(&expected)=>return Err(local("CONNECT_BINDING_MARKER_INVALID")),

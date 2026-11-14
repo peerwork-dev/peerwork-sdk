@@ -590,6 +590,32 @@ async fn read_ranges(
     limit: usize,
     max_bytes: usize,
 ) -> Result<Value> {
+    read_ranges_with(
+        selections,
+        token,
+        view,
+        explicit_batch,
+        cursor,
+        limit,
+        max_bytes,
+        |source, after| client.inbox(&selections[source].0, after, 1),
+    )
+    .await
+}
+async fn read_ranges_with<F, Fut>(
+    selections: &[(WatchOptions, u64, u64)],
+    token: &str,
+    view: &str,
+    explicit_batch: bool,
+    cursor: Option<&str>,
+    limit: usize,
+    max_bytes: usize,
+    mut inbox: F,
+) -> Result<Value>
+where
+    F: FnMut(usize, u64) -> Fut,
+    Fut: std::future::Future<Output = Result<crate::participant::WatchSnapshot>>,
+{
     if !(1..=32).contains(&limit) || !(2048..=1024 * 1024).contains(&max_bytes) {
         return Err(error("NOTIFICATION_READ_LIMIT_INVALID"));
     }
@@ -610,26 +636,31 @@ async fn read_ranges(
     }
     let mut result = json!({"state":"VERIFIED_INBOX_PAGE","batch":token,"acknowledgement_required":explicit_batch,"items":[],"more":false,"model_response":"NOT_ATTESTED","active_work_retained":true});
     let mut items = Vec::new();
-    while position.source < selections.len() && items.len() < limit {
+    let mut page_source = None;
+    while position.source < selections.len() {
         let (options, lower, upper) = &selections[position.source];
-        let page = client.inbox(options, position.after.max(*lower), 1).await?;
+        if position.offset == 0 && position.delivery.is_none() && position.after >= *upper {
+            position.advance(selections);
+            continue;
+        }
+        // Even at the item/byte limit, inspect at most one next local item per
+        // selected source so a complete page does not advertise an EOF read.
+        let page = inbox(position.source, position.after.max(*lower)).await?;
         if page.verification_failure.is_some() {
             return Err(error("STREAM_VERIFICATION_FAILED"));
         }
-        result["receiving"] = json!({"state":page.state,"code":page.code,"receiver_link_verified":page.receiver_link_verified});
+        if items.is_empty() || page_source == Some(position.source) {
+            result["receiving"] = json!({"state":page.state,"code":page.code,"receiver_link_verified":page.receiver_link_verified});
+        }
         let entry = page
             .items
             .first()
             .filter(|e| e["sequence"].as_u64().is_some_and(|s| s <= *upper));
         let Some(entry) = entry else {
-            if position.offset != 0 {
+            if position.offset != 0 || position.delivery.is_some() {
                 return Err(error("NOTIFICATION_EXACT_ITEM_UNAVAILABLE"));
             }
-            if !items.is_empty() {
-                break;
-            }
-            position.source += 1;
-            position.after = selections.get(position.source).map(|s| s.1).unwrap_or(0);
+            position.advance(selections);
             continue;
         };
         if position
@@ -638,6 +669,10 @@ async fn read_ranges(
             .is_some_and(|id| entry["delivery_id"] != *id)
         {
             return Err(error("NOTIFICATION_EXACT_ITEM_UNAVAILABLE"));
+        }
+        // A nonempty result keeps its original scope for exact reply routing.
+        if items.len() == limit || page_source.is_some_and(|s| s != position.source) {
+            break;
         }
         result["scope_binding"] = json!({"workspace_id":options.workspace_id,"mailbox_id":options.mailbox_id,"membership_id":options.membership_id});
         let mut projected = compact(entry)?;
@@ -704,6 +739,7 @@ async fn read_ranges(
             break;
         }
         items = candidate;
+        page_source = Some(position.source);
         position = next;
         // One scope per result keeps reply routing unambiguous.
         if position.offset != 0 {
@@ -730,6 +766,12 @@ struct Cursor {
     delivery: Option<String>,
 }
 impl Cursor {
+    fn advance(&mut self, selections: &[(WatchOptions, u64, u64)]) {
+        self.source += 1;
+        self.after = selections.get(self.source).map(|s| s.1).unwrap_or(0);
+        self.offset = 0;
+        self.delivery = None;
+    }
     fn encode(&self) -> Result<String> {
         Ok(peerwork_core::crypto::base64url(
             &serde_json::to_vec(self).map_err(|_| error("NOTIFICATION_CURSOR_INVALID"))?,
@@ -805,4 +847,265 @@ fn compact(entry: &Value) -> Result<Value> {
     Ok(
         json!({"item":{"sequence":entry["sequence"],"delivery_id":entry["delivery_id"]},"state":entry["state"],"terminal_reason":entry["terminal_reason"],"message":message,"authority":"EXTERNAL_PEER_DATA"}),
     )
+}
+
+#[cfg(test)]
+mod pagination_tests {
+    use super::*;
+    use std::{cell::RefCell, future::ready};
+
+    fn options(index: usize) -> WatchOptions {
+        WatchOptions {
+            workspace_id: format!("{index:043}"),
+            mailbox_id: "M".repeat(43),
+            membership_id: "G".repeat(43),
+            consumer_id: "synthetic-reader".into(),
+            host_destination: None,
+        }
+    }
+    fn entry(sequence: u64, text: &str) -> Value {
+        json!({"sequence":sequence,"delivery_id":format!("{sequence:043}"),"state":"PENDING","opened_message":{"state":"OPENED","assurance":"AUTHOR_SIGNATURE_AND_AEAD","text":text,"reply_address":{}}})
+    }
+    fn snapshot(items: Vec<Value>) -> crate::participant::WatchSnapshot {
+        serde_json::from_value(json!({"reporting_code":null,"presence":{},"workspace_id":"synthetic-workspace","mailbox_id":"synthetic-mailbox","generation":1,"state":"RECEIVING","receiver_link_verified":true,"model_response":"NOT_ATTESTED","code":null,"checkpoint":100,"control_checkpoint":0,"items":items,"next_after":null,"receiver_ack_pending":false,"application_ack_pending":false,"stream_id":null,"disconnects":0})).unwrap()
+    }
+    struct Fixture {
+        selections: Vec<(WatchOptions, u64, u64)>,
+        entries: Vec<Vec<Value>>,
+        calls: RefCell<Vec<(usize, u64)>>,
+    }
+    impl Fixture {
+        fn new(sources: Vec<(u64, Vec<Value>)>) -> Self {
+            Self {
+                selections: sources
+                    .iter()
+                    .enumerate()
+                    .map(|(index, (upper, _))| (options(index), 0, *upper))
+                    .collect(),
+                entries: sources.into_iter().map(|(_, items)| items).collect(),
+                calls: RefCell::new(Vec::new()),
+            }
+        }
+        async fn read(&self, cursor: Option<&str>, limit: usize, budget: usize) -> Result<Value> {
+            read_ranges_with(
+                &self.selections,
+                "synthetic-batch",
+                "fresh",
+                true,
+                cursor,
+                limit,
+                budget,
+                |source, after| {
+                    self.calls.borrow_mut().push((source, after));
+                    ready(Ok(snapshot(
+                        self.entries[source]
+                            .iter()
+                            .filter(|item| item["sequence"].as_u64().unwrap() > after)
+                            .take(1)
+                            .cloned()
+                            .collect(),
+                    )))
+                },
+            )
+            .await
+        }
+    }
+    fn terminal(page: &Value, count: usize) {
+        assert_eq!(page["items"].as_array().unwrap().len(), count);
+        assert_eq!(page["more"], false);
+        assert!(page.get("continuation").is_none());
+    }
+
+    #[tokio::test]
+    async fn complete_single_item_is_terminal_at_default_and_exact_item_limits() {
+        for limit in [1, 8] {
+            for upper in [7, 100] {
+                let fixture = Fixture::new(vec![(upper, vec![entry(7, "complete")])]);
+                let page = fixture.read(None, limit, 2048).await.unwrap();
+                terminal(&page, 1);
+                assert_eq!(page["items"][0]["item"]["sequence"], 7);
+                // An exact frozen upper bound needs no extra local read;
+                // otherwise a single bounded lookahead establishes EOF.
+                assert_eq!(fixture.calls.borrow().len(), if upper == 7 { 1 } else { 2 });
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn complete_item_at_exact_wire_budget_is_terminal() {
+        let mut fixture = Fixture::new(vec![(1, vec![entry(1, "x")])]);
+        let mut probe = fixture.read(None, 1, 16384).await.unwrap();
+        let next = Cursor {
+            selection: digest(json!(["synthetic-batch", "fresh", fixture.selections])),
+            source: 0,
+            after: 1,
+            offset: 0,
+            delivery: None,
+        };
+        probe["more"] = json!(true);
+        probe["continuation"] = json!(next.encode().unwrap());
+        let growth = 2048 - 256 - probe.to_string().len();
+        fixture.entries[0][0]["opened_message"]["text"] = json!("x".repeat(1 + growth));
+        let page = fixture.read(None, 1, 2048).await.unwrap();
+        terminal(&page, 1);
+        assert_eq!(page["items"][0]["message"]["partial"], false);
+        assert_eq!(
+            page["items"][0]["message"]["text"].as_str().unwrap().len(),
+            1 + growth
+        );
+        assert!(page.to_string().len() <= 2048);
+    }
+
+    #[tokio::test]
+    async fn remaining_item_keeps_a_cursor_and_final_item_is_terminal() {
+        let fixture = Fixture::new(vec![(9, vec![entry(2, "first"), entry(9, "last")])]);
+        let first = fixture.read(None, 1, 2048).await.unwrap();
+        assert_eq!(first["more"], true);
+        assert_eq!(first["items"][0]["item"]["sequence"], 2);
+        let last = fixture
+            .read(first["continuation"].as_str(), 1, 2048)
+            .await
+            .unwrap();
+        terminal(&last, 1);
+        assert_eq!(last["items"][0]["item"]["sequence"], 9);
+        assert_eq!(*fixture.calls.borrow(), [(0, 0), (0, 2), (0, 2)]);
+    }
+
+    #[tokio::test]
+    async fn empty_sources_are_skipped_without_mixing_reply_scopes() {
+        let fixture = Fixture::new(vec![
+            (10, vec![]),
+            (10, vec![entry(3, "scope one")]),
+            (10, vec![]),
+            (10, vec![entry(8, "scope three")]),
+            (10, vec![]),
+        ]);
+        let first = fixture.read(None, 8, 4096).await.unwrap();
+        assert_eq!(first["items"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            first["scope_binding"]["workspace_id"],
+            options(1).workspace_id
+        );
+        assert_eq!(first["more"], true);
+        let cursor = Cursor::decode(first["continuation"].as_str().unwrap()).unwrap();
+        assert_eq!(cursor.source, 3);
+        let last = fixture
+            .read(first["continuation"].as_str(), 8, 4096)
+            .await
+            .unwrap();
+        terminal(&last, 1);
+        assert_eq!(
+            last["scope_binding"]["workspace_id"],
+            options(3).workspace_id
+        );
+        assert_eq!(last["items"][0]["item"]["sequence"], 8);
+        assert_eq!(fixture.calls.borrow().len(), 8);
+    }
+
+    #[tokio::test]
+    async fn utf8_chunks_and_byte_limited_items_reconstruct_without_an_eof_page() {
+        let body = "雪🌍\\\"".repeat(2000);
+        let fixture = Fixture::new(vec![(7, vec![entry(3, &body), entry(7, "last")])]);
+        let mut cursor = None;
+        let mut assembled = String::new();
+        let mut final_seen = false;
+        for _ in 0..100 {
+            let page = fixture.read(cursor.as_deref(), 8, 2048).await.unwrap();
+            assert!(page.to_string().len() <= 2048);
+            assert!(!page["items"].as_array().unwrap().is_empty());
+            for item in page["items"].as_array().unwrap() {
+                match item["item"]["sequence"].as_u64().unwrap() {
+                    3 => {
+                        assert_eq!(item["message"]["offset"], assembled.len());
+                        assembled.push_str(item["message"]["text"].as_str().unwrap());
+                    }
+                    7 => {
+                        assert!(!final_seen);
+                        assert_eq!(item["message"]["text"], "last");
+                        final_seen = true;
+                    }
+                    _ => panic!("unexpected synthetic item"),
+                }
+            }
+            if page["more"] == false {
+                assert!(page.get("continuation").is_none());
+                break;
+            }
+            cursor = Some(page["continuation"].as_str().unwrap().to_owned());
+        }
+        assert_eq!(assembled, body);
+        assert!(final_seen);
+    }
+
+    #[tokio::test]
+    async fn frozen_batch_ends_before_new_arrivals_and_retains_pending_work() {
+        let mut fixture = Fixture::new(vec![(1, vec![entry(1, "frozen"), entry(2, "later")])]);
+        terminal(&fixture.read(None, 8, 4096).await.unwrap(), 1);
+        fixture.selections[0].2 = u64::MAX;
+        let pending = fixture.read(None, 8, 4096).await.unwrap();
+        terminal(&pending, 2);
+        assert_eq!(pending["items"][0]["item"]["sequence"], 1);
+        assert_eq!(pending["items"][1]["item"]["sequence"], 2);
+    }
+
+    #[tokio::test]
+    async fn selection_and_exact_delivery_changes_keep_explicit_errors() {
+        let mut fixture = Fixture::new(vec![(
+            9,
+            vec![entry(3, &"雪".repeat(2000)), entry(9, "next")],
+        )]);
+        let first = fixture.read(None, 1, 2048).await.unwrap();
+        let cursor = first["continuation"].as_str().unwrap();
+        assert!(Cursor::decode(cursor).unwrap().offset > 0);
+        fixture.selections[0].0.membership_id = "X".repeat(43);
+        assert_eq!(
+            fixture.read(Some(cursor), 1, 2048).await.unwrap_err().code,
+            "NOTIFICATION_CURSOR_INVALID"
+        );
+        fixture.selections[0].0 = options(0);
+        fixture.entries[0][0]["delivery_id"] = json!("replacement");
+        assert_eq!(
+            fixture.read(Some(cursor), 1, 2048).await.unwrap_err().code,
+            "NOTIFICATION_EXACT_ITEM_UNAVAILABLE"
+        );
+        fixture.entries[0].remove(0);
+        assert_eq!(
+            fixture.read(Some(cursor), 1, 2048).await.unwrap_err().code,
+            "NOTIFICATION_EXACT_ITEM_UNAVAILABLE"
+        );
+        fixture.entries[0].clear();
+        assert_eq!(
+            fixture.read(Some(cursor), 1, 2048).await.unwrap_err().code,
+            "NOTIFICATION_EXACT_ITEM_UNAVAILABLE"
+        );
+    }
+
+    #[tokio::test]
+    async fn verification_failure_during_lookahead_is_not_terminal_success() {
+        let selections = vec![(options(0), 0, 9)];
+        let error = read_ranges_with(
+            &selections,
+            "synthetic-batch",
+            "fresh",
+            true,
+            None,
+            1,
+            2048,
+            |_, after| {
+                let mut page = snapshot(if after == 0 {
+                    vec![entry(3, "first")]
+                } else {
+                    vec![]
+                });
+                if after != 0 {
+                    page.verification_failure =
+                        Some(json!({"code":"SYNTHETIC_VERIFICATION_FAILURE"}));
+                }
+                ready(Ok(page))
+            },
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.code, "STREAM_VERIFICATION_FAILED");
+    }
 }

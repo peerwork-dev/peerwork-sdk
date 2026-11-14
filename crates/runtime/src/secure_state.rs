@@ -139,6 +139,45 @@ pub enum SecureStateError {
     Io(#[from] std::io::Error),
 }
 
+impl SecureStateError {
+    /// Attach only bounded local-state facts, preserving the caller's error
+    /// family, effect certainty and original operation. Never serialize an OS
+    /// error or infer a process identity from lock contention.
+    pub(crate) fn diagnose(
+        &self,
+        mut error: crate::participant::ParticipantError,
+        operation: &'static str,
+    ) -> crate::participant::ParticipantError {
+        use serde_json::json;
+        let (cause, recovery) = match self {
+            Self::Busy => ("BUSY", "RESUME_ORIGINAL_OWNING_INTEGRATION"),
+            Self::Protection => ("PROTECTION", "VERIFY_CANONICAL_OWNER_PRIVATE_PARENT_AND_REGULAR_FILE"),
+            Self::ForeignProcess => ("FOREIGN_PROCESS", "REOPEN_ORIGINAL_STATE_IN_OWNING_PROCESS"),
+            Self::Io(_) => ("IO", "CHECK_LOCAL_STORAGE_AND_RETRY_ORIGINAL_STATE"),
+            Self::Corrupt => ("CORRUPT", "RECOVER_ORIGINAL_STATE_FROM_VALID_COPY"),
+            Self::MigrationRequired => ("MIGRATION_REQUIRED", "MIGRATE_ORIGINAL_STATE_WITH_COMPATIBLE_VERSION"),
+            Self::TooLarge => ("TOO_LARGE", "INSPECT_ORIGINAL_STATE_SIZE_WITHOUT_REPLACING_IDENTITY"),
+            Self::UnsupportedPlatform => ("UNSUPPORTED_PLATFORM", "USE_SUPPORTED_PLATFORM_FOR_ORIGINAL_STATE"),
+        };
+        let mut diagnostic = json!({"cause":cause,"operation":operation,"next_action":recovery});
+        if matches!(self, Self::Busy) {
+            diagnostic["owner_observation"] = json!("NOT_OBSERVED");
+        }
+        match error.details.as_mut() {
+            Some(serde_json::Value::Object(details)) => {
+                details.insert("local_state".into(), diagnostic);
+            }
+            None => error.details = Some(json!({"local_state":diagnostic})),
+            Some(_) => {
+                let original = error.details.take();
+                error.details = Some(json!({"local_state":diagnostic,"original_details":original}));
+            }
+        }
+        error.recovery = recovery.into();
+        error
+    }
+}
+
 /// Exclusive process-local handle. The OS lock remains held until this value
 /// is dropped, including across an atomic replacement of the state file.
 pub struct SecureStateStore {
@@ -472,6 +511,42 @@ fn lock_exclusive(_: &File) -> Result<(), SecureStateError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn typed_diagnostics_keep_original_operation_and_hide_os_error_text() {
+        use crate::participant::ParticipantError;
+        let mut original = ParticipantError::local("CALLER_FAMILY", "CALLER_PHASE").original("original-operation");
+        original.effect_certainty = "UNKNOWN".into();
+        original.details = Some(serde_json::json!({"caller_fact":"retained"}));
+        let mut recoveries = std::collections::BTreeSet::new();
+        for (source, cause) in [
+            (SecureStateError::Busy, "BUSY"),
+            (SecureStateError::Protection, "PROTECTION"),
+            (SecureStateError::ForeignProcess, "FOREIGN_PROCESS"),
+            (SecureStateError::Io(std::io::Error::other("private OS error /private/secret-state")), "IO"),
+            (SecureStateError::Corrupt, "CORRUPT"),
+            (SecureStateError::MigrationRequired, "MIGRATION_REQUIRED"),
+            (SecureStateError::TooLarge, "TOO_LARGE"),
+            (SecureStateError::UnsupportedPlatform, "UNSUPPORTED_PLATFORM"),
+        ] {
+            let error = source.diagnose(original.clone(), "WRITE");
+            assert_eq!(error.code, original.code);
+            assert_eq!(error.phase, original.phase);
+            assert_eq!(error.effect_certainty, "UNKNOWN");
+            assert_eq!(error.operation_id.as_deref(), Some("original-operation"));
+            let details = error.details.as_ref().unwrap();
+            assert_eq!(details["caller_fact"], "retained");
+            assert_eq!(details["local_state"]["cause"], cause);
+            assert_eq!(details["local_state"]["next_action"], error.recovery);
+            assert!(!serde_json::to_string(&error).unwrap().contains("private"));
+            if cause == "BUSY" {
+                assert_eq!(details["local_state"]["owner_observation"], "NOT_OBSERVED");
+                assert!(details["local_state"].get("pid").is_none());
+            }
+            recoveries.insert(error.recovery);
+        }
+        assert_eq!(recoveries.len(), 8, "different state causes need distinct recovery actions");
+    }
 
     #[test]
     fn bounded_secret_snapshot_rejects_growth_and_oversize() {

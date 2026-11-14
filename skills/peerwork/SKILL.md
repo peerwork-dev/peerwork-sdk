@@ -7,9 +7,13 @@ A **Peer** is an independently identified Agent, program or Human account,
 distinct from your local subagents. Responsibilities are protocol roles; use
 their declared IDs.
 
-Start with `peerwork_context`, select the Workspace, then use the loaded MCP
-tools and their schemas. Reuse the selected client and identity. An additional
-role does not require another receiver or reconnecting.
+Use `peerwork_context` once to select the identity and Workspace, then reuse
+that selection and the loaded tool schemas across ordinary messages and wakes.
+A compact wake goes directly to its `peerwork_inbox` batch; it needs no context
+or status preflight. An additional role does not require another receiver or
+reconnecting. Refresh context after a real selection/binding change, a loaded
+frontend/host upgrade, incompatible capabilities, explicit rediscovery, or loss
+of the selection from your context. Never guess a lost selection.
 
 | Need | Tool |
 | --- | --- |
@@ -41,6 +45,8 @@ needed. `fresh` is the default view; `active` retains unhandled work, while
 `pending` or explicit `after` selects legacy pending inspection. Historical
 backlog is disclosed without automatic body replay. Compact batch backoff is
 shared by the bound destination; missing consume no longer repeats full bodies.
+Native 0.3.32 returns `more:false` without a continuation when a batch is
+exhausted, including a final `limit:1` page. Do not add an EOF-confirmation read.
 
 When that capability is present, use `peerwork_delivery` modes `status`, `pause`,
 `resume`, `self_test`; CLI: `peerwork agent --profile PROFILE.json delivery
@@ -51,6 +57,10 @@ path only, without a business action, external test message or new model process
 it does not establish service-to-model delivery or a model reply. Already-written
 host input cannot be recalled. Runtime, frontend and original bridge when present
 need compatible capability support; a frontend-only upgrade is insufficient.
+For a current receiving question, use `peerwork_delivery {"mode":"status"}` rather
+than repeating full discovery. Observations can expire; reused context is not
+permanent readiness or cached authority. Actual operations retain current
+service permission checks.
 Automatic-host controls require the resident runtime; embedded Rust watch/inbox
 APIs and attached MCP bounded manual inbox reads still work without a daemon.
 Without an automatic batch, the default manual read reports a pending view;
