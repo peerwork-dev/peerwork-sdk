@@ -279,8 +279,20 @@ async fn installed_delivery_status_follows_verified_writer_conflict_and_same_ses
     host.writer.store(false,Ordering::SeqCst);let end=std::time::Instant::now()+Duration::from_secs(12);
     loop{request+=1;let state=mcp.tool(request,"peerwork_delivery",json!({"mode":"status","scope":"team"}));if state["state"]=="READY"{break}assert!(std::time::Instant::now()<end,"same-owner recovery failed: {state}");tokio::time::sleep(Duration::from_millis(200)).await;}
     let room=peerwork_core::communication::space_conversation_id(&workspace).unwrap();let mut post=Invoke::new("fresh-host-message","structure.conversation.post",scope.clone(),json!({"conversation_id":room,"audience":"SPACE_MEMBERS","thread_root":null,"reply_to":null,"context":null,"mentions":[actor],"content":{"mode":"WORKSPACE_E2EE"}}));post.plaintext_message=Some("HOST-TRANSITION-RECOVERED".into());structure(&owner.invoke(post,Duration::from_secs(5)).await.unwrap());
-    let end=std::time::Instant::now()+Duration::from_secs(15);let next=loop{if let Some(batch)=host.batch(1){break batch}assert!(std::time::Instant::now()<end,"fresh message not automatically notified");tokio::time::sleep(Duration::from_millis(25)).await;};
-    request+=1;let page=mcp.tool(request,"peerwork_inbox",json!({"batch":next}));assert!(page.to_string().contains("HOST-TRANSITION-RECOVERED"),"{page}");let item=page["items"][0]["item"].clone();
+    let end=std::time::Instant::now()+Duration::from_secs(15);let mut notification_index=1;
+    let item=loop{
+        assert!(std::time::Instant::now()<end,"fresh message not automatically notified");
+        let Some(batch)=host.batch(notification_index)else{tokio::time::sleep(Duration::from_millis(25)).await;continue};notification_index+=1;
+        request+=1;let page=mcp.tool(request,"peerwork_inbox",json!({"batch":batch}));
+        let entries=page["items"].as_array().expect("bounded inbox items");
+        if let Some(entry)=entries.iter().find(|entry|entry["message"]["text"]=="HOST-TRANSITION-RECOVERED"){break entry["item"].clone();}
+        // Admission broadcasts can precede this message. Observe and consume
+        // only those synthetic fixture events; never assume the next item is it.
+        for entry in entries{
+            assert_eq!(entry["message"]["assurance"],"SERVICE_ATTESTED_EVENT","unexpected fixture input: {entry}");
+            request+=1;mcp.tool(request,"peerwork_consume",json!({"scope":"team","item":entry["item"]}));
+        }
+    };
     request+=1;let reply=mcp.tool(request,"peerwork_reply",json!({"scope":"team","item":item,"operation_id":"host-transition-reply","text":"SIGNED-HOST-TRANSITION-REPLY","wait_ms":5000}));assert_eq!(reply["state"],"ACCEPTED");
     request+=1;mcp.tool(request,"peerwork_consume",json!({"scope":"team","item":item}));mcp.finish();
     let stop=Command::new(&cli).args(["runtime","admin",ready["admin_endpoint"].as_str().unwrap(),"stop"]).output().unwrap();assert!(stop.status.success());runtime.finish();
