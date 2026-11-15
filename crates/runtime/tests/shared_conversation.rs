@@ -256,7 +256,7 @@ async fn installed_delivery_status_follows_verified_writer_conflict_and_same_ses
     let workspace=mutate(&owner,"host-space","structure.workspace.create",&Scope::default(),json!({"name":"Host transition qualification"})).await["workspace_id"].as_str().unwrap().to_owned();
     let scope=Scope{workspace_id:Some(workspace.clone()),..Default::default()};let meta=selected(&owner,"structure.workspace.get",&scope,json!({})).await;
     let mut join=Invoke::new("host-join","structure.member.set",scope.clone(),json!({"actor_id":peer.actor_id(),"state":"ACTIVE","expected_membership_id":null}));join.expected_workspace_revision=meta["workspace_revision"].as_u64();structure(&owner.invoke(join,Duration::from_secs(5)).await.unwrap());
-    let key=install_synthetic_key(&owner_config,&service.origin,&workspace,&[51;32],None);install_synthetic_key(&peer_config,&service.origin,&workspace,&[51;32],None);
+    let key=install_synthetic_key(&owner_config,owner.origin(),&workspace,&[51;32],None);install_synthetic_key(&peer_config,peer.origin(),&workspace,&[51;32],None);
     mutate(&owner,"host-key","structure.content-key.set",&scope,json!({"key_id":key,"expected_epoch":0,"expected_head_revision":null})).await;
     let mailbox=selected(&peer,"structure.mailboxes.read",&scope,json!({"limit":8})).await["mailboxes"][0].clone();let actor=peer.actor_id().to_owned();peer.close().await.unwrap();
     service.config(json!({"resident_worker":true})).await;
