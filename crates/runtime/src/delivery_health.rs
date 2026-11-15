@@ -11,7 +11,7 @@ pub(crate) fn evaluate(receiver: &Value, notification: &Value, transport: &str, 
     let age=health["observation_age_ms"].as_u64().map(|age|age.saturating_add(health["coordinator_age_ms"].as_u64().unwrap_or(0)));
     let fresh=age.is_some_and(|age|age<FRESH_MS);
     let host_code=health["code"].as_str().or_else(||health["reason"].as_str());
-    let blocked=health["state"]=="BLOCKED" || health["state"]=="FAILED" || health["ready"]==false && health["can_attempt"]!=true;
+    let blocked=matches!(health["state"].as_str(),Some("BLOCKED"|"FAILED"|"STOPPED"|"RECONNECTING")) || health["ready"]==false && health["can_attempt"]!=true;
     let capable=if transport=="MCP_STDIO_CHANNEL" {
         fresh && !matches!(health["state"].as_str(),None|Some("UNKNOWN"|"BLOCKED"|"STARTING"|"STOPPED"))
     } else { fresh && (health["ready"]==true || health["can_attempt"]==true) };
@@ -71,6 +71,11 @@ pub(crate) fn host_observation(host: &Value) -> Value {
         let channel=json!({"state":"WAITING_READ","observation_age_ms":2});
         let v=evaluate(&receiver(),&verified(),"MCP_STDIO_CHANNEL",&channel);assert_eq!(v["state"],"READY");assert_eq!(v["model_response"],"NOT_ATTESTED");
         let queued=json!({"ready":false,"can_attempt":true,"observation_age_ms":0});assert_eq!(evaluate(&receiver(),&verified(),"HOST_PUSH",&queued)["state"],"READY");
+        for state in ["STOPPED","RECONNECTING","BLOCKED","FAILED"] {
+            let mut unavailable=queued.clone();unavailable["state"]=json!(state);
+            let current=evaluate(&receiver(),&verified(),"HOST_PUSH",&unavailable);
+            assert_eq!(current["state"],"BLOCKED");assert_eq!(current["transport_ready"],false);
+        }
     }
 }
 

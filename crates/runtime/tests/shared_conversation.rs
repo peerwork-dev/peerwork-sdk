@@ -269,8 +269,10 @@ async fn installed_delivery_status_follows_verified_writer_conflict_and_same_ses
     let end=std::time::Instant::now()+Duration::from_secs(20);
     let batch=loop{if let Some(batch)=host.batch(0){break batch}assert!(std::time::Instant::now()<end,"no native self-test notification");tokio::time::sleep(Duration::from_millis(25)).await;};
     let observed=mcp.tool(2,"peerwork_inbox",json!({"batch":batch}));assert_eq!(observed["state"],"SELF_TEST_OBSERVED");
-    let live=mcp.tool(3,"peerwork_delivery",json!({"mode":"status","scope":"team"}));assert_eq!(live["state"],"READY","{live}");let verified=live["destinations"][0]["last_verified_at"].clone();assert!(verified.is_number());
-    host.writer.store(true,Ordering::SeqCst);let end=std::time::Instant::now()+Duration::from_secs(15);let mut request=4;
+    let mut request=2;let end=std::time::Instant::now()+Duration::from_secs(10);
+    let live=loop{request+=1;let state=mcp.tool(request,"peerwork_delivery",json!({"mode":"status","scope":"team"}));if state["state"]=="READY"{break state}assert!(std::time::Instant::now()<end,"current receiving prerequisites did not settle: {state}");tokio::time::sleep(Duration::from_millis(100)).await;};
+    let verified=live["destinations"][0]["last_verified_at"].clone();assert!(verified.is_number());
+    host.writer.store(true,Ordering::SeqCst);let end=std::time::Instant::now()+Duration::from_secs(15);
     loop{request+=1;let state=mcp.tool(request,"peerwork_delivery",json!({"mode":"status","scope":"team"}));if state["code"]=="HOST_SESSION_OWNERSHIP_CONFLICT"{assert_eq!(state["state"],"BLOCKED");assert_eq!(state["destinations"][0]["last_verified_at"],verified);assert_eq!(state["observations"][0]["receiver"]["receiver_link_verified"],true);break}assert!(std::time::Instant::now()<end,"host conflict not reflected: {state}");tokio::time::sleep(Duration::from_millis(200)).await;}
     request+=1;let context=mcp.tool(request,"peerwork_context",json!({}));assert_eq!(context["delivery_status"]["scopes"]["team"]["state"],"BLOCKED");assert_eq!(context["delivery_status"]["scopes"]["team"]["code"],"HOST_SESSION_OWNERSHIP_CONFLICT");
     tokio::time::sleep(Duration::from_secs(4)).await;assert_eq!(host.calls.lock().unwrap().iter().filter(|v|v["method"]=="thread/resume").count(),1,"conflict must not repeat resume attempts");
