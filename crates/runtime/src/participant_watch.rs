@@ -163,10 +163,9 @@ pub(crate) struct MailSession {
     pub conversation_format: bool,
 }
 impl MailSession {
-    fn now(&self) -> Result<u64> {
+    fn clock(&self) -> Result<crate::transport::AuthorizationWindow> {
         self.transport
             .cached_context(&self.service_key)
-            .map(|v| v.server_time_ms())
             .ok_or_else(|| error("AUTHORIZATION_ANCHOR_EXPIRED"))
     }
 }
@@ -274,7 +273,30 @@ struct Slot {
     prefer_consumed_ack: bool,
     custody_ack_not_before: Option<Instant>,
 }
+fn authenticated_time_fault(diagnostic: &Value) -> bool {
+    diagnostic["code"] == "STREAM_TIME_WINDOW_INVALID"
+        && diagnostic["phase"] == "FRAME_VERIFICATION"
+        && diagnostic["scope_authenticated"] == true
+}
 impl Slot {
+    fn retry_time_fault(&mut self, diagnostic: &Value) -> bool {
+        if !authenticated_time_fault(diagnostic) || self.receive_fault.is_some() { return false; }
+        self.time_retries = self.time_retries.saturating_add(1);
+        self.link_verified = false;
+        self.state("RECONNECTING", Some("STREAM_TIME_WINDOW_INVALID".into()));
+        true
+    }
+    // Called only after the session's signed context and service binding verify.
+    // Old time-only quarantine is retryable; no delivery/checkpoint is changed.
+    fn recover_time_fault_after_signed_context(&mut self, store: &InboxStore) -> Result<()> {
+        if !self.receive_fault.as_ref().is_some_and(authenticated_time_fault) { return Ok(()); }
+        store.reset_receive_probe(&self.binding.options.workspace_id, &self.binding.options.mailbox_id)?;
+        let diagnostic = self.receive_fault.take().unwrap();
+        self.retry_time_fault(&diagnostic);
+        self.next_control = Instant::now();
+        Ok(())
+    }
+
     fn host_observed(&mut self, value: Value, observed_at: Instant) -> Result<()> {
         let before = self.presence.version;
         self.presence.host_observed(value, observed_at)?;
@@ -793,9 +815,7 @@ pub(crate) async fn run(
                                 s.link_verified=false;
                                 s.presence.version=s.presence.version.saturating_add(1);
                                 s.next_control=Instant::now();
-                                if diagnostic["code"]=="STREAM_TIME_WINDOW_INVALID" && s.time_retries<2 {
-                                    s.time_retries+=1;
-                                    s.state("RECONNECTING",Some("STREAM_TIME_WINDOW_INVALID".into()));
+                                if s.retry_time_fault(&diagnostic) {
                                     continue;
                                 }
                                 let saved=store.quarantine_receive(&s.binding.options.workspace_id,&s.binding.options.mailbox_id,&diagnostic);
@@ -866,7 +886,14 @@ pub(crate) async fn run(
                         if stale{continue;}
                         match work{
                             Work::Resident(completed)=>{if let Err(e)=resident.completed(completed,&mut store,&identity){resident.record_error(e);}},
-                            Work::Session(value)=>{session_busy=false;match value{Ok(value)=>match store.bind_service(&value.audience,&value.service_key){Ok(())=>session=Some(value),Err(e)=>{for s in slots.values_mut(){s.fail(Failure{no_effect:false,code:e.code.clone(),retryable:false});}}},Err(e)=>{session_retry=Instant::now()+Duration::from_secs(2);for s in slots.values_mut().filter(|s|!s.blocked){if e.retryable{s.state("RECONNECTING",Some(e.code.clone()));}else{s.fail(Failure{no_effect:false,code:e.code.clone(),retryable:false});}}}}},
+                            Work::Session(value)=>{session_busy=false;match value{Ok(value)=>match store.bind_service(&value.audience,&value.service_key){Ok(())=>{
+                                for s in slots.values_mut().filter(|s|s.enabled&&!s.blocked&&!resident.paused(&s.binding.options)) {
+                                    if let Err(e)=s.recover_time_fault_after_signed_context(&store) {
+                                        s.fail(Failure{no_effect:false,code:e.code,retryable:false});
+                                    }
+                                }
+                                session=Some(value);
+                            },Err(e)=>{for s in slots.values_mut(){s.fail(Failure{no_effect:false,code:e.code.clone(),retryable:false});}}},Err(e)=>{session_retry=Instant::now()+Duration::from_secs(2);for s in slots.values_mut().filter(|s|!s.blocked){if e.retryable{s.state("RECONNECTING",Some(e.code.clone()));}else{s.fail(Failure{no_effect:false,code:e.code.clone(),retryable:false});}}}}},
                             Work::Inspect(key,value)=>if let Some(s)=slots.get_mut(&key){s.busy=false;s.control_cancel=None;match value{
                                 Ok(value)=>{
                                     let mailbox=&value["mailbox"];let target=s.binding.options.destination(identity.actor_id(),&origin,&s.binding.namespace);
@@ -959,7 +986,7 @@ pub(crate) async fn run(
                                 let code=value.as_ref().err().map(|e|e.code.clone());
                                 let fatal=value.as_ref().err().is_some_and(|e|!e.retryable);
                                 if value.is_err(){stream_failures=stream_failures.saturating_add(1);}else{stream_failures=0;}
-                                stream_retry=Instant::now()+if value.as_ref().err().is_some_and(Failure::capacity){receiver_retry_delay(stream_failures,true)}else{Duration::from_millis(if value.is_ok(){50}else{(250u64<<stream_failures.min(5)).min(8000)})};
+                                stream_retry=Instant::now()+if value.as_ref().err().is_some_and(Failure::capacity){receiver_retry_delay(stream_failures,true)}else{if value.is_ok(){Duration::from_millis(50)}else{receiver_retry_delay(stream_failures,false)}};
                                 for s in slots.values_mut().filter(|s|!s.blocked&&s.receive_fault.is_none()){s.link_verified=false;s.disconnects=s.disconnects.saturating_add(1);
                                     if fatal{s.fail(Failure{no_effect:false,code:code.clone().unwrap_or_else(||"STREAM_VERIFICATION_FAILED".into()),retryable:false});}
                                     else{s.state("RECONNECTING",code.clone());
@@ -1459,8 +1486,9 @@ async fn stream(
     let token = grant["token"]
         .as_str()
         .ok_or_else(|| Failure::code("STREAM_GRANT_INVALID"))?;
-    let floor = session.now().map_err(|e| Failure::code(&e.code))?;
-    let remaining = stream_remaining_ms(expires,floor);
+    let clock = session.clock().map_err(|e| Failure::code(&e.code))?;
+    let floor = clock.server_time_lower_bound_ms();
+    let remaining = stream_remaining_ms(expires,clock.server_time_ms());
     if remaining == 0 {
         return Err(Failure::code("STREAM_GRANT_EXPIRED"));
     }
@@ -1520,6 +1548,7 @@ async fn stream(
                     tokio::select! {_=cancel.cancelled()=>return Ok(()),_=rx=>{}};
                     if error==peerwork_core::communication::FrameVerificationError::Time {
                         access.refresh_mailbox_clock(cancel).await.map_err(|e|Failure::code(KernelPublicError::from(e).code))?;
+                        return Err(Failure::code("STREAM_TIME_WINDOW_INVALID"));
                     }
                     return Err(Failure::code("STREAM_SCOPE_VERIFICATION_FAILED"));
                 }
@@ -1541,6 +1570,38 @@ mod reliability_tests {
     use super::*;
     fn selected()->Slot {
         slot(Binding{namespace:"program:test".into(),options:WatchOptions{workspace_id:"w".repeat(43),mailbox_id:"m".repeat(43),membership_id:"g".repeat(43),consumer_id:"test".into(),host_destination:None},receiver:"r".repeat(43),claim_id:"c".repeat(43),claim_wire:None,pins:None})
+    }
+    #[test]
+    fn authenticated_time_recovery_preserves_binding_and_non_time_quarantine() {
+        let root=crate::test_support::protected_test_dir();
+        let identity=KernelIdentity::create(&root.path().join("identity")).unwrap();
+        let dir=root.path().join("inbox");
+        crate::secure_state::create_private_state_directory(&dir).unwrap();
+        let store=InboxStore::open_local(&dir,&identity,"https://example.invalid/").unwrap();
+        let mut s=selected();
+        let original=serde_json::to_value(&s.binding.options).unwrap();
+        let receiver=s.binding.receiver.clone();let claim=s.binding.claim_id.clone();
+        let time=json!({"code":"STREAM_TIME_WINDOW_INVALID","phase":"FRAME_VERIFICATION","scope_authenticated":true});
+        // More than the old two retries remains recoverable, with bounded traffic.
+        for _ in 0..300 { assert!(s.retry_time_fault(&time)); }
+        assert_eq!(s.state,"RECONNECTING");assert!(!s.link_verified);
+        assert_eq!(receiver_retry_delay(s.time_retries,false),Duration::from_secs(8));
+        for diagnostic in [time.clone(),json!({"code":"STREAM_ITEM_INVALID","phase":"FRAME_VERIFICATION","scope_authenticated":true}),json!({"code":"STREAM_TIME_WINDOW_INVALID","phase":"FRAME_VERIFICATION","scope_authenticated":false})] {
+            store.quarantine_receive(&s.binding.options.workspace_id,&s.binding.options.mailbox_id,&diagnostic).unwrap();
+            s.receive_fault=Some(diagnostic.clone());
+            s.recover_time_fault_after_signed_context(&store).unwrap();
+            let saved=store.receive_fault(&s.binding.options.workspace_id,&s.binding.options.mailbox_id).unwrap();
+            if authenticated_time_fault(&diagnostic) {
+                assert!(saved.is_none());assert!(s.receive_fault.is_none());
+                assert_eq!(s.code.as_deref(),Some("STREAM_TIME_WINDOW_INVALID"));
+            } else {
+                assert_eq!(saved,Some(diagnostic.clone()));assert_eq!(s.receive_fault,Some(diagnostic.clone()));
+                assert!(!s.retry_time_fault(&time));
+            }
+        }
+        assert_eq!(serde_json::to_value(&s.binding.options).unwrap(),original);
+        assert_eq!(s.binding.receiver,receiver);assert_eq!(s.binding.claim_id,claim);
+        assert!(store.cursor(&s.binding.options.workspace_id,&s.binding.options.mailbox_id).unwrap().is_none());
     }
     #[test]
     fn unchanged_host_probe_advances_watch_deadline_without_changing_version() {

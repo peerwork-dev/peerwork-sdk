@@ -167,7 +167,7 @@ pub struct HttpTransport {
     origin: Url,
     client: Client,
     metrics:Arc<TransportMetrics>,
-    context_cache:Arc<std::sync::Mutex<Option<(String,peerwork_core::structure_context::VerifiedStructureContext,Instant)>>>,
+    context_cache:Arc<std::sync::Mutex<Option<(String,peerwork_core::structure_context::VerifiedStructureContext,Instant,Instant)>>>,
     migration_source_clock:std::sync::Arc<std::sync::Mutex<Option<(u64,Instant)>>>,
     #[cfg(test)]
     journal_get_probe: std::sync::Arc<std::sync::Mutex<Option<Vec<String>>>>,
@@ -190,9 +190,10 @@ fn checked_origin(origin:&str,allow_loopback_http:bool)->Result<Url,TransportErr
 /// Authorization timestamps estimated from a verified server anchor and local
 /// monotonic elapsed time. This is not a new signed server-time proof, and its
 /// expiry is never extended beyond that original anchor's authorization TTL.
-pub(crate) struct AuthorizationWindow{issued:u64,expires:u64}
+pub(crate) struct AuthorizationWindow{issued:u64,lower:u64,expires:u64}
 impl AuthorizationWindow{
     pub(crate) fn server_time_ms(&self)->u64{self.issued}
+    pub(crate) fn server_time_lower_bound_ms(&self)->u64{self.lower}
     pub(crate) fn expires_at_ms(&self)->u64{self.expires}
 }
 impl HttpTransport {
@@ -211,19 +212,29 @@ impl HttpTransport {
         Ok(response)
     }
     pub(crate) fn invalidate_context(&self,key:&str){
-        if let Ok(mut slot)=self.context_cache.lock(){if slot.as_ref().is_some_and(|(pin,_,_)|pin==key){*slot=None;}}
+        if let Ok(mut slot)=self.context_cache.lock(){if slot.as_ref().is_some_and(|(pin,_,_,_)|pin==key){*slot=None;}}
     }
     pub(crate) fn cached_context(&self,key:&str)->Option<AuthorizationWindow>{
+        self.cached_context_at(key,Instant::now())
+    }
+    fn cached_context_at(&self,key:&str,now:Instant)->Option<AuthorizationWindow>{
         let slot=self.context_cache.lock().ok()?;
-        let (pin,context,at)=slot.as_ref()?;
-        let elapsed=u64::try_from(at.elapsed().as_millis()).ok()?;
+        let (pin,context,started,received)=slot.as_ref()?;
+        let elapsed=u64::try_from(now.checked_duration_since(*started)?.as_millis()).ok()?;
         if pin!=key || elapsed>=540_000{return None;}
+        // Request-start elapsed is an upper estimate: retain it for existing
+        // issuance and conservative expiry. It is not an inbound lower bound.
         let issued=context.server_time_ms().checked_add(elapsed)?;
+        let lower_elapsed=u64::try_from(now.checked_duration_since(*received)?.as_millis()).ok()?;
+        let lower=context.server_time_ms().checked_add(lower_elapsed)?;
         let expires=context.expires_at_ms();
-        if issued>=expires{return None;}Some(AuthorizationWindow{issued,expires})
+        if issued>=expires{return None;}Some(AuthorizationWindow{issued,lower,expires})
     }
     pub(crate) fn remember_context(&self,key:&str,context:&peerwork_core::structure_context::VerifiedStructureContext,started:Instant){
-        if let Ok(mut slot)=self.context_cache.lock(){*slot=Some((key.into(),context.clone(),started));}
+        // Recording after receipt verification is conservative: verification
+        // time cannot make the lower bound run ahead of the signed observation.
+        let received=Instant::now();
+        if let Ok(mut slot)=self.context_cache.lock(){*slot=Some((key.into(),context.clone(),started,received));}
     }
     async fn measured_send<F>(&self,future:F)->Result<reqwest::Response,reqwest::Error>
     where F:std::future::Future<Output=Result<reqwest::Response,reqwest::Error>>{
@@ -942,6 +953,37 @@ mod tests {
         assert!(shared.cached_context("another-service-key").is_none());
         transport.remember_context(&key,&context,Instant::now()-Duration::from_secs(540));
         assert!(shared.cached_context(&key).is_none(),"a cached anchor cannot extend itself");
+    }
+
+    #[test]
+    fn slow_signed_context_keeps_inbound_lower_bound_independent_of_wall_clock_skew(){
+        use ed25519_dalek::{Signer,SigningKey};
+        use peerwork_core::crypto::base64url;
+        let signing=SigningKey::from_bytes(&[7u8;32]);let key=base64url(signing.verifying_key().as_bytes());
+        let nonce=base64url(&[1u8;32]);let now=Instant::now();
+        // Arbitrarily distant service epochs exercise either sign of wall-clock
+        // skew. No OS clock is consulted or changed by this calculation.
+        for time in [1u64,1_230_000_000_000,4_000_000_000_000] {
+            let header=base64url(serde_json::json!({"alg":"EdDSA","typ":peerwork_core::structure_context::CONTEXT_TYPE,"kid":key}).to_string().as_bytes());
+            let payload=base64url(serde_json::json!({"v":1,"audience":"test","profile":"backend-structure-v1","nonce":nonce,"idempotency":"BUSINESS_INTENT_V1","assurance":"BACKEND_CURRENT_STATE","authorization_ttl_ms":600000,"server_time_ms":time}).to_string().as_bytes());
+            let input=format!("{header}.{payload}");let signature=base64url(&signing.sign(input.as_bytes()).to_bytes());
+            let wire=serde_json::json!({"context":format!("{input}.{signature}")}).to_string();
+            let context=peerwork_core::structure_context::verify_structure_context(wire.as_bytes(),&nonce,&"test".encode_utf16().collect::<Vec<_>>(),&key).unwrap();
+            let transport=HttpTransport::new(local_config("http://127.0.0.1:1".into())).unwrap();
+            *transport.context_cache.lock().unwrap()=Some((key.clone(),context,now-Duration::from_millis(27500),now-Duration::from_millis(500)));
+            let clock=transport.cached_context_at(&key,now).unwrap();
+            assert_eq!(clock.server_time_ms(),time+27500,"issuance estimate is unchanged");
+            assert_eq!(clock.server_time_lower_bound_ms(),time+500);
+            assert_eq!(clock.expires_at_ms(),time+600000);
+            let frame_time=time+600;
+            assert!(frame_time<clock.server_time_ms().saturating_sub(1000),"old lower bound rejects a timely frame after slow context setup");
+            assert!(frame_time>=clock.server_time_lower_bound_ms().saturating_sub(1000));
+            assert!(frame_time<clock.expires_at_ms());
+            let later=transport.cached_context_at(&key,now+Duration::from_secs(1)).unwrap();
+            assert_eq!(later.server_time_lower_bound_ms(),time+1500);
+            assert_eq!(later.server_time_ms(),time+28500);
+            assert!(transport.cached_context_at(&key,now+Duration::from_secs(540)).is_none());
+        }
     }
 
     #[tokio::test]

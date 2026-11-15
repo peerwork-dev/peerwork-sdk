@@ -248,3 +248,12 @@ not delay independent acknowledgment work. This does not change service expiry
 policy or promise host/model response latency. Adopt the changed original
 resident runtime to obtain this scheduling correction; changing only a loaded
 MCP executable is insufficient.
+
+An authenticated `STREAM_TIME_WINDOW_INVALID` is retryable: the runtime refreshes
+signed service time and reconnects with backoff capped at eight seconds. It keeps
+the original receiver and delivery checkpoints, and reports `RECONNECTING` until
+a frame verifies. Updating also allows a previously persisted time-only rejection
+to retry after verified session setup. Other frame verification failures remain
+quarantined. A generic `STREAM_VERIFICATION_FAILED` is insufficient to diagnose
+clock skew: inspect the selected receiver's `verification_failure.code`,
+`phase`, and `scope_authenticated` fields without collecting message bodies.
