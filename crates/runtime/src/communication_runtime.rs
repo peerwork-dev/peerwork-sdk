@@ -372,10 +372,11 @@ impl Runtime {
         let binding=&observation["binding"];let client=&session.client;
         let options:WatchOptions=serde_json::from_value(binding.clone()).expect("validated receiving binding");
         let host=crate::delivery_health::selected_host(binding,hosts,&session.name,session.generation);
-        let channel=self.notifications.channel_observation(&crate::communication_notifications::owner(client,&options));
+        let channel_key=crate::communication_notifications::channel_key(&crate::communication_notifications::owner(client,&options),&options,session.generation);
+        let channel=self.notifications.channel_observation(&channel_key);
         let transport=if options.host_destination.is_some(){"HOST_PUSH"}else if channel["state"]=="POLLING"{"MCP_STDIO_CHANNEL"}else{"NATIVE_INBOX"};
         let health=host.as_ref().map(crate::delivery_health::host_observation).unwrap_or_else(||{
-            if transport=="MCP_STDIO_CHANNEL"{self.notifications.channel_observation(&crate::communication_notifications::owner(client,&options))}
+            if transport=="MCP_STDIO_CHANNEL"{self.notifications.channel_observation(&channel_key)}
             else{json!({"state":"UNKNOWN","reason":"EXACT_HOST_NOT_OBSERVED"})}
         });
         let current=crate::delivery_health::evaluate(&observation["receiver"],&observation["notification"],transport,&health);
@@ -506,8 +507,11 @@ impl Runtime {
                 ClientRequest::NotificationPoll{options,wait_ms}=>{
                     if options.host_destination.is_some(){return Err(local("CLAUDE_CHANNEL_SOURCE_ALREADY_BOUND_TO_ANOTHER_HOST"));}
                     let wake=self.notifications.wait_poll(client,&options,wait_ms).await?;
-                    self.notifications.note_channel(&crate::communication_notifications::owner(client,&options))?;
-                    Ok(match wake{Some((_,wake))=>json!({"state":"NOTIFICATION_DUE","batch":wake.batch,"revision":wake.revision,"attempt":wake.attempt,"self_test":wake.self_test}),None=>json!({"state":"WAITING_NATIVE_INBOX"})})
+                    let key=crate::communication_notifications::channel_key(&crate::communication_notifications::owner(client,&options),&options,session.generation);
+                    self.notifications.note_channel(&key)?;
+                    let mut value=match wake{Some((_,wake))=>json!({"state":"NOTIFICATION_DUE","batch":wake.batch,"revision":wake.revision,"attempt":wake.attempt,"self_test":wake.self_test}),None=>json!({"state":"WAITING_NATIVE_INBOX"})};
+                    value["source_binding"]=crate::agent_delivery_status::binding(&json!({"actor_id":client.actor_id(),"origin":client.origin(),"receiving_binding":{"client_name":session.name,"client_generation":session.generation,"namespace":client.local_namespace(),"engine_digest":self.engine_bindings.get(client.state_binding()),"state_binding":client.state_binding()}}),&serde_json::to_value(&options).unwrap());
+                    Ok(value)
                 },
                 ClientRequest::NotificationValidate{batch,revision}=>Ok(json!({"allowed":self.notifications.validate(client,&batch,revision).await?})),
                 ClientRequest::NotificationObserve{batch}=>{
@@ -544,7 +548,7 @@ impl Runtime {
                     for mut value in hosts.statuses(){
                         let selected=value["source_bindings"].as_array().map(|bindings|bindings.iter().filter(|b|b["client"]==session.name&&b.get("client_generation").and_then(Value::as_u64)==session.generation).cloned().collect::<Vec<_>>()).unwrap_or_default();
                         if selected.is_empty(){continue;}
-                        if let Some(fields)=value.as_object_mut(){fields.retain(|key,_|["state","code","diagnostic","host_observation","delivery_obligations","dispatcher_running","restart_attempt","retry_after_ms","model_response","selection_id"].contains(&key.as_str()));}
+                        if let Some(fields)=value.as_object_mut(){fields.retain(|key,_|["state","code","diagnostic","host_observation","delivery_obligations","dispatcher_running","restart_attempt","retry_after_ms","model_response","selection_id","destination_digest"].contains(&key.as_str()));}
                         let obligations=value["delivery_obligations"].as_array().map(|items|items.iter().filter(|item|selected.iter().any(|source|source["watch"]["workspace_id"]==item["workspace_id"]&&source["watch"]["mailbox_id"]==item["mailbox_id"])).cloned().collect::<Vec<_>>()).unwrap_or_default();
                         value["source_bindings"]=json!(selected);value["delivery_obligations"]=json!(obligations);values.push(value);
                     }

@@ -202,6 +202,7 @@ impl Hosts {
                 value["dispatcher_running"]=json!(!job.task.is_finished());
                 if job.task.is_finished(){value["state"]=json!(if job.cancel.is_cancelled(){"STOPPED"}else{"FAILED"});value["code"]=json!("HOST_DISPATCHER_TERMINATED");}
                 value["selection_id"] = json!(key);
+                if let Ok(binding)=crate::participant_inbox::HostBinding::new(value["destination"].clone()){value["destination_digest"]=json!(binding.digest);}
                 if let Some(config)=self.configs.iter().find(|c|c.key().ok().as_ref()==Some(key)) {
                     value["source_bindings"]=json!(config.subscriptions);
                     value["source_name"]=json!(config.name);

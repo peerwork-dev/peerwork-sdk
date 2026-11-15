@@ -46,7 +46,7 @@ fn refresh_at(context: &mut Value, now: i64) {
             host["observation"]=if host["host_observation"]["observation_age_ms"].as_u64().is_some_and(|age|age<crate::delivery_health::FRESH_MS){host["host_observation"].clone()}else{json!({"state":"UNKNOWN","reason":"FRESH_OBSERVATION_UNAVAILABLE"})};
             let transport=if selected_binding["host_destination"].is_string(){"HOST_PUSH"}
                 else if channel_matches || source.is_some_and(|v|v["transport"]=="MCP_STDIO_CHANNEL"){"MCP_STDIO_CHANNEL"}else{"NATIVE_INBOX"};
-            let health=if transport=="MCP_STDIO_CHANNEL"&&channel_matches{channel.clone()}
+            let health=if transport=="MCP_STDIO_CHANNEL"&&!candidate.is_null(){channel.clone()}
                 else if let Some(host)=selected_host.as_ref(){crate::delivery_health::host_observation(host)}
                 else{source.map(|v|v["transport_health"].clone()).unwrap_or_else(||json!({"state":"UNKNOWN"}))};
             let mut current=crate::delivery_health::evaluate(&receiver,&notification,transport,&health);
@@ -80,15 +80,17 @@ fn refresh_at(context: &mut Value, now: i64) {
 pub(crate) fn refresh_delivery(value:&mut Value, channel:&Value) {
     let identity=json!({"actor_id":value["actor_id"],"origin":value["origin"]});
     if let Some(observations)=value["observations"].as_array_mut(){for observation in observations {
-        if observation["transport"]!="MCP_STDIO_CHANNEL"{continue;}
+        if observation["transport"]=="HOST_PUSH"{continue;}
+        let projects=channel["scopes"].as_object().is_some_and(|scopes|scopes.values().any(|candidate|same_scope(&candidate["binding"],&observation["binding"])));
+        if observation["transport"]!="MCP_STDIO_CHANNEL"&&!projects{continue;}
+        observation["transport"]=json!("MCP_STDIO_CHANNEL");
         let mut context=identity.clone();context["receiving_binding"]=observation["receiving_binding"].clone();
         let expected=binding(&context,&observation["binding"]);
         let candidate=channel["scopes"].as_object().and_then(|scopes|scopes.values().find(|candidate|candidate["binding"]==expected));
-        if let Some(candidate)=candidate {
-            let current=crate::delivery_health::evaluate(&observation["receiver"],&observation["notification"],"MCP_STDIO_CHANNEL",candidate);
-            observation["current_delivery"]=current.clone();observation["transport_health"]=candidate.clone();
-            crate::delivery_health::annotate_notification(&mut observation["notification"],&current);
-        }
+        let health=candidate.cloned().unwrap_or_else(||json!({"state":"UNKNOWN","reason":"CHANNEL_SOURCE_NOT_OBSERVED"}));
+        let current=crate::delivery_health::evaluate(&observation["receiver"],&observation["notification"],"MCP_STDIO_CHANNEL",&health);
+        observation["current_delivery"]=current.clone();observation["transport_health"]=health;
+        crate::delivery_health::annotate_notification(&mut observation["notification"],&current);
     }}
     // Keep destination control and current readiness separate, but coherent.
     if let Some(destinations)=value["destinations"].as_array().cloned(){
@@ -137,6 +139,7 @@ mod tests {
         value["onboarding"]["setups"][0]["receiving_scopes"]["space"]["membership_id"]=json!("old");
         refresh_at(&mut value,1001);
         assert_eq!(value["delivery_status"]["scopes"]["space"]["channel"]["reason"],"BINDING_MISMATCH");
+        assert_eq!(value["delivery_status"]["scopes"]["space"]["state"],"UNKNOWN","a different Channel generation cannot borrow runtime polling health");
         assert_eq!(value["delivery_status"]["setups"][0]["receiving_scope"],"UNKNOWN_OR_DIFFERENT");
         value["delivery_observations"]["observations"][0]["notification"]["state"]=json!("PAUSED");refresh_at(&mut value,1001);
         assert_eq!(value["delivery_status"]["scopes"]["space"]["state"],"PAUSED");
@@ -176,6 +179,23 @@ mod tests {
         value["host_status"]["hosts"][0]["host_observation"]["observation_age_ms"]=json!(10000);
         refresh_at(&mut value,1001);
         assert_eq!(value["delivery_status"]["scopes"]["space"]["host"]["observation"]["state"],"UNKNOWN");
+        value["bindings"][0]["host_destination"]=json!("selected-digest");
+        value["delivery_observations"]["observations"][0]["binding"]=value["bindings"][0].clone();
+        value["host_status"]["hosts"][0]["destination_digest"]=json!("selected-digest");
+        refresh_at(&mut value,1001);
+        assert_eq!(value["delivery_status"]["scopes"]["space"]["host"]["selection_id"],"selected-session","sanitized runtime status retains the verified physical destination digest");
+    }
+
+    #[test]
+    fn delivery_status_cannot_reuse_another_channel_generation() {
+        let context=context();let mut old=binding(&context,&context["scopes"]["space"]);old["client_generation"]=json!(1);
+        let mut delivery=json!({"actor_id":context["actor_id"],"origin":context["origin"],"observations":context["delivery_observations"]["observations"]});
+        delivery["observations"][0]["receiving_binding"]=context["receiving_binding"].clone();
+        refresh_delivery(&mut delivery,&json!({"scopes":{"space":{"binding":old,"state":"WAITING_READ","observation_age_ms":0}}}));
+        assert_eq!(delivery["state"],"UNKNOWN");assert_eq!(delivery["observations"][0]["transport_health"]["reason"],"CHANNEL_SOURCE_NOT_OBSERVED");
+        delivery["observations"][0]["transport"]=json!("NATIVE_INBOX");
+        refresh_delivery(&mut delivery,&json!({"scopes":{"space":{"binding":binding(&context,&context["scopes"]["space"]),"state":"STARTING","observation_age_ms":0}}}));
+        assert_eq!(delivery["state"],"UNKNOWN");assert_eq!(delivery["observations"][0]["transport"],"MCP_STDIO_CHANNEL");
     }
 
 }

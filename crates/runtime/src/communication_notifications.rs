@@ -31,6 +31,9 @@ pub(crate) fn owner(client: &ParticipantClient, options: &WatchOptions) -> Strin
         destination(options)
     ]))
 }
+pub(crate) fn channel_key(owner:&str,options:&WatchOptions,generation:Option<u64>)->String {
+    digest(json!([owner,options,generation]))
+}
 fn source(client: &ParticipantClient, options: &WatchOptions) -> String {
     digest(json!([
         client.origin(),

@@ -29,6 +29,12 @@ impl State {
         observed.scopes.insert(alias.into(),json!({"state":state,"code":code,"binding":binding}));
         observed.at.insert(alias.into(),std::time::Instant::now());
     }
+    fn scope_observed(&self,alias:&str,value:&Value) {
+        self.scope(alias,value["state"].as_str().unwrap_or("NATIVE_INBOX_OBSERVED"),value["code"].as_str());
+        if value["source_binding"].is_object(){
+            self.0.lock().unwrap().scopes.get_mut(alias).unwrap()["binding"]=value["source_binding"].clone();
+        }
+    }
     fn scope_failed(&self,alias:&str,error:&ParticipantError) {
         let mut value=json!({"state":"BLOCKED","code":error.code,"recovery":crate::host_recovery_policy::diagnostic(&error.code)});
         if error.details.as_ref().and_then(|details|details.get("local_state")).is_some() {
@@ -153,7 +159,7 @@ where F:FnMut()->Fut,Fut:std::future::Future<Output=Result<Value>> {
         let changed=observed.1.notified();tokio::pin!(changed);changed.as_mut().enable();
         let started=tokio::time::Instant::now();
         let value=tokio::select!{_=output.closed()=>return Ok(()),result=poll()=>result?};
-        observed.scope(alias,value["state"].as_str().unwrap_or("NATIVE_INBOX_OBSERVED"),value["code"].as_str());
+        observed.scope_observed(alias,&value);
         if value["state"]=="NOTIFICATION_DUE" {
             if output.send(notification(&value)?).await.is_err(){return Ok(())}
         }
@@ -168,6 +174,17 @@ where F:FnMut()->Fut,Fut:std::future::Future<Output=Result<Value>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn running_projection_uses_current_authenticated_source_generation() {
+        let state=State::default();state.scope_observed("space",&json!({"state":"WAITING_NATIVE_INBOX","source_binding":{"client_generation":1,"membership_id":"original"}}));
+        state.scope_observed("space",&json!({"state":"WAITING_NATIVE_INBOX","source_binding":{"client_generation":2,"membership_id":"original"}}));
+        assert_eq!(state.status()["scopes"]["space"]["binding"]["client_generation"],2);
+        let options=crate::participant::WatchOptions{workspace_id:"w".repeat(43),mailbox_id:"m".repeat(43),membership_id:"g".repeat(43),consumer_id:"channel".into(),host_destination:None};
+        let key=crate::communication_notifications::channel_key("same-original-owner",&options,Some(1));
+        assert_ne!(key,crate::communication_notifications::channel_key("same-original-owner",&options,Some(2)));
+        let mut rebound=options.clone();rebound.host_destination=Some("d".repeat(64));
+        assert_ne!(key,crate::communication_notifications::channel_key("same-original-owner",&rebound,Some(1)));
+    }
     fn profile()->AgentProfile {
         serde_json::from_value(json!({"format":"peerwork.agent-profile.v1","endpoint_path":"/synthetic/client.json",
             "expected_origin":"https://example.invalid/","expected_actor":"A".repeat(43),"scopes":{}})).unwrap()

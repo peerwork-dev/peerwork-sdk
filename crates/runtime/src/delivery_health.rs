@@ -38,8 +38,8 @@ pub(crate) fn evaluate(receiver: &Value, notification: &Value, transport: &str, 
 pub(crate) fn source_matches(source: &Value, binding: &Value, host: &Value) -> bool {
     let mut expected=source.clone();
     if expected["host_destination"].is_null() && binding["host_destination"].is_string() {
-        let Ok(destination)=crate::participant_inbox::HostBinding::new(host["destination"].clone()) else{return false;};
-        expected["host_destination"]=json!(destination.digest);
+        expected["host_destination"]=if host["destination_digest"].is_string(){host["destination_digest"].clone()}
+            else{let Ok(destination)=crate::participant_inbox::HostBinding::new(host["destination"].clone()) else{return false;};json!(destination.digest)};
     }
     expected==*binding
 }
