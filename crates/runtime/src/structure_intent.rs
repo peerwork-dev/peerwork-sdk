@@ -36,6 +36,26 @@ fn set(value: &mut WireValue, key: &str, field: WireValue) {
     if let Some((_, old)) = fields.iter_mut().find(|(k, _)| *k == name) { *old = field; }
     else { fields.push((name, field)); }
 }
+/// Called once on each newly constructed pulse immediately before signing.
+/// Signed retry packets stay immutable. The elapsed interval includes session
+/// discovery, trusted-time acquisition and local preparation, not just HTTP IO.
+fn age_observed_pulse(command:&mut WireValue,elapsed:Duration)->Result<(),KernelClientError>{
+    if command.get("action_id").and_then(WireValue::as_string).as_deref()!=Some("structure.mailbox.pulse") {
+        return Err(KernelClientError::InvalidCommand);
+    }
+    let mut body=command.get("body").cloned().ok_or(KernelClientError::InvalidCommand)?;
+    let Some(mut presence)=body.get("presence").cloned() else{return Ok(());};
+    if !matches!(presence,WireValue::Object(_)){return Err(KernelClientError::InvalidCommand);}
+    for field in ["host_age_ms","key_age_ms"] {
+        let age=presence.get(field).and_then(WireValue::as_number)
+            .filter(|v|v.is_finite() && v.fract()==0.0 && (0.0..=60000.0).contains(v))
+            .ok_or(KernelClientError::InvalidCommand)?;
+        let age=(age as u64).saturating_add(elapsed.as_millis().min(60000) as u64).min(60000);
+        set(&mut presence,field,WireValue::Number(age as f64));
+    }
+    set(&mut body,"presence",presence);set(command,"body",body);Ok(())
+}
+
 fn pending(command_id: &str, code: &'static str, phase: &'static str, retryable: bool) -> StructureIntentOutcome {
     StructureIntentOutcome::Pending { command_id: command_id.into(), code, phase, retryable, recovery: "RESUME_SAME_INTENT" }
 }
@@ -181,6 +201,23 @@ impl KernelClient {
         intent_wire: &[u8],
         cancel: &CancellationToken,
     ) -> Result<StructureIntentOutcome, KernelClientError> {
+        self.execute_structure_intent_observed(identity,authority,intent_wire,cancel,None).await
+    }
+    pub(crate) async fn execute_observed_pulse(
+        &mut self, identity:&KernelIdentity, authority:&str, intent_wire:&[u8],
+        cancel:&CancellationToken, observed_wire_at:Instant,
+    )->Result<StructureIntentOutcome,KernelClientError>{
+        let (_,command,durable)=self.structure_command(identity,authority,intent_wire)?;
+        if durable || command.get("action_id").and_then(WireValue::as_string).as_deref()!=Some("structure.mailbox.pulse") {
+            return Err(KernelClientError::InvalidCommand);
+        }
+        let selected=self.prepare_execution_intent(identity,authority,intent_wire,cancel).await?;
+        self.execute_structure_intent_observed(identity,authority,&selected,cancel,Some(observed_wire_at)).await
+    }
+    async fn execute_structure_intent_observed(
+        &mut self, identity:&KernelIdentity, authority:&str, intent_wire:&[u8],
+        cancel:&CancellationToken, observed_wire_at:Option<Instant>,
+    )->Result<StructureIntentOutcome,KernelClientError>{
         let started=Instant::now();
         let preparing=self.transport.phase(crate::transport::ClientPhase::BodyPrepare);
         let (command_id, mut command, durable) = self.structure_command(identity, authority, intent_wire)?;
@@ -211,7 +248,7 @@ impl KernelClient {
         drop(preparing);
         let mut phase="SUBMISSION";
         let result = tokio::time::timeout(Duration::from_secs(30),async {
-            let outcome=self.drive_structure_intent(identity,command.clone(),durable,&mut persisted,prepared,cancel).await?;
+            let outcome=self.drive_structure_intent(identity,command.clone(),durable,&mut persisted,prepared,cancel,observed_wire_at).await?;
             match outcome {
                 StructureIntentOutcome::Accepted(result) if command.get("action_id").and_then(WireValue::as_string).as_deref()==Some("structure.workspace.delete")=>{
                     let initial=parse_wire_json_bounded(result.structure_result_json.as_ref().ok_or(KernelClientError::InvalidResult)?.as_bytes(),32,1024*1024).map_err(|_|KernelClientError::InvalidResult)?;
@@ -638,6 +675,7 @@ impl KernelClient {
         persisted: &mut bool,
         prepared: Option<SignedPreparedCommand>,
         cancel: &CancellationToken,
+        observed_wire_at: Option<Instant>,
     ) -> Result<StructureIntentOutcome, KernelClientError> {
         let preparing=self.transport.phase(crate::transport::ClientPhase::PacketPrepare);
         // The intent constructor already selected the original ID. Do not
@@ -666,6 +704,10 @@ impl KernelClient {
         let context=self.fresh_structure_context(cancel).await?;
         set(&mut command,"issued_at",WireValue::Number(context.server_time_ms() as f64));
         set(&mut command,"expires_at",WireValue::Number(context.expires_at_ms() as f64));
+        if let Some(observed_wire_at)=observed_wire_at {
+            if durable || prepared.is_some(){return Err(KernelClientError::InvalidCommand);}
+            age_observed_pulse(&mut command,observed_wire_at.elapsed())?;
+        }
         // Body preparation already signed and validated the same business
         // request. Reuse that typed packet while its authorization is fresh;
         // do not sign a second candidate merely to compare the journal winner.
@@ -1028,5 +1070,33 @@ mod collaboration_tests {
         let counts:Value=serde_json::from_slice(&reqwest::get(format!("{origin}__test/collaboration-counts")).await.unwrap().bytes().await.unwrap()).unwrap();
         assert_eq!(counts,json!({"workspaces":1,"identities":2,"grant_heads":2,"current_records":1}));
         let counts:Value=serde_json::from_slice(&reqwest::get(format!("{origin}__test/counts")).await.unwrap().bytes().await.unwrap()).unwrap();assert_eq!(counts["records"],1);assert_eq!(counts["journal_reads"],0);
+    }
+}
+
+#[cfg(test)]
+mod observed_pulse_age_tests {
+    use super::*;
+    fn pulse()->WireValue {
+        parse_wire_json_bounded(br#"{"action_id":"structure.mailbox.pulse","issued_at":100000,"body":{"presence":{"host_age_ms":7000,"key_age_ms":4000,"host_ready":true}}}"#,8,1024).unwrap()
+    }
+    #[test]
+    fn session_and_context_delay_ages_both_observations_at_signing() {
+        let mut command=pulse();age_observed_pulse(&mut command,Duration::from_millis(4500)).unwrap();
+        let presence=command.get("body").unwrap().get("presence").unwrap();
+        assert_eq!(presence.get("host_age_ms").and_then(WireValue::as_number),Some(11500.0));
+        assert_eq!(presence.get("key_age_ms").and_then(WireValue::as_number),Some(8500.0));
+        assert_eq!(command.get("issued_at").and_then(WireValue::as_number),Some(100000.0));
+        assert_eq!(presence.get("host_ready"),Some(&WireValue::Bool(true)));
+    }
+    #[test]
+    fn retry_uses_original_observation_and_stale_age_saturates() {
+        let original=pulse();let mut first=original.clone();let mut retry=original.clone();
+        age_observed_pulse(&mut first,Duration::from_millis(500)).unwrap();
+        age_observed_pulse(&mut retry,Duration::from_millis(1500)).unwrap();
+        assert_eq!(retry.get("body").unwrap().get("presence").unwrap().get("host_age_ms").and_then(WireValue::as_number),Some(8500.0));
+        age_observed_pulse(&mut retry,Duration::from_secs(100)).unwrap();
+        assert_eq!(retry.get("body").unwrap().get("presence").unwrap().get("host_age_ms").and_then(WireValue::as_number),Some(60000.0));
+        let mut business=original;set(&mut business,"action_id",string("structure.message.send"));
+        let before=business.clone();assert!(age_observed_pulse(&mut business,Duration::from_secs(1)).is_err());assert_eq!(business,before);
     }
 }

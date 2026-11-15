@@ -940,7 +940,7 @@ impl AgentTools {
                     Ok(value) => (value, None),
                     Err(error) => (Value::Null, Some(error)),
                 };
-                let receiving_binding = if self.receiver.is_some() && receiving_error.is_none() {
+                let receiving_binding = if receiving_error.is_none() && (self.receiver.is_some() || capabilities["features"].as_array().is_some_and(|items|items.iter().any(|v|v=="original-engine-binding-v1"))) {
                     self.receiving().call(json!({"method":"binding"})).await
                 } else {Ok(Value::Null)};
                 let (receiving_binding, receiving_error) = match receiving_binding {
@@ -954,9 +954,13 @@ impl AgentTools {
                         Ok(value)=>value,Err(problem)=>json!({"state":"UNKNOWN","code":problem.code,"phase":problem.phase})
                     }
                 }else{json!({"state":"NOT_AVAILABLE","reason":"RESIDENT_RUNTIME_UPGRADE_REQUIRED"})};
-                Ok(
-                    json!({"actor_id":self.client.actor_id(),"origin":self.client.origin(),"maturity":"EXPERIMENTAL","local_engine":if self.client.attached_mode(){"ATTACHED_ORIGINAL_CLIENT"}else{"AUTHENTICATED"},"state_migration_required":false,"versions":{"frontend":env!("CARGO_PKG_VERSION"),"runtime":capabilities.get("sdk_version").cloned().unwrap_or(json!("NOT_REPORTED"))},"remote_or_host_readiness":"NOT_ATTESTED","host_status":host_status,"workspaces":self.profile.workspaces,"scopes":self.profile.scopes,"send_scopes":self.profile.send_scopes,"contacts":self.profile.contacts.keys().collect::<Vec<_>>(),"protocols":self.profile.protocols,"management_views":self.profile.management_views,"protocol_views":self.profile.protocol_views,"bindings":bindings,"receiving_binding":receiving_binding,"receiving_status":receiving_status,"capability":capabilities["capability"],"tool_discovery":{"source":"LOADED_MCP_TOOL_SCHEMAS","extra_call_required":false},"next_tools":{"reachability":"peerwork_reachability","send":"peerwork_send","chat":"peerwork_chat","post":"peerwork_post","inbox":"peerwork_inbox","protocol":"peerwork_protocol","management":"peerwork_manage","subscriptions":"peerwork_subscriptions"}}),
-                )
+                let delivery_observations = if features.as_array().is_some_and(|items|items.iter().any(|v|v=="current-delivery-observation-v1")) {
+                    self.receiving().call(json!({"method":"delivery","mode":"status"})).await
+                        .unwrap_or_else(|error|json!({"state":"UNKNOWN","code":error.code}))
+                } else {json!({"state":"UNKNOWN","reason":"CURRENT_OBSERVATIONS_UNAVAILABLE"})};
+                let mut value = json!({"actor_id":self.client.actor_id(),"origin":self.client.origin(),"maturity":"EXPERIMENTAL","local_engine":if self.client.attached_mode(){"ATTACHED_ORIGINAL_CLIENT"}else{"AUTHENTICATED"},"state_migration_required":false,"versions":{"frontend":env!("CARGO_PKG_VERSION"),"runtime":capabilities.get("sdk_version").cloned().unwrap_or(json!("NOT_REPORTED"))},"remote_or_host_readiness":"NOT_ATTESTED","host_status":host_status,"delivery_observations":delivery_observations,"workspaces":self.profile.workspaces,"scopes":self.profile.scopes,"send_scopes":self.profile.send_scopes,"contacts":self.profile.contacts.keys().collect::<Vec<_>>(),"protocols":self.profile.protocols,"management_views":self.profile.management_views,"protocol_views":self.profile.protocol_views,"bindings":bindings,"receiving_binding":receiving_binding,"receiving_status":receiving_status,"capability":capabilities["capability"],"tool_discovery":{"source":"LOADED_MCP_TOOL_SCHEMAS","extra_call_required":false},"next_tools":{"reachability":"peerwork_reachability","send":"peerwork_send","chat":"peerwork_chat","post":"peerwork_post","inbox":"peerwork_inbox","protocol":"peerwork_protocol","management":"peerwork_manage","subscriptions":"peerwork_subscriptions"}});
+                crate::agent_delivery_status::refresh(&mut value);
+                Ok(value)
             }
             AgentRequest::Reachability { workspace, actor, cursor, limit, scope, contact, diagnostic } => {
                 if !diagnostic {

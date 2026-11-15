@@ -56,6 +56,11 @@ pub(crate) const CONNECT_FEATURES: [&str; 13] = [
     "notification-redelivery-v1",
     "space-conversation-v1",
 ];
+fn runtime_features() -> Vec<&'static str> {
+    CONNECT_FEATURES.into_iter().chain([
+        "host-observation-upload-deadline-v1", "current-delivery-observation-v1",
+    ]).collect()
+}
 const REQUEST_FORMAT: &str = "peerwork.participant-request.v1";
 const RESPONSE_FORMAT: &str = "peerwork.participant-response.v1";
 const ENDPOINT_FORMAT: &str = "peerwork.participant-endpoint.v1";
@@ -428,7 +433,7 @@ impl Runtime {
                     let (clients,generations)=self.client_snapshot()?;
                     let mut receivers=Vec::new();
                     for (name,client) in clients {let bindings=client.watch_bindings().await?;if !bindings.is_empty(){receivers.push(json!({"client":name,"client_generation":generations.get(&name),"actor_id":client.actor_id(),"origin":client.origin(),"state_binding":client.state_binding(),"engine_digest":self.engine_bindings.get(client.state_binding()),"bindings":bindings}));}}
-                    Ok(json!({"state":"LOCAL_READY","sdk_version":env!("CARGO_PKG_VERSION"),"optional_features":["resident-scope-rebind-v1","source-client-adoption-v1"],"engines":engines,"receivers":receivers,"hosts":self.hosts.lock().await.statuses(),"pending_client_revocations":self.pending_revocation_status()?,"network_or_host_readiness":"NOT_ATTESTED"}))
+                    Ok(json!({"state":"LOCAL_READY","sdk_version":env!("CARGO_PKG_VERSION"),"optional_features":["resident-scope-rebind-v1","source-client-adoption-v1","host-observation-upload-deadline-v1","current-delivery-observation-v1"],"engines":engines,"receivers":receivers,"hosts":self.hosts.lock().await.statuses(),"pending_client_revocations":self.pending_revocation_status()?,"network_or_host_readiness":"NOT_ATTESTED"}))
                 },
                 Ok(request)if request.method=="host_ensure"&&request.config.is_some()&&request.rebind.is_none()&&request.recovery.is_none()=>{
                     let (clients,generations)=self.client_snapshot()?;
@@ -495,8 +500,8 @@ impl Runtime {
                     }
                     Ok(json!({"hosts":values,"scope":"SELECTED_CLIENT_GENERATION","model_response":"NOT_ATTESTED"}))
                 },
-                ClientRequest::Capabilities=>Ok(json!({"format":"peerwork.participant-capability.v1","sdk_version":env!("CARGO_PKG_VERSION"),"actor_id":client.actor_id(),"origin":client.origin(),"capability":client.capability(),"admin":false,"maturity":"EXPERIMENTAL","features":CONNECT_FEATURES})),
-                ClientRequest::Binding=>Ok(json!({"format":"peerwork.local-engine-binding.v1","actor_id":client.actor_id(),"origin":client.origin(),"state_binding":client.state_binding(),"engine_digest":self.engine_bindings.get(client.state_binding()),"namespace":client.local_namespace(),"client_generation":session.generation,"client_name":session.name,"features":CONNECT_FEATURES})),
+                ClientRequest::Capabilities=>Ok(json!({"format":"peerwork.participant-capability.v1","sdk_version":env!("CARGO_PKG_VERSION"),"actor_id":client.actor_id(),"origin":client.origin(),"capability":client.capability(),"admin":false,"maturity":"EXPERIMENTAL","features":runtime_features()})),
+                ClientRequest::Binding=>Ok(json!({"format":"peerwork.local-engine-binding.v1","actor_id":client.actor_id(),"origin":client.origin(),"state_binding":client.state_binding(),"engine_digest":self.engine_bindings.get(client.state_binding()),"namespace":client.local_namespace(),"client_generation":session.generation,"client_name":session.name,"features":runtime_features()})),
                 request=>crate::participant_client_tools::call(client,&session.watches,request).await,
             }
         }.await;

@@ -162,3 +162,11 @@ identity, receiver, keys and pending IDs. MCP connectivity and notification writ
 alone do not prove unsolicited model wake.
 Claude INBOX plus an active Channel is a normal automatic-delivery path. Inspect
 `host_channel`; the Setup's native-host fields alone do not describe that path.
+
+When diagnosing receiving, prefer the selected context's `delivery_status`.
+Current receiving and saved Setup objectives are independent: a pending role or
+host objective does not revoke an observed receiver. Respect PAUSED/STOPPED;
+UNKNOWN or a different binding calls for observing the original source, not a
+new identity, another permission request or a label-fixing Connect. Channel
+writes never prove model wake. Reuse this context until selection or a relevant
+fact changes; do not add a context preflight before every message.

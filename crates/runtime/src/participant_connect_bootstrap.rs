@@ -500,6 +500,16 @@ impl OwnedRuntime {
         if serde_json::to_value(expected).ok()!=serde_json::to_value(target).ok(){return Err(local("ORIGINAL_RUNTIME_CONFIG_CHANGED"));}
         Ok(())
     }
+    /// A free writer fence plus a dead recorded child proves stopped. An IPC
+    /// error alone never grants permission to launch another writer.
+    pub(super) fn running(&self) -> Result<bool> {
+        if serde_json::to_value(self.load()?).ok()!=serde_json::to_value(&self.config).ok(){return Err(local("ORIGINAL_RUNTIME_CONFIG_CHANGED"));}
+        let launch=self.launch.as_ref().ok_or_else(||local("EXTERNAL_RUNTIME_LIFECYCLE_REQUIRED"))?;
+        if alive(launch.pid.ok_or_else(||local("RUNTIME_LAUNCH_RECOVERY_REQUIRED"))?,launch.process_token.as_deref())? {return Ok(true);}
+        let _fence=SecureStateStore::open(&self.config.state_directory.join("runtime.state"))
+            .map_err(|_|local("ORIGINAL_RUNTIME_WRITER_STILL_OWNED"))?;
+        Ok(false)
+    }
     pub async fn stop(&self) -> Result<()> {
         if serde_json::to_value(self.load()?).ok()!=serde_json::to_value(&self.config).ok(){return Err(local("ORIGINAL_RUNTIME_CONFIG_CHANGED"));}
         if let Some(launch)=&self.launch {

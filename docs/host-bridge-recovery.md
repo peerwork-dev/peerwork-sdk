@@ -152,22 +152,38 @@ for every component actually used, including components that need no change.
 `NOT_SENT` is a delivery fact, not proof that version skew caused it; retain its
 specific failure evidence and verify recovery on the same destination.
 
-The current CLI does not provide one stack-wide updater that inventories and
-replaces all independently managed components. Do not assume an update command
-exists or substitute manual profile edits. Use the original installation's
-supported process-management path, identifying externally managed components
-instead of claiming they were updated. If the original owner, configuration or
-state cannot be established, retain the working stack and report that specific
-missing source rather than create a substitute integration.
+For an authorized upgrade, install the current Linux executable and run its
+selected-client update entry:
 
-For an authorized published-version upgrade, install the current Linux assets
-and stop/restart the **original** resident runtime
-and any original host-user bridge with their existing configuration, identity,
-journal and state directories. Do not initialize a new participant or copy
-pending operations into another namespace. Existing host pins, grants, receiver
-cursors and pending IDs remain authoritative. Refresh the MCP session if its host
-requires that to load the updated executable, then inspect `peerwork_context`.
-Only the current selected receiver and verified host path establish PUSH readiness.
+```sh
+peerwork connect --local ORIGINAL_REGISTRY --participant HANDLE --update status
+peerwork connect --local ORIGINAL_REGISTRY --participant HANDLE --update apply
+```
+
+An existing project selection can supply the registry and handle. `status`
+inventories the recorded installation and authenticated owned runtime. `apply`
+uses the executing CLI as its target, checks required runtime features, and
+leaves a compatible running runtime unchanged regardless of version equality.
+It updates owned MCP/Skill entries through the existing installer. This release's
+runtime requirement is `host-observation-upload-deadline-v1`.
+
+The update records its original configuration before authenticated stop and
+restart. Repeat the same command with the same executable after interruption or
+failed start; it resumes the original operation and launch fences. Keep that
+artifact available until the operation completes. Identity, journal, pending
+IDs, host destinations, approval waits and durable delivery pause remain in
+place. An already stopped owned runtime stays stopped. It is not reported as
+running the new version until it is started through its original lifecycle.
+The command does not replace a running binary on disk or download a release.
+
+Externally managed runtimes and original bridges remain under their existing
+launcher. The returned `continuation` lists the exact recorded host/project/server
+selections and requests their supported reload, followed by `peerwork_context`
+and `peerwork_delivery` status in the same host. It does not invent a host reload
+API, new session or process authority. A loaded MCP/Channel/bridge version that
+cannot be observed stays UNKNOWN. `OWNED_UPDATE_COMPLETE` means owned work has
+finished; a non-null continuation still needs external action. No receiver,
+membership, grant or destination change is part of this update.
 
 Honor the existing physical input-owner fence during replacement. For a
 bridge-owned AGY stdio process, preserve its session/launch binding and account
@@ -206,3 +222,29 @@ only the attempt constraint, preserves existing signatures and rows, and avoids
 validating the full historical table. No new communication permission is needed.
 Host acceptance, service receipt upload and a model's reply remain different
 facts; a startup self-test does not run an inference PING/PONG.
+
+## Current receiving and saved setup
+
+`peerwork_context` includes `delivery_status`, a read-only view of the selected
+receiving scopes. A compatible runtime advertises
+`current-delivery-observation-v1`; older runtimes leave current observations
+UNKNOWN. The view separates current receiver custody, pause/stopped state,
+body-key freshness, Channel observations and saved setup objectives. Setup scope
+matches do not complete a requested host or role objective. Reading context does
+not resume delivery, change a setup, rebind the host or request new authority.
+
+Channel observations are matched to the selected actor, Origin, mailbox,
+membership and local client binding; stale or different observations stay
+UNKNOWN. Channel notification writes still do not attest host acceptance or
+model response. A pending role approval can coexist with working receiving.
+Use the returned current blocker/next action and preserve the original setup
+reference when continuation is needed.
+
+Runtimes advertising `host-observation-upload-deadline-v1` schedule refreshes
+against the actual last uploaded host and key observation times. Unchanged
+local probes are coalesced before the existing freshness deadlines. A slow
+pulse or clock retry retains the original observation age, and fresh pulses do
+not delay independent acknowledgment work. This does not change service expiry
+policy or promise host/model response latency. Adopt the changed original
+resident runtime to obtain this scheduling correction; changing only a loaded
+MCP executable is insufficient.

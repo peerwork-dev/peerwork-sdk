@@ -275,6 +275,14 @@ struct Slot {
     custody_ack_not_before: Option<Instant>,
 }
 impl Slot {
+    fn host_observed(&mut self, value: Value, observed_at: Instant) -> Result<()> {
+        let before = self.presence.version;
+        self.presence.host_observed(value, observed_at)?;
+        self.next_control = if before != self.presence.version { Instant::now() }
+            else { self.presence.next_pulse(self.next_control) };
+        self.notify();
+        Ok(())
+    }
     fn missing_keys(&mut self) {
         let mut data = self.presence.local()["body_key"].clone();
         data["state"] = json!("MISSING");
@@ -485,31 +493,31 @@ async fn call(
     cancel: &KernelCancellationToken,
 ) -> std::result::Result<Value, Failure> {
     let wire = json!({"action":action,"workspace_id":workspace,"body":body}).to_string();
-    let outcome = result(
-        access
-            .execute_structure_intent_async(wire.as_bytes(), cancel)
-            .await,
-    );
-    if action == "structure.mailbox.pulse"
-        && outcome
-            .as_ref()
-            .err()
-            .is_some_and(|e| e.code == "MAILBOX_LEASE_EXPIRED")
-    {
-        // A confirmed no-effect heartbeat may have crossed its short issuance
-        // window. Refresh nonce-bound service time once; preserve the fence.
-        access
-            .refresh_mailbox_clock(cancel)
-            .await
-            .map_err(|e| Failure::code(KernelPublicError::from(e).code))?;
-        return result(
-            access
-                .execute_structure_intent_async(wire.as_bytes(), cancel)
-                .await,
-        );
-    }
-    outcome
+    result(access.execute_structure_intent_async(wire.as_bytes(), cancel).await)
 }
+/// The snapshot retains probe times across IO and a clock retry. Re-serialize
+/// ages on every submission; retrying a pulse never renews an old observation.
+async fn pulse(
+    access: &KernelAccess, workspace: &str, mut fence: Value,
+    presence: Option<&crate::participant_presence::Presence>,
+    destination: Option<&str>, ordered_ready: bool,
+    cancel: &KernelCancellationToken,
+) -> std::result::Result<Value, Failure> {
+    for attempt in 0..2 {
+        let observed_wire_at = Instant::now();
+        if let (Some(presence), Some(destination)) = (presence, destination) {
+            fence["presence"] = presence.wire(destination, ordered_ready);
+        }
+        let wire = json!({"action":"structure.mailbox.pulse","workspace_id":workspace,"body":fence}).to_string();
+        let outcome = result(access.execute_observed_pulse_async(wire.as_bytes(), cancel, observed_wire_at).await);
+        if attempt == 0 && outcome.as_ref().err().is_some_and(|e| e.code == "MAILBOX_LEASE_EXPIRED") {
+            access.refresh_mailbox_clock(cancel).await
+                .map_err(|e| Failure::code(KernelPublicError::from(e).code))?;
+        } else { return outcome; }
+    }
+    unreachable!()
+}
+
 enum JobKind {
     Resident,
     Session,
@@ -523,7 +531,7 @@ enum Work {
     Session(std::result::Result<MailSession, Failure>),
     Inspect(String, std::result::Result<Value, Failure>),
     Claim(String, std::result::Result<Value, Failure>),
-    Pulse(String, Instant, u64, Option<Instant>, std::result::Result<Value, Failure>),
+    Pulse(String, Instant, u64, Option<crate::participant_presence::Presence>, std::result::Result<Value, Failure>),
     Keys(String, Vec<String>, std::result::Result<Value, Failure>),
     Ack(
         String,
@@ -676,7 +684,7 @@ pub(crate) async fn run(
                             Op::ReconcileDue=>Reply::Call(if live{store.host_reconcile_due(&identity,&namespace,&options)?}else{None}),
                             Op::Retry{call}=>{if !local_live.load(std::sync::atomic::Ordering::Acquire){return Err(error("LOCAL_CLIENT_REVOKED"));}Reply::Call(if live{store.host_retry(&identity,&namespace,&options,&call)?}else{None})},
                             Op::Diagnostic{call,value}=>{store.host_diagnostic(&identity,&namespace,&options,&call,&value)?;Reply::Saved},
-                            Op::Presence{value,observed_at}=>{store.host_scope_check(&namespace,&options)?;let s=slots.get_mut(&options.key()).ok_or_else(||error("WATCH_NOT_FOUND"))?;let before=s.presence.version;s.presence.host_observed(value,observed_at)?;if before!=s.presence.version{s.next_control=Instant::now();}s.notify();Reply::Saved},
+                            Op::Presence{value,observed_at}=>{store.host_scope_check(&namespace,&options)?;let s=slots.get_mut(&options.key()).ok_or_else(||error("WATCH_NOT_FOUND"))?;s.host_observed(value,observed_at)?;Reply::Saved},
                             Op::Attach(host)=>{if !local_live.load(std::sync::atomic::Ordering::Acquire){return Err(error("LOCAL_CLIENT_REVOKED"));}if selected.is_none(){return Err(error("WATCH_NOT_FOUND"));}store.host_attach(&namespace,&options,&host)?;Reply::Saved},
                             Op::Due{limit}=>Reply::Due(if live{store.host_due(&namespace,&options,limit)?}else{Vec::new()}),
                             Op::Begin{item,frame}=>{if !local_live.load(std::sync::atomic::Ordering::Acquire){return Err(error("LOCAL_CLIENT_REVOKED"));}if !live{return Err(error("WATCH_NOT_CONNECTED"));}Reply::Call(store.host_begin(&identity,&namespace,&options,&item,frame)?)},
@@ -897,10 +905,10 @@ pub(crate) async fn run(
                                 }
                                 s.fail(e)
                             }}},
-                            Work::Pulse(key,started,version,keys_at,value)=>if let Some(s)=slots.get_mut(&key){s.pulse_busy=false;s.pulse_cancel=None;match value{Ok(value)=>{
+                            Work::Pulse(key,started,version,presence,value)=>if let Some(s)=slots.get_mut(&key){s.pulse_busy=false;s.pulse_cancel=None;match value{Ok(value)=>{
                                 let m=&value["mailbox"];let ttl=m["lease_until"].as_u64().unwrap_or(0).saturating_sub(m["server_time"].as_u64().unwrap_or(u64::MAX));
                                 let remaining=Duration::from_millis(ttl.min(15000)).saturating_sub(started.elapsed());
-                                if remaining.is_zero(){s.fail(Failure::code("MAILBOX_LEASE_EXPIRED"));}else{s.lease_until=Some(Instant::now()+remaining);s.presence.keys_uploaded_at=keys_at;s.next_control=s.presence.next_pulse(Instant::now()+if version==s.presence.version{Duration::from_secs(6)}else{Duration::ZERO});s.pulse_failures=0;s.pulse_retry_at=Instant::now();}
+                                if remaining.is_zero(){s.fail(Failure::code("MAILBOX_LEASE_EXPIRED"));}else{s.lease_until=Some(Instant::now()+remaining);if let Some(uploaded)=presence{s.presence.uploaded(&uploaded);}s.next_control=s.presence.next_pulse(Instant::now()+if version==s.presence.version{Duration::from_secs(6)}else{Duration::ZERO});s.pulse_failures=0;s.pulse_retry_at=Instant::now();}
                             },Err(mut e)=>{s.lease_until=None;s.pulse_failures=s.pulse_failures.saturating_add(1);s.pulse_retry_at=Instant::now()+if e.capacity(){receiver_retry_delay(s.pulse_failures,true)}else{Duration::from_millis((250u64<<s.pulse_failures.min(4)).min(4000))};
                                 if e.code=="MAILBOX_LEASE_EXPIRED"{e.retryable=true;}
                                 if e.retryable{s.link_verified=false;s.state("RECONNECTING",Some(e.code));}else{s.fail(e);}
@@ -1071,19 +1079,14 @@ pub(crate) async fn run(
             let work_key=key.clone();
             if let Some(pins)=&s.binding.pins {
                 if !s.pulse_busy && kinds.values().filter(|kind|matches!(kind,JobKind::Pulse(..))).count()<8 && Instant::now()>=s.pulse_retry_at && (Instant::now()>=s.next_control || s.lease_until.is_none_or(|at|at<=Instant::now()+Duration::from_secs(3))) {
+                    let stop=cancel.child_token();
                     s.pulse_cancel=Some(stop.clone());
+                    let access=access.clone(); let options=options.clone(); let work_key=work_key.clone();
                     let mut fence=json!({"mailbox_id":pins.mailbox_id,"receiver_id":pins.receiver_id,"epoch":pins.epoch});
                     fence["ready"] = json!(s.receive_fault.is_none() && s.link_verified && !s.signals.is_empty());
-                    if let Some(destination) = &options.host_destination {
-                        fence["presence"] = s.presence.wire(
-                            destination,
-                            !store
-                                .host_has_unknown(&options.workspace_id, &options.mailbox_id)
-                                .unwrap_or(true),
-                        );
-                    }
+                    let ordered_ready = !store.host_has_unknown(&options.workspace_id, &options.mailbox_id).unwrap_or(true);
                     let presence_version = s.presence.version;
-                    let keys_at=options.host_destination.as_ref().and(s.presence.keys_at);
+                    let presence = options.host_destination.as_ref().map(|_|s.presence.clone());
                     fence["event_format"]=json!(peerwork_core::communication::WORKSPACE_EVENT_FORMAT);
                     fence["execution_state"] = json!(if s.signals.is_empty() {
                         "OFFLINE"
@@ -1096,13 +1099,10 @@ pub(crate) async fn run(
                             work_key,
                             started,
                             presence_version,
-                            keys_at,
-                            match tokio::time::timeout(Duration::from_secs(5), call(
-                                &access,
-                                "structure.mailbox.pulse",
-                                Some(&options.workspace_id),
-                                fence,
-                                &stop,
+                            presence.clone(),
+                            match tokio::time::timeout(Duration::from_secs(5), pulse(
+                                &access, &options.workspace_id, fence, presence.as_ref(),
+                                options.host_destination.as_deref(), ordered_ready, &stop,
                             )
                             ).await {
                                 Ok(value)=>value,
@@ -1112,8 +1112,8 @@ pub(crate) async fn run(
                     });
                     s.pulse_busy=true;
                     kinds.insert(handle.id(),JobKind::Pulse(key.clone(),s.lifecycle));
-                    continue;
-
+                    // Pulse and ACK/report work have independent admission.
+                    // A due freshness pulse must not defer durable acknowledgments.
                 }
             }
             if s.busy || Instant::now()<s.retry_at || kinds.values().filter(|k|matches!(k,JobKind::Control(..))).count()>=8 {continue;}
@@ -1541,6 +1541,20 @@ mod reliability_tests {
     use super::*;
     fn selected()->Slot {
         slot(Binding{namespace:"program:test".into(),options:WatchOptions{workspace_id:"w".repeat(43),mailbox_id:"m".repeat(43),membership_id:"g".repeat(43),consumer_id:"test".into(),host_destination:None},receiver:"r".repeat(43),claim_id:"c".repeat(43),claim_wire:None,pins:None})
+    }
+    #[test]
+    fn unchanged_host_probe_advances_watch_deadline_without_changing_version() {
+        let mut s=selected();let now=Instant::now();
+        let host=json!({"mode":"LIVE","ready":true,"execution_state":"IDLE"});
+        s.presence.host_observed(host.clone(),now-Duration::from_secs(7)).unwrap();
+        let sent=s.presence.clone();s.presence.uploaded(&sent);
+        let version=s.presence.version;s.next_control=now+Duration::from_secs(6);
+        s.host_observed(host,now).unwrap();
+        assert_eq!(s.presence.version,version);
+        assert_eq!(s.next_control,now+Duration::from_secs(2));
+        let sent=s.presence.clone();s.presence.uploaded(&sent);
+        assert_eq!(s.presence.next_pulse(now+Duration::from_secs(6)),now+Duration::from_secs(6));
+        assert!(!s.busy,"freshness scheduling does not take control/ACK admission");
     }
     #[test]
     fn stream_deadline_honors_legacy_short_and_extended_signed_grants() {

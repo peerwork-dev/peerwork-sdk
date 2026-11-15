@@ -6,7 +6,8 @@ use std::time::{Duration, Instant};
 pub(crate) struct Presence {
     pub version: u64,
     host: Value,
-    host_at: Option<Instant>,
+    pub host_at: Option<Instant>,
+    pub host_uploaded_at: Option<Instant>,
     keys: Value,
     pub keys_at: Option<Instant>,
     pub keys_uploaded_at: Option<Instant>,
@@ -17,6 +18,7 @@ impl Default for Presence {
             version: 0,
             host: json!({"mode":"PROGRAM","ready":false,"execution_state":"UNKNOWN"}),
             host_at: None,
+            host_uploaded_at: None,
             keys: json!({"state":"UNKNOWN","key_id":null,"epoch":null}),
             keys_at: None,
             keys_uploaded_at: None,
@@ -67,14 +69,25 @@ impl Presence {
         self.keys = value;
         self.keys_at = Some(Instant::now());
     }
-    /// Coalesce unchanged keys only while the last uploaded observation remains
-    /// fresh. A regular6s pulse can otherwise miss the15s boundary when a10s
-    /// key check finishes just after a pulse. Keep1s for scheduling/IO.
+    /// Schedule against the actual observation last uploaded, not the latest
+    /// local probe. Renew before the service's10s host /15s key expiry, leaving
+    /// 1s for dispatch and IO. Once the newest observation is uploaded, an old
+    /// deadline cannot cause an immediate-pulse loop.
     pub fn next_pulse(&self, regular: Instant) -> Instant {
-        match (self.keys_uploaded_at,self.keys_at) {
-            (Some(uploaded),Some(current)) if current>uploaded => regular.min(uploaded+Duration::from_secs(14)),
-            _=>regular,
+        let mut next = regular;
+        for (uploaded, current, seconds) in [
+            (self.host_uploaded_at, self.host_at, 9),
+            (self.keys_uploaded_at, self.keys_at, 14),
+        ] {
+            if let (Some(uploaded), Some(current)) = (uploaded, current) {
+                if current > uploaded { next = next.min(uploaded + Duration::from_secs(seconds)); }
+            }
         }
+        next
+    }
+    pub fn uploaded(&mut self, snapshot: &Self) {
+        self.host_uploaded_at = snapshot.host_at;
+        self.keys_uploaded_at = snapshot.keys_at;
     }
     fn age(at: Option<Instant>) -> u64 {
         at.map(|at| at.elapsed().as_millis().min(60000) as u64)
@@ -129,6 +142,34 @@ mod tests {
         let current=p.version;
         p.host_observed(json!({"mode":"LIVE","ready":true,"execution_state":"IDLE"}),Instant::now()-Duration::from_secs(11)).unwrap();
         assert_eq!(p.version,current+1);assert_eq!(p.local()["host_current"],false);
+    }
+    #[test]
+    fn host_upload_deadline_uses_sent_probe_not_a_new_inflight_probe() {
+        let now=Instant::now();let mut live=Presence::default();
+        live.host_at=Some(now-Duration::from_secs(7));
+        let sent=live.clone();
+        live.host_at=Some(now);live.uploaded(&sent);
+        assert_eq!(live.host_uploaded_at,sent.host_at);
+        assert_eq!(live.next_pulse(now+Duration::from_secs(6)),now+Duration::from_secs(2));
+        let sent=live.clone();live.uploaded(&sent);
+        assert_eq!(live.next_pulse(now+Duration::from_secs(6)),now+Duration::from_secs(6));
+        // Unchanged 3s probes must renew before10s without pulsing on every probe.
+        live.host_uploaded_at=Some(now-Duration::from_secs(12));
+        assert!(live.next_pulse(now+Duration::from_secs(6))<now);
+        let sent=live.clone();live.uploaded(&sent);
+        assert!(live.next_pulse(now+Duration::from_secs(6))>now);
+    }
+    #[test]
+    fn pulse_snapshot_keeps_stale_age_across_clock_refresh() {
+        let mut presence=Presence::default();
+        presence.host_at=Some(Instant::now()-Duration::from_secs(12));
+        presence.keys_at=Some(Instant::now()-Duration::from_secs(17));
+        let sent=presence.clone();let before=sent.wire("destination",true);
+        presence.host_at=Some(Instant::now());presence.keys_at=Some(Instant::now());
+        let retry=sent.wire("destination",true);
+        assert!(retry["host_age_ms"].as_u64().unwrap()>=before["host_age_ms"].as_u64().unwrap());
+        assert!(retry["key_age_ms"].as_u64().unwrap()>=17000);
+        assert_eq!(sent.local()["host_current"],false);
     }
     #[test]
     fn coalescing_cannot_schedule_new_keys_beyond_the_uploaded_freshness_deadline() {

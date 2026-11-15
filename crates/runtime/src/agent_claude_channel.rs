@@ -8,26 +8,36 @@ use peerwork_core::crypto::sha256_hex;
 #[derive(Clone,Default)]
 pub(super) struct State(Arc<std::sync::Mutex<Observation>>,Arc<tokio::sync::Notify>);
 #[derive(Default)]
-struct Observation {written:u64,scopes:BTreeMap<String,Value>,validation_error:Option<String>}
+struct Observation {written:u64,scopes:BTreeMap<String,Value>,at:BTreeMap<String,std::time::Instant>,validation_error:Option<String>}
 impl State {
     pub(super) fn status(&self)->Value {
         let observed=self.0.lock().unwrap();let mut value=status();
         value["notifications_written"]=json!(observed.written);
         value["validation_error"]=json!(observed.validation_error);
-        value["scopes"]=json!(observed.scopes);value
+        value["scopes"]=json!(observed.scopes);
+        for (alias,at) in &observed.at { if value["scopes"][alias].is_object() {
+            value["scopes"][alias]["observation_age_ms"]=json!(at.elapsed().as_millis().min(u64::MAX as u128) as u64);
+        }}
+        value
     }
     pub(super) fn written(&self) {let mut value=self.0.lock().unwrap();value.written=value.written.saturating_add(1);}
     pub(super) fn consumed(&self) {self.1.notify_waiters();}
     pub(super) fn validation_failed(&self,code:&str) {self.0.lock().unwrap().validation_error=Some(code.into());}
     fn scope(&self,alias:&str,state:&str,code:Option<&str>) {
-        self.0.lock().unwrap().scopes.insert(alias.into(),json!({"state":state,"code":code}));
+        let mut observed=self.0.lock().unwrap();
+        let binding=observed.scopes.get(alias).map(|v|v["binding"].clone()).unwrap_or(Value::Null);
+        observed.scopes.insert(alias.into(),json!({"state":state,"code":code,"binding":binding}));
+        observed.at.insert(alias.into(),std::time::Instant::now());
     }
     fn scope_failed(&self,alias:&str,error:&ParticipantError) {
         let mut value=json!({"state":"BLOCKED","code":error.code});
         if error.details.as_ref().and_then(|details|details.get("local_state")).is_some() {
             value["error"]=json!(error);
         }
-        self.0.lock().unwrap().scopes.insert(alias.into(),value);
+        let mut observed=self.0.lock().unwrap();
+        value["binding"]=observed.scopes.get(alias).map(|v|v["binding"].clone()).unwrap_or(Value::Null);
+        observed.scopes.insert(alias.into(),value);
+        observed.at.insert(alias.into(),std::time::Instant::now());
     }
 }
 
@@ -100,7 +110,10 @@ pub(super) async fn watch(tools:Arc<Tools>,output:mpsc::Sender<Value>,state:Stat
 
 async fn watch_scope(client:Arc<Tools>,profile:AgentProfile,alias:String,scope:MailScope,output:mpsc::Sender<Value>,observed:State)->Result<()> {
     let _owner=ownership(&profile,&scope)?;
-    validate_source(&client.call(AgentRequest::Context).await?,&scope)?;
+    let context=client.call(AgentRequest::Context).await?;
+    validate_source(&context,&scope)?;
+    let binding=crate::agent_delivery_status::binding(&context,&serde_json::to_value(&scope).unwrap());
+    observed.0.lock().unwrap().scopes.insert(alias.clone(),json!({"state":"STARTING","binding":binding}));
     project_scope(&alias,output,observed,||client.call(AgentRequest::NotificationPoll{scope:alias.clone()})).await
 }
 

@@ -16,6 +16,7 @@ pub(crate) mod notification_delivery;
 pub(crate) mod notification_fence;
 mod communication_notifications;
 pub mod agent_tools;
+pub mod event_replay;
 pub mod agent_frontend;
 pub mod participant_connect;
 mod onboarding_files;
@@ -136,6 +137,7 @@ mod process_identity;
 mod participant_client_tools;
 mod agent_client;
 mod agent_lifecycle;
+mod agent_delivery_status;
 #[cfg(test)]
 mod agent_attached_tests;
 #[cfg(test)]

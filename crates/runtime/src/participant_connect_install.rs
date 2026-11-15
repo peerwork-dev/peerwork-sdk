@@ -832,3 +832,17 @@ impl Connect {
         )
     }
 }
+
+/// Inventory only installations already recorded for this exact participant.
+/// A matching user-authored entry is not installation ownership.
+pub(super) fn update_inventory(connect:&Connect, participant:&str)->Vec<Value> {
+    connect.registry.installations.values().filter(|r|r.participant==participant).map(|r|
+        json!({"host":r.spec.host,"project":r.spec.project,"workspace_id":r.workspace_id,
+            "server_name":r.name,"installed_executable":r.spec.executable,
+            "owned":r.entry_owned,"committed":r.committed,"loaded_version":"UNKNOWN"})).collect()
+}
+pub(super) fn update_owned(connect:&mut Connect,participant:&str,executable:&Path)->Result<Vec<Value>> {
+    let selected:Vec<_>=connect.registry.installations.values().filter(|r|r.participant==participant && r.entry_owned)
+        .map(|r|(r.workspace_id.clone(),Installation{executable:executable.into(),..r.spec.clone()})).collect();
+    selected.into_iter().map(|(workspace,spec)|connect.install(participant,&workspace,spec)).collect()
+}

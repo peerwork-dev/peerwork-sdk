@@ -1247,6 +1247,12 @@ async fn host_diagnostics_are_live_and_limited_to_selected_client_generation(){
     let (ready,cancel,task)=start(options).await;
     let visible=call(&ready.client_endpoints["creator"],json!({"method":"host_status"})).await.unwrap();
     assert_eq!(visible["ok"],true);assert_eq!(visible["value"]["hosts"].as_array().unwrap().len(),1);
+    let status=call(&ready.client_endpoints["creator"],json!({"method":"delivery","mode":"status"})).await.unwrap();
+    assert_eq!(status["ok"],true);
+    assert!(status["value"]["observations"].is_array());
+    assert_eq!(status["value"]["application_consumption_changed"],false);
+    let isolated=call(&ready.client_endpoints["reader"],json!({"method":"delivery","mode":"status"})).await.unwrap();
+    assert_eq!(isolated["value"]["observations"],json!([]));
     assert!(visible["value"]["hosts"][0]["diagnostic"].is_object());
     assert!(visible["value"]["hosts"][0].get("destination").is_none());
     let other=call(&ready.client_endpoints["reader"],json!({"method":"host_status"})).await.unwrap();

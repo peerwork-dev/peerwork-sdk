@@ -187,7 +187,7 @@ impl Lifecycle {
                         self.selected_tools(next.clone(),crate::participant_connect::Connect::inspect(directory)?.selected_profile_binding(handle_pin,&next)?).await?.call(retry).await?
                     },other=>other?,
                 };
-                if is_context {value["onboarding"]=context;}
+                if is_context {value["onboarding"]=context;crate::agent_delivery_status::refresh(&mut value);}
                 return Ok(value);
             }
             if matches!(request,AgentRequest::Context) { return Ok(context); }

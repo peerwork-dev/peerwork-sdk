@@ -335,6 +335,20 @@ impl Hub {
             return Err(error("NOTIFICATION_CONTROL_INVALID"));
         }
         let bindings = Self::bindings(client, selected).await?;
+        let mut observations = Vec::new();
+        if mode == "status" {
+            for options in &bindings {
+                let receiver = match client.inbox_metadata(options).await {
+                    Ok(head) => json!({"state":head["state"],"code":head["code"],
+                        "receiver_link_verified":head["receiver_link_verified"],
+                        "verification_failure":head["verification_failure"],"presence":head["presence"]}),
+                    Err(error) => json!({"state":"UNKNOWN","code":error.code}),
+                };
+                observations.push(json!({"binding":options,"receiver":receiver,
+                    "notification":self.store.status(&owner(client, options))?,
+                    "observed_at_ms":crate::participant_store::now()}));
+            }
+        }
         let mut owners = BTreeMap::new();
         for options in bindings {
             owners.entry(owner(client, &options)).or_insert(options);
@@ -383,7 +397,7 @@ impl Hub {
             .iter()
             .any(|s| s["enforcement"]["state"] == "PAUSE_PENDING");
         Ok(
-            json!({"state":if states.is_empty(){"NOT_CONFIGURED"}else if mode=="pause"{if pending{"PAUSE_PENDING"}else{"PAUSED"}}else{"LOCAL_DELIVERY_STATE"},"destinations":states,"messages_deleted":false,"application_consumption_changed":false,"host_accepted_input_retractable":false}),
+            json!({"state":if states.is_empty(){"NOT_CONFIGURED"}else if mode=="pause"{if pending{"PAUSE_PENDING"}else{"PAUSED"}}else{"LOCAL_DELIVERY_STATE"},"destinations":states,"observations":observations,"messages_deleted":false,"application_consumption_changed":false,"host_accepted_input_retractable":false}),
         )
     }
     pub(crate) async fn validate(

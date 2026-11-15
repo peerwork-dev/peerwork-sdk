@@ -473,16 +473,27 @@ impl KernelAccess {
     pub async fn execute_structure_intent_async(
         &self,intent_wire:&[u8],cancel:&CancellationToken,
     )->Result<crate::kernel_client::StructureIntentOutcome,KernelAccessError>{
-        self.execute_structure_intent_selected_async(intent_wire,cancel,false).await
+        self.execute_structure_intent_selected_async(intent_wire,cancel,false,None).await
     }
-    async fn execute_structure_intent_selected_async(&self,intent_wire:&[u8],cancel:&CancellationToken,frozen:bool)->Result<crate::kernel_client::StructureIntentOutcome,KernelAccessError>{
+    /// Internal observation producer: the monotonic origin travels through
+    /// session/time setup to the final pulse signing boundary. Business intents
+    /// never use this path and their frozen bodies are not modified.
+    pub(crate) async fn execute_observed_pulse_async(
+        &self,intent_wire:&[u8],cancel:&CancellationToken,observed_wire_at:std::time::Instant,
+    )->Result<crate::kernel_client::StructureIntentOutcome,KernelAccessError>{
+        self.execute_structure_intent_selected_async(intent_wire,cancel,false,Some(observed_wire_at)).await
+    }
+    async fn execute_structure_intent_selected_async(&self,intent_wire:&[u8],cancel:&CancellationToken,frozen:bool,observed_wire_at:Option<std::time::Instant>)->Result<crate::kernel_client::StructureIntentOutcome,KernelAccessError>{
         let deadline=tokio::time::Instant::now()+Duration::from_secs(30);
         let identity=self.identity()?;
         let authority=self.authority_override.clone().unwrap_or_else(||sha256_hex(identity.actor_id().as_bytes()));
         let mut client=tokio::time::timeout_at(deadline,self.open_session_client(cancel)).await
             .map_err(|_|KernelClientError::Transport(crate::transport::TransportError::Timeout))??;
         let recipient=self.access_recipient_path(client.origin());
-        let mut outcome=if frozen {tokio::time::timeout_at(deadline,client.execute_structure_intent_prepared(&identity,&authority,intent_wire,cancel)).await.map_err(|_|KernelClientError::Transport(crate::transport::TransportError::Timeout))??}
+        let mut outcome=if let Some(observed_wire_at)=observed_wire_at {
+            tokio::time::timeout_at(deadline,client.execute_observed_pulse(&identity,&authority,intent_wire,cancel,observed_wire_at)).await
+                .map_err(|_|KernelClientError::Transport(crate::transport::TransportError::Timeout))??
+        } else if frozen {tokio::time::timeout_at(deadline,client.execute_structure_intent_prepared(&identity,&authority,intent_wire,cancel)).await.map_err(|_|KernelClientError::Transport(crate::transport::TransportError::Timeout))??}
             else{client.execute_structure_intent_until(&identity,&authority,intent_wire,cancel,deadline).await?};
         let _=tokio::time::timeout_at(deadline,async{
             client.complete_known_structure_outcome(&identity,&authority,&mut outcome,cancel).await;
@@ -518,7 +529,7 @@ impl KernelAccess {
             // Participant admission already elected the exact context. This
             // also preserves old unresolved rows which intentionally lack a
             // selector: an upgrade must not retarget their frozen intent.
-            let execution=self.execute_structure_intent_selected_async(wire.as_bytes(),cancel,participant_actions::execution_mutation(&request.action));
+            let execution=self.execute_structure_intent_selected_async(wire.as_bytes(),cancel,participant_actions::execution_mutation(&request.action),None);
             let outcome=if request.action=="structure.message.send"{
                 crate::transport::track_foreground_send(execution).await
             }else{execution.await};

@@ -1010,3 +1010,50 @@ fn mixed_member_directory_binds_browser_connections_and_hidden_presence_without_
  let mut duplicate=page.clone();duplicate["members"][2]=duplicate["members"][0].clone();assert!(verify(&duplicate).is_err());
  let mut tampered:Value=serde_json::from_slice(&receipt(&service,&query,prepared.proof().intent_digest(),&page)).unwrap();tampered["result"]["members"][0]["receiving"]["connections"]["open_connections"]=json!(99);assert!(verify_http_response_for_prepared(&serde_json::to_vec(&tampered).unwrap(),prepared.proof(),&kid).is_err(),"unsigned payload tampering must still fail");
 }
+
+#[test]
+fn presence_reset_binds_snapshot_scope_continuation_and_independent_business_frontier() {
+    let reader=SigningKey::from_bytes(&[23;32]);
+    let service=SigningKey::from_bytes(&[22;32]);let kid=key_id(&service.verifying_key().to_bytes());
+    let wire=serde_json::to_vec(&json!({"semantics":"peerwork.kernel.v1","audience":"structure-test","command_type":"peerwork.kernel-command.v1+jws","receipt_type":"peerwork.kernel-receipt.v1+jws","receipt_public_key":kid,"limits":{"max":1}})).unwrap();
+    let discovery=parse_discovery_wire(&wire,wire.len()).unwrap();
+    let mut query=command(&reader,"structure.events.read");query["instance_id"]=Value::Null;query["protocol_digest"]=Value::Null;
+    query["body"]=json!({"profile":PROFILE,"presence_replay":"SNAPSHOT_V1","after_sequence":0,"limit":32});
+    let prepare=|q:&Value|prepare_signed_command_wire(&parse_wire_json_bounded(&serde_json::to_vec(q).unwrap(),40,180000).unwrap(),&reader,&discovery,None).unwrap();
+    let selected=prepare(&query);
+    let snapshot=json!({"workspace_id":query["workspace_id"],"members":[{
+        "actor_id":key_id(&[71;32]),"membership_id":key_id(&[72;32]),"name":null,"state":"ACTIVE","access_active":true,
+        "receiving":{"state":"UNCONFIRMED","observed_at":10,"execution":"UNKNOWN","reason":"HIDDEN_BY_WORKSPACE_POLICY"},
+        "availability":{"state":"UNKNOWN","reason":"HIDDEN_BY_WORKSPACE_POLICY"}}],
+        "observed_at":10,"frontier":{"workspace_revision":7},"next_cursor":"directory-page-2"});
+    let value=json!({"profile":PROFILE,"assurance":"BACKEND_CURRENT_STATE","workspace_id":query["workspace_id"],
+        "events":[],"sources":{},"frontier":{"upper_sequence":50,"presence_snapshot_checkpoint":100},"checkpoint":50,"next_cursor":null,
+        "presence_reset":{"kind":"communication.member.presence.changed","reason":"PRESENCE_HISTORY_COMPACTED","pruned_through_sequence":20,
+            "snapshot_checkpoint":100,"snapshot":snapshot,"snapshot_request":{"action":"structure.members.read","body":{"profile":PROFILE,"view":"COLLABORATION","limit":32,"cursor":"directory-page-2"}},
+            "resume":{"after_sequence":100,"presence_replay":"SNAPSHOT_V1"},"business_replay":"CONTINUE_ORIGINAL_CURSOR"}});
+    let verify=|v:&Value|verify_http_response_for_prepared(&receipt(&service,&query,selected.proof().intent_digest(),v),selected.proof(),&kid);
+    verify(&value).unwrap(); // G100 may exceed frozen business upper50.
+    for (path,replacement) in [
+        ("/presence_reset/snapshot/workspace_id",json!(key_id(&[90;32]))),
+        ("/presence_reset/snapshot/members/0/receiving/observed_at",json!(11)),
+        ("/presence_reset/snapshot_request/body/cursor",json!("substituted")),
+        ("/presence_reset/snapshot_request/body/view",json!("DELIVERY")),
+        ("/presence_reset/snapshot_request/body/limit",json!(16)),
+        ("/presence_reset/resume/after_sequence",json!(50)),
+        ("/presence_reset/snapshot_checkpoint",json!(99)),
+        ("/presence_reset/pruned_through_sequence",json!(101)),
+        ("/presence_reset/business_replay",json!("SKIP_TO_SNAPSHOT")),
+        ("/checkpoint",json!(100)),
+        ("/frontier/presence_snapshot_checkpoint",json!(99)),
+    ] {
+        let mut wrong=value.clone();*wrong.pointer_mut(path).unwrap()=replacement;
+        assert!(verify(&wrong).is_err(),"{path}");
+    }
+    let mut terminal=value.clone();terminal["presence_reset"]["snapshot"]["next_cursor"]=Value::Null;
+    terminal["presence_reset"]["snapshot_request"]=Value::Null;verify(&terminal).unwrap();
+    let mut unopted=query.clone();unopted["body"].as_object_mut().unwrap().remove("presence_replay");let old=prepare(&unopted);
+    assert!(verify_http_response_for_prepared(&receipt(&service,&unopted,old.proof().intent_digest(),&value),old.proof(),&kid).is_err());
+    let mut continued=query.clone();continued["body"].as_object_mut().unwrap().remove("after_sequence");continued["body"]["cursor"]=json!("original-business-cursor");
+    let continuation=prepare(&continued);
+    verify_http_response_for_prepared(&receipt(&service,&continued,continuation.proof().intent_digest(),&value),continuation.proof(),&kid).unwrap();
+}

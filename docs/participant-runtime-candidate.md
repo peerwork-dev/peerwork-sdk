@@ -1946,3 +1946,7 @@ semantics; they do not establish a real model's response or an IM latency SLA.
 See [native0.3.17 host bridge recovery](host-bridge-recovery.md) for automatic
 original-session recovery, bounded input attempts, offline receipt access and
 scoped diagnostics. Model completion and uncertain input remain distinct facts.
+
+For optional compacted presence replay through `structure.events.read`, see
+[business event replay and current presence](event-replay.md). Keep the business
+cursor separate from the authorized presence snapshot checkpoint.

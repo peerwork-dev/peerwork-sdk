@@ -19,6 +19,8 @@ use std::{
 mod approval;
 #[path = "participant_connect_install.rs"]
 mod install;
+#[path = "participant_connect_update.rs"]
+mod update;
 pub use approval::AuthorizationRequest;
 pub use approval::deserialize_input as deserialize_authorization_input;
 pub use install::Installation;
@@ -380,7 +382,7 @@ impl Connect {
         let mut value=json!({"state":if self.registry.participants.is_empty(){"NOT_CONFIGURED"}else{"LOCAL_SELECTION_REGISTERED"},
             "discovery":self.discovery_summary(),
             "participants":self.registry.participants.iter().map(|(handle,r)|json!({"handle":handle,"actor_id":r.actor_id,"origin":r.origin})).collect::<Vec<_>>(),
-            "active_setup_id":self.registry.active,"setups":self.registry.setups.iter().map(|(id,s)|json!({"setup_id":id,"participant":s.desired.participant,"workspace_id":s.desired.workspace_id,"protocol_roles":s.desired.protocols,"state":s.result["state"],"blocker":s.result["blocker"]})).collect::<Vec<_>>(),
+            "active_setup_id":self.registry.active,"setups":self.registry.setups.iter().map(|(id,s)|json!({"setup_id":id,"participant":s.desired.participant,"workspace_id":s.desired.workspace_id,"protocol_roles":s.desired.protocols,"state":s.result["state"],"blocker":s.result["blocker"],"actor_id":s.registration.actor_id,"origin":s.registration.origin,"receiving_scopes":s.profile.as_ref().map(|p|&p.scopes),"requested_host":s.effective_host,"requested_objectives":{"send":s.desired.send,"receive":s.desired.receive,"body_keys":s.desired.require_body_keys,"protocol_roles":s.desired.protocols,"host_required":s.agent_host_required}})).collect::<Vec<_>>(),
             "remote_or_host_readiness":"NOT_ATTESTED"});
         if !self.has_selected_profile(None,None){value["next_tool"]=json!("peerwork_connect");}
         value
@@ -1612,6 +1614,7 @@ pub fn cli(args: &[String]) -> Value {
                 "--install",
                 "--project",
                 "--uninstall",
+                "--update",
                 "--engine-config",
                 "--runtime-config",
                 "--management",
@@ -1693,6 +1696,7 @@ pub fn cli(args: &[String]) -> Value {
             "peerwork connect --local ORIGINAL_REGISTRY --participant HANDLE --workspace WORKSPACE --management protocol.register,protocol.adopt,access.approve",
             "peerwork connect --local DIRECTORY --resume ORIGINAL_SETUP_ID --install claude",
             "peerwork connect --local DIRECTORY --context",
+            "peerwork connect --local ORIGINAL_DIRECTORY --participant HANDLE --update status|apply",
             "peerwork connect --local ORIGINAL_DIRECTORY --context --confirm-original",
             "peerwork connect --local DIRECTORY --participant OWNER_HANDLE --id APPROVAL_ID --approve-request -",
             "peerwork connect --local DIRECTORY --participant OWNER_HANDLE --id APPROVAL_ID --approve-code PW-AUTH-1.CODE",
@@ -1703,6 +1707,13 @@ pub fn cli(args: &[String]) -> Value {
     }
     let result = || -> Result<Value> {
         let mut values = parse(args)?;
+        // Reject mixed intents before context/profile/discovery early returns.
+        if let Some(mode)=values.get("--update") {
+            if !matches!(mode.as_str(),"status"|"apply") || values.keys().any(|key|!["--local","--participant","--project","--update"].contains(&key.as_str())) {
+                return Err(local("UPDATE_USES_SELECTED_CLIENT_AND_STATUS_OR_APPLY"));
+            }
+        }
+
         if let Some(path)=values.get("--profile") {
             if values.keys().any(|key|!["--profile","--issuer","--runtime-config","--adopt-policy"].contains(&key.as_str())) {
                 return Err(local("PROFILE_SOURCE_USES_SAVED_SELECTION"));
@@ -1789,6 +1800,10 @@ pub fn cli(args: &[String]) -> Value {
         let mut connect = Connect::open(&directory)?;
         if values.contains_key("--context") {
             return Ok(connect.context());
+        }
+        if let Some(mode)=values.get("--update") {
+            let runtime=tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().map_err(|_|local("EXECUTOR_FAILED"))?;
+            return runtime.block_on(connect.update(values.get("--participant").map(String::as_str),mode=="apply"));
         }
         if let Some(id)=values.get("--resume"){
             if values.keys().any(|k|!["--resume","--local","--project","--participant","--install"].contains(&k.as_str())){return Err(local("SETUP_RESUME_USES_SAVED_REQUEST_ONLY"));}

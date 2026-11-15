@@ -572,6 +572,79 @@ fn verify_member_directory(result:&WireValue,command:&WireValue,prepared:&Verifi
     Ok(())
 }
 
+// Presence compaction never replaces the independently paged business cursor.
+fn verify_presence_reset(result: &WireValue, command: &WireValue, prepared: &VerifiedPreparedCommand) -> Result<(), VerifyWireReceiptError> {
+    let invalid = || VerifyWireReceiptError::Mismatch;
+    let body = command.get("body").ok_or_else(invalid)?;
+    let reset = result.get("presence_reset");
+    let mode = ascii_field(body, "presence_replay");
+    if mode.is_none() {
+        return if reset.is_none() && body.get("presence_checkpoint").is_none() { Ok(()) } else { Err(invalid()) };
+    }
+    if mode.as_deref() != Some("SNAPSHOT_V1") { return Err(invalid()); }
+    let frontier = result.get("frontier").ok_or_else(invalid)?;
+    let upper = number(frontier, "upper_sequence").ok_or_else(invalid)?;
+    let checkpoint = number(result, "checkpoint").filter(|at| *at <= upper).ok_or_else(invalid)?;
+    let prior_presence = if body.get("presence_checkpoint").is_some() { number(body,"presence_checkpoint").ok_or_else(invalid)? } else { 0 };
+    let snapshot_checkpoint = if frontier.get("presence_snapshot_checkpoint").is_some() { number(frontier,"presence_snapshot_checkpoint").ok_or_else(invalid)? } else { 0 };
+    if snapshot_checkpoint < prior_presence { return Err(invalid()); }
+    let after = if body.get("after_sequence").is_some() { Some(number(body,"after_sequence").filter(|at|*at<=checkpoint).ok_or_else(invalid)?) } else {None};
+    if body.get("cursor").is_some() && after.is_some() { return Err(invalid()); }
+    match result.get("next_cursor") {
+        Some(WireValue::Null) if checkpoint == upper => (),
+        Some(value) if value.as_string().is_some_and(|cursor|!cursor.is_empty()) => (),
+        _ => return Err(invalid()),
+    }
+    let Some(WireValue::Array(events)) = result.get("events") else { return Err(invalid()); };
+    let mut last = after;
+    for event in events {
+        let seq = number(event,"sequence").filter(|seq|*seq<=checkpoint && last.is_none_or(|prev|*seq>prev)).ok_or_else(invalid)?;
+        last = Some(seq);
+    }
+    let Some(reset) = reset else { return Ok(()); };
+    let pruned = number(reset,"pruned_through_sequence").filter(|at|*at>0).ok_or_else(invalid)?;
+    let snapshot_at = number(reset,"snapshot_checkpoint").ok_or_else(invalid)?;
+    if reset.object_len()!=Some(8) || command.get("instance_id")!=Some(&WireValue::Null)
+        || ascii_field(result,"workspace_id").as_deref()!=prepared.workspace_id()
+        || ascii_field(reset,"kind").as_deref()!=Some("communication.member.presence.changed")
+        || ascii_field(reset,"reason").as_deref()!=Some("PRESENCE_HISTORY_COMPACTED")
+        || ascii_field(reset,"business_replay").as_deref()!=Some("CONTINUE_ORIGINAL_CURSOR")
+        || snapshot_at!=snapshot_checkpoint || snapshot_at<upper || pruned>snapshot_at
+        || prior_presence>=pruned || after.is_some_and(|at|at>=pruned)
+        || after.is_none() && body.get("cursor").is_none() { return Err(invalid()); }
+    let resume=reset.get("resume").ok_or_else(invalid)?;
+    if resume.object_len()!=Some(2) || number(resume,"after_sequence")!=Some(snapshot_at)
+        || ascii_field(resume,"presence_replay").as_deref()!=Some("SNAPSHOT_V1") { return Err(invalid()); }
+    let snapshot=reset.get("snapshot").ok_or_else(invalid)?;
+    if snapshot.object_len()!=Some(5) || snapshot.get("workspace_id")!=result.get("workspace_id")
+        || number(snapshot,"observed_at").is_none()
+        || snapshot.get("frontier").and_then(|f|number(f,"workspace_revision")).is_none() { return Err(invalid()); }
+    let synthetic_body=WireValue::Object(vec![
+        ("profile".encode_utf16().collect(),WireValue::String(crate::structure_execution::PROFILE.encode_utf16().collect())),
+        ("view".encode_utf16().collect(),WireValue::String("COLLABORATION".encode_utf16().collect())),
+        ("limit".encode_utf16().collect(),WireValue::Number(32.0)),
+    ]);
+    let mut synthetic=command.clone();
+    let WireValue::Object(fields)=&mut synthetic else { return Err(invalid()); };
+    let target=fields.iter_mut().find(|(name,_)|name.iter().copied().eq("body".encode_utf16())).ok_or_else(invalid)?;
+    target.1=synthetic_body.clone();
+    verify_member_directory(snapshot,&synthetic,prepared)?;
+    match snapshot.get("next_cursor") {
+        Some(WireValue::Null) if reset.get("snapshot_request")==Some(&WireValue::Null) => (),
+        Some(cursor) if cursor.as_string().is_some_and(|value|!value.is_empty()) => {
+            let next=reset.get("snapshot_request").ok_or_else(invalid)?;
+            let mut expected=synthetic_body;
+            let WireValue::Object(fields)=&mut expected else { unreachable!() };
+            fields.push(("cursor".encode_utf16().collect(),cursor.clone()));
+            // Object key order is not semantic for a signed structured result.
+            if next.object_len()!=Some(2) || ascii_field(next,"action").as_deref()!=Some("structure.members.read")
+                || next.get("body").is_none_or(|body|body.object_len()!=Some(4) || fields.iter().any(|(name,value)|body.get(&String::from_utf16_lossy(name))!=Some(value))) { return Err(invalid()); }
+        },
+        _ => return Err(invalid()),
+    }
+    Ok(())
+}
+
 fn verify_structure_read_authors(result:&WireValue,command:&WireValue,prepared:&VerifiedPreparedCommand,key:&str,proofs:Option<&AuthorProofContext>)->Result<(),VerifyWireReceiptError>{
     let invalid=||VerifyWireReceiptError::Mismatch;
     match prepared.action_id(){
@@ -626,6 +699,7 @@ fn verify_structure_read_authors(result:&WireValue,command:&WireValue,prepared:&
         }
         "structure.grant.get"=>verify_structure_grant(result,command,prepared,proofs),
         action @ ("structure.records.read"|"structure.instance.records.read"|"structure.events.read")=>{
+            if action=="structure.events.read" {verify_presence_reset(result,command,prepared)?;}
             let WireValue::Object(sources)=result.get("sources").ok_or_else(invalid)? else{return Err(invalid());};
             let WireValue::Array(items)=result.get(if action=="structure.events.read"{"events"}else{"records"}).ok_or_else(invalid)? else{return Err(invalid());};
             if sources.len()>32||items.len()>32||prepared.workspace_id().is_none(){return Err(invalid());}
