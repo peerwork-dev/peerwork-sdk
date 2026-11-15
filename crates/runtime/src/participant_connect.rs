@@ -252,16 +252,18 @@ fn receiving_self_test(receiver:&Value,push:bool)->Value {
     let keys=presence["key_current"]==true&&matches!(presence["body_key"]["state"].as_str(),Some("READY"|"NOT_REQUIRED"));
     let host=presence["host_current"]==true&&presence["host"]["ready"]==true&&presence["host"]["mode"]=="LIVE";
     if let Some(delivery)=receiver.get("notification_delivery").filter(|value|value.is_object()) {
-        let verified=delivery["state"]=="RUNNING"&&delivery["automatic_receiving"]=="VERIFIED";
-        let code=if !linked{receiver["code"].as_str().unwrap_or("RECEIVER_NOT_VERIFIED")}
-            else if push&&delivery["state"]=="PAUSED"{"DELIVERY_PAUSED"}
-            else if push&&!keys{"BODY_KEYS_NOT_READY"}
-            else if push&&!verified{"DELIVERY_SELF_TEST_PENDING"}else{"READY"};
-        return json!({"state":if linked&&(!push||(keys&&verified)){"READY"}else{"PENDING"},"code":code,
-            "receiver_link_verified":linked,"host_required":push,"host_ready":host,"body_keys_ready":keys,"presence":presence,
-            "automatic_receiving":delivery["automatic_receiving"],"last_verified_at":delivery["last_verified_at"],
-            "notification_delivery":delivery,"receiving_mode":if push{"AUTOMATIC"}else{"INBOX"},
-            "basis":"LOCAL_RECEIVER_AND_NOTIFICATION_OBSERVATION","model_response":"NOT_ATTESTED"});
+        let mut current=if push {
+            receiver["current_delivery"].clone()
+        }else{crate::delivery_health::evaluate(receiver,delivery,"NATIVE_INBOX",&Value::Null)};
+        if !current.is_object(){
+            let health=json!({"ready":host,"observation_age_ms":if presence["host_current"]==true{json!(0)}else{Value::Null},"reason":"CURRENT_TRANSPORT_OBSERVATION_UNAVAILABLE"});
+            current=crate::delivery_health::evaluate(receiver,delivery,"HOST_PUSH",&health);
+        }
+        return json!({"state":if current["state"]=="READY"{"READY"}else{"PENDING"},"code":current["code"],
+            "receiver_link_verified":linked,"host_required":push,"host_ready":current["transport_ready"],"body_keys_ready":keys,"presence":presence,
+            "automatic_receiving":current["automatic_receiving"],"last_verified_at":delivery["last_verified_at"],
+            "notification_delivery":delivery,"current_delivery":current,"receiving_mode":if push{"AUTOMATIC"}else{"INBOX"},
+            "basis":"CURRENT_SELECTED_TRANSPORT_OBSERVATION","model_response":"NOT_ATTESTED"});
     }
     let code=if !linked{receiver["code"].as_str().unwrap_or("RECEIVER_NOT_VERIFIED")}else if push&&presence["host_current"]==true&&presence["host"]["mode"]=="TOOL_ONLY"{"HOST_PUSH_UNSUPPORTED"}else if push&&!keys{"BODY_KEYS_NOT_READY"}else if push&&!host{"HOST_LIVE_DELIVERY_NOT_READY"}else{"READY"};
     json!({"state":if linked&&(!push||(host&&keys)){"READY"}else{"PENDING"},"code":code,"receiver_link_verified":linked,
@@ -269,7 +271,7 @@ fn receiving_self_test(receiver:&Value,push:bool)->Value {
         "basis":"CURRENT_LOCAL_RUNTIME_OBSERVATION","model_response":"NOT_ATTESTED"})
 }
 fn receiving_observation(observed:&Value)->Value {
-    json!({"state":observed["state"],"code":observed["code"],"verification_failure":observed["verification_failure"],"notification_delivery":observed["notification_delivery"],"presence":observed["presence"],"receiver_link_verified":observed["receiver_link_verified"],"checkpoint":observed["checkpoint"],"model_response":"NOT_ATTESTED"})
+    json!({"state":observed["state"],"code":observed["code"],"verification_failure":observed["verification_failure"],"notification_delivery":observed["notification_delivery"],"presence":observed["presence"],"receiver_link_verified":observed["receiver_link_verified"],"checkpoint":observed["checkpoint"],"current_delivery":observed["current_delivery"],"model_response":"NOT_ATTESTED"})
 }
 impl Connect {
     pub fn selection_required(setup_id: &str) -> Value {

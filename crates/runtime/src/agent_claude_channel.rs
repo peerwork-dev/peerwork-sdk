@@ -30,7 +30,7 @@ impl State {
         observed.at.insert(alias.into(),std::time::Instant::now());
     }
     fn scope_failed(&self,alias:&str,error:&ParticipantError) {
-        let mut value=json!({"state":"BLOCKED","code":error.code});
+        let mut value=json!({"state":"BLOCKED","code":error.code,"recovery":crate::host_recovery_policy::diagnostic(&error.code)});
         if error.details.as_ref().and_then(|details|details.get("local_state")).is_some() {
             value["error"]=json!(error);
         }
@@ -74,10 +74,20 @@ fn notification(value:&Value)->Result<Value> {
 /// Refresh only local selected profile metadata. Native waits are notification
 /// driven; this creates no service polling loop, keys or remote subscriptions.
 pub(super) async fn watch(tools:Arc<Tools>,output:mpsc::Sender<Value>,state:State) {
-    let mut jobs=JoinSet::new();
+    let mut jobs:JoinSet<(String,Option<String>)>=JoinSet::new();
     let mut active:BTreeMap<String,AbortHandle>=BTreeMap::new();
     let mut previous=String::new();
+    let mut retries:BTreeMap<String,(u32,std::time::Instant)>=BTreeMap::new();
     loop {
+        while let Some(result)=jobs.try_join_next(){
+            if let Ok((key,code))=result {
+                active.remove(&key);
+                if let Some(code)=code {
+                    let attempt=retries.get(&key).map_or(1,|(n,_)|n.saturating_add(1));
+                    retries.insert(key.clone(),(attempt,std::time::Instant::now()+crate::host_recovery_policy::delay(&code,attempt,&key)));
+                }
+            }
+        }
         let selected=tools.channel_profile();
         let mut wanted=BTreeMap::new();
         match selected {
@@ -91,20 +101,25 @@ pub(super) async fn watch(tools:Arc<Tools>,output:mpsc::Sender<Value>,state:Stat
         let aliases:BTreeSet<_>=wanted.values().map(|(_,alias,_)|alias.clone()).collect();
         state.0.lock().unwrap().scopes.retain(|alias,_|aliases.contains(alias));
         active.retain(|key,handle|if wanted.contains_key(key)&&!handle.is_finished(){true}else{handle.abort();false});
+        retries.retain(|key,_|wanted.contains_key(key));
         for (key,(profile,alias,scope)) in wanted {
-            if active.contains_key(&key){continue}
+            if active.contains_key(&key)||retries.get(&key).is_some_and(|(_,until)|*until>std::time::Instant::now()){continue}
             let out=output.clone();let observed=state.clone();let selected=tools.clone();
+            let selected_key=key.clone();
             active.insert(key,jobs.spawn(async move {
-                if let Err(error)=watch_scope(selected,profile,alias.clone(),scope,out,observed.clone()).await {
-                    observed.scope_failed(&alias,&error);eprintln!("Peerwork Claude channel: {}",error.code);
-                }
+                let code=if let Err(error)=watch_scope(selected,profile,alias.clone(),scope,out,observed.clone()).await {
+                    let changed=observed.status()["scopes"][&alias]["code"]!=error.code;
+                    observed.scope_failed(&alias,&error);
+                    if changed{eprintln!("Peerwork Claude channel: {}",error.code);}
+                    Some(error.code)
+                }else{None};
+                (selected_key,code)
             }));
         }
         tokio::select! {
             _=output.closed()=>break,
             _=tokio::time::sleep(Duration::from_secs(5))=>{},
         }
-        while jobs.try_join_next().is_some() {}
     }
 }
 

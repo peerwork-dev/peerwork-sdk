@@ -1080,7 +1080,7 @@ impl AgentTools {
                     // presentation preparation, never complete content or handling.
                     let observed=self.receiving().call(json!({"method":"notification_observe","batch":batch})).await?;
                     if value["state"]=="SELF_TEST_OBSERVED"{
-                        value["delivery"]=json!({"state":observed["state"],"automatic_receiving":observed["automatic_receiving"],"last_verified_at":observed["last_verified_at"],"current_generation":observed["accepted_generation"]});
+                        value["delivery"]=json!({"state":observed["state"],"automatic_receiving":observed["automatic_receiving"],"last_verified_at":observed["last_verified_at"],"current_generation":observed["accepted_generation"],"current_delivery":observed["current_delivery"]});
                     }
                 }
                 Ok(value)

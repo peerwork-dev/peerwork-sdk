@@ -635,7 +635,7 @@ async fn http(
             if age>=Duration::from_secs(10){snapshot["health"]["ready"]=json!(false);snapshot["health"]["execution_state"]=json!("UNKNOWN");snapshot["health"]["reason"]=json!("BRIDGE_COORDINATOR_STALE");}
             snapshot["health"]["coordinator_age_ms"]=json!(age.as_millis() as u64);
             snapshot["health"]["diagnostic"]=progress.snapshot();
-            snapshot["features"]=json!(["compact-notifications-v1"]);
+            snapshot["features"]=json!(["compact-notifications-v1","current-host-delivery-health-v1"]);
             snapshot["sdk_version"]=json!(env!("CARGO_PKG_VERSION"));
             return Ok(snapshot);
         }
@@ -687,6 +687,7 @@ struct ProviderRequest {
 // may synchronously reap children using the runtime handle.
 fn provider_loop(config:Value,executor:tokio::runtime::Handle,progress:crate::communication_host::operation::Budget,mut requests:mpsc::Receiver<ProviderRequest>,notice_fence:Arc<crate::notification_fence::Fence>)->R<()> {
     let mut host:Option<Host>=None;
+    let mut resume_allowed=true;
     let mut pending_receipt:Option<(Value,Value)>=None;
     #[cfg(test)] let mut injected=false;
     while let Some(request)=requests.blocking_recv(){
@@ -699,9 +700,9 @@ fn provider_loop(config:Value,executor:tokio::runtime::Handle,progress:crate::co
             if host.is_none(){
                 let mut selected=config.clone();
                 if selected["kind"]=="codex" {if let Some(expected)=&request.destination{selected["expected_session_id"]=expected["session_id"].clone();}}
-                match Host::open_progress(selected,executor.clone(),progress.clone()) {
+                match Host::open_recovery(selected,executor.clone(),progress.clone(),resume_allowed) {
                     Ok(opened)=>host=Some(opened),
-                    Err(code)=>return if request.frame.is_some(){Ok((request.destination.clone().unwrap_or(Value::Null),json!({"state":"NOT_SENT","code":code,"proof":"BOUND_HOST_RECONCILIATION"})))}else{Err(code)},
+                    Err(code)=>{if code=="HOST_SESSION_OWNERSHIP_CONFLICT"{resume_allowed=false;}return if request.frame.is_some(){Ok((request.destination.clone().unwrap_or(Value::Null),json!({"state":"NOT_SENT","code":code,"proof":"BOUND_HOST_RECONCILIATION"})))}else{Err(code)}},
                 }
             }
             let selected=host.as_mut().unwrap();
@@ -750,7 +751,7 @@ fn provider_loop(config:Value,executor:tokio::runtime::Handle,progress:crate::co
                 let _=notice_fence.finish(owner,batch,attempt,&value);
             }
         }
-        if let Err(code)=&result{progress.failure(code,None);drop(host.take());}
+        if let Err(code)=&result{if *code=="HOST_SESSION_OWNERSHIP_CONFLICT"{resume_allowed=false;}progress.failure(code,None);drop(host.take());}
         let _=request.reply.send(result);
     }
     drop(host);Ok(())

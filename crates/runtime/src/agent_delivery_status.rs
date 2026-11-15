@@ -29,7 +29,8 @@ fn refresh_at(context: &mut Value, now: i64) {
             let expected = binding(context, scope);
             let observations = context["delivery_observations"]["observations"].as_array();
             let observation = observations.and_then(|items| items.iter().find(|v| same_scope(&v["binding"], scope)
-                && context["bindings"].as_array().is_some_and(|bindings|bindings.iter().any(|b|b==&v["binding"]))));
+                && context["bindings"].as_array().is_some_and(|bindings|bindings.iter().any(|b|b==&v["binding"]))
+                && (v["receiving_binding"].is_null() || ["client_name","client_generation","namespace","engine_digest","state_binding"].iter().all(|key|v["receiving_binding"][*key]==context["receiving_binding"][*key]))));
             let source = observation.filter(|v| context["receiving_status"].is_null() && current(&v["observed_at_ms"], now));
             let receiver = source.map(|v|v["receiver"].clone()).unwrap_or_else(||json!({"state":"UNKNOWN"}));
             let notification = source.map(|v|v["notification"].clone()).unwrap_or(Value::Null);
@@ -38,31 +39,25 @@ fn refresh_at(context: &mut Value, now: i64) {
             let channel = if channel_matches && candidate["observation_age_ms"].as_u64().is_some_and(|age|age<10_000) {
                 json!({"state":candidate["state"],"code":candidate["code"],"observation_age_ms":candidate["observation_age_ms"]})
             } else { json!({"state":"UNKNOWN","reason":if candidate.is_null(){"NOT_OBSERVED"}else if !channel_matches{"BINDING_MISMATCH"}else{"STALE_OBSERVATION"}}) };
-            let host = context["host_status"]["hosts"].as_array().and_then(|hosts|hosts.iter().find(|host|
-                host["source_bindings"].as_array().is_some_and(|sources|sources.iter().any(|source|
-                    same_scope(&source["watch"],scope) && source["client"].is_string()
-                    && context["bindings"].as_array().is_some_and(|bindings|bindings.iter().any(|b|b==&source["watch"]))
-                    && source["client_generation"]==context["receiving_binding"]["client_generation"]
-                    && source["client"]==context["receiving_binding"]["client_name"]))));
-            let host = host.map(|host|json!({"state":host["state"],"code":host["code"],
-                "selection_id":host["selection_id"],"dispatcher_running":host["dispatcher_running"],
-                "observation":if host["host_observation"]["observation_age_ms"].as_u64().is_some_and(|age|age<10_000){host["host_observation"].clone()}else{json!({"state":"UNKNOWN","reason":"FRESH_OBSERVATION_UNAVAILABLE"})},
-                "model_response":"NOT_ATTESTED"})).unwrap_or_else(||json!({"state":"UNKNOWN","reason":"EXACT_HOST_NOT_OBSERVED"}));
-            let bound = context["bindings"].as_array().is_some_and(|items|items.iter().any(|v|same_scope(v,scope)));
-            let state = if !bound || source.is_none() {"UNKNOWN"}
-                else if notification["state"]=="PAUSED" {"PAUSED"}
-                else if receiver["state"]=="LOCAL_STOPPED" {"STOPPED"}
-                else if !receiver["verification_failure"].is_null() || receiver["state"]=="BLOCKED" {"BLOCKED"}
-                else if receiver["receiver_link_verified"]==true && receiver["state"]=="RECEIVER_LINK_VERIFIED" {"RECEIVING"}
-                else {"PENDING"};
-            let transport = if context["bindings"].as_array().is_some_and(|items|items.iter().any(|v|same_scope(v,scope)&&v["host_destination"].is_string())) {"HOST_PUSH"}
-                else if channel_matches {"MCP_STDIO_CHANNEL"} else {"NATIVE_INBOX"};
+            let selected_binding=observation.map(|v|v["binding"].clone()).unwrap_or(Value::Null);
+            let hosts=context["host_status"]["hosts"].as_array().map(Vec::as_slice).unwrap_or(&[]);
+            let selected_host=crate::delivery_health::selected_host(&selected_binding,hosts,context["receiving_binding"]["client_name"].as_str().unwrap_or_default(),context["receiving_binding"]["client_generation"].as_u64());
+            let mut host=selected_host.clone().unwrap_or_else(||json!({"state":"UNKNOWN","reason":"EXACT_HOST_NOT_OBSERVED"}));
+            host["observation"]=if host["host_observation"]["observation_age_ms"].as_u64().is_some_and(|age|age<crate::delivery_health::FRESH_MS){host["host_observation"].clone()}else{json!({"state":"UNKNOWN","reason":"FRESH_OBSERVATION_UNAVAILABLE"})};
+            let transport=if selected_binding["host_destination"].is_string(){"HOST_PUSH"}
+                else if channel_matches || source.is_some_and(|v|v["transport"]=="MCP_STDIO_CHANNEL"){"MCP_STDIO_CHANNEL"}else{"NATIVE_INBOX"};
+            let health=if transport=="MCP_STDIO_CHANNEL"&&channel_matches{channel.clone()}
+                else if let Some(host)=selected_host.as_ref(){crate::delivery_health::host_observation(host)}
+                else{source.map(|v|v["transport_health"].clone()).unwrap_or_else(||json!({"state":"UNKNOWN"}))};
+            let mut current=crate::delivery_health::evaluate(&receiver,&notification,transport,&health);
+            if transport=="NATIVE_INBOX" && current["state"]=="READY"{current["state"]=json!("RECEIVING");}
+            let state=current["state"].clone();
             scopes.insert(alias.clone(), json!({"binding":expected,"state":state,"transport":transport,
                 "observed_at_ms":observation.map(|v|&v["observed_at_ms"]),
                 "receiver":receiver,"channel":channel,"host":host,
-                "next_action":match state {"RECEIVING"=>"CONTINUE_COLLABORATION","PAUSED"=>"RESUME_WHEN_REQUESTED","STOPPED"=>"RESTART_ORIGINAL_RECEIVER_WHEN_REQUESTED","BLOCKED"=>"INSPECT_CURRENT_BLOCKER",_=>"REOBSERVE_ORIGINAL_BINDING"},
+                "next_action":current["next_action"],"code":current["code"],"current_delivery":current,
                 "delivery_control":notification["state"],
-                "automatic_receiving":notification["automatic_receiving"],
+                "automatic_receiving":current["automatic_receiving"],
                 "last_verified_at":notification["last_verified_at"],
                 "model_response":"NOT_ATTESTED"}));
         }
@@ -78,6 +73,33 @@ fn refresh_at(context: &mut Value, now: i64) {
     }).collect::<Vec<_>>();
     context["delivery_status"] = json!({"basis":"CURRENT_SELECTED_LOCAL_OBSERVATIONS","scopes":scopes,
         "setups":setups,"setup_state_changed":false,"model_response":"NOT_ATTESTED"});
+}
+
+/// The Claude frontend can refine the runtime's local polling observation with
+/// its exact selected Channel projection. No extra runtime or service request.
+pub(crate) fn refresh_delivery(value:&mut Value, channel:&Value) {
+    let identity=json!({"actor_id":value["actor_id"],"origin":value["origin"]});
+    if let Some(observations)=value["observations"].as_array_mut(){for observation in observations {
+        if observation["transport"]!="MCP_STDIO_CHANNEL"{continue;}
+        let mut context=identity.clone();context["receiving_binding"]=observation["receiving_binding"].clone();
+        let expected=binding(&context,&observation["binding"]);
+        let candidate=channel["scopes"].as_object().and_then(|scopes|scopes.values().find(|candidate|candidate["binding"]==expected));
+        if let Some(candidate)=candidate {
+            let current=crate::delivery_health::evaluate(&observation["receiver"],&observation["notification"],"MCP_STDIO_CHANNEL",candidate);
+            observation["current_delivery"]=current.clone();observation["transport_health"]=candidate.clone();
+            crate::delivery_health::annotate_notification(&mut observation["notification"],&current);
+        }
+    }}
+    // Keep destination control and current readiness separate, but coherent.
+    if let Some(destinations)=value["destinations"].as_array().cloned(){
+        value["destinations"]=json!(destinations.into_iter().map(|mut destination|{
+            let current=value["observations"].as_array().into_iter().flatten().filter(|observation|
+                observation["binding"]["host_destination"].as_str().unwrap_or("CLAUDE_CHANNEL")==destination["destination_digest"].as_str().unwrap_or_default())
+                .map(|v|v["current_delivery"].clone()).min_by_key(|v|if v["state"]=="READY"{2}else if v["state"]=="BLOCKED"{0}else{1});
+            if let Some(current)=current{crate::delivery_health::annotate_notification(&mut destination,&current);}
+            destination
+        }).collect::<Vec<_>>());
+    }
 }
 
 #[cfg(test)]

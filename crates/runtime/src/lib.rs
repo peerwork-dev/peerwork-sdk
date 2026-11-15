@@ -138,6 +138,8 @@ mod participant_client_tools;
 mod agent_client;
 mod agent_lifecycle;
 mod agent_delivery_status;
+mod delivery_health;
+mod host_recovery_policy;
 #[cfg(test)]
 mod agent_attached_tests;
 #[cfg(test)]

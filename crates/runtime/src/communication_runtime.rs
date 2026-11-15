@@ -58,7 +58,7 @@ pub(crate) const CONNECT_FEATURES: [&str; 13] = [
 ];
 fn runtime_features() -> Vec<&'static str> {
     CONNECT_FEATURES.into_iter().chain([
-        "host-observation-upload-deadline-v1", "current-delivery-observation-v1",
+        "host-observation-upload-deadline-v1", "current-delivery-observation-v1", "current-host-delivery-health-v1",
     ]).collect()
 }
 const REQUEST_FORMAT: &str = "peerwork.participant-request.v1";
@@ -368,6 +368,24 @@ fn response(id: &str, out: Result<Value>) -> Value {
     }
 }
 impl Runtime {
+    fn project_delivery(&self,session:&Session,observation:&mut Value,hosts:&[Value]) {
+        let binding=&observation["binding"];let client=&session.client;
+        let options:WatchOptions=serde_json::from_value(binding.clone()).expect("validated receiving binding");
+        let host=crate::delivery_health::selected_host(binding,hosts,&session.name,session.generation);
+        let channel=self.notifications.channel_observation(&crate::communication_notifications::owner(client,&options));
+        let transport=if options.host_destination.is_some(){"HOST_PUSH"}else if channel["state"]=="POLLING"{"MCP_STDIO_CHANNEL"}else{"NATIVE_INBOX"};
+        let health=host.as_ref().map(crate::delivery_health::host_observation).unwrap_or_else(||{
+            if transport=="MCP_STDIO_CHANNEL"{self.notifications.channel_observation(&crate::communication_notifications::owner(client,&options))}
+            else{json!({"state":"UNKNOWN","reason":"EXACT_HOST_NOT_OBSERVED"})}
+        });
+        let current=crate::delivery_health::evaluate(&observation["receiver"],&observation["notification"],transport,&health);
+        observation["transport"]=json!(transport);observation["transport_health"]=health;
+        observation["host"]=host.unwrap_or_else(||json!({"state":"UNKNOWN"}));
+        observation["current_delivery"]=current.clone();
+        observation["receiving_binding"]=json!({"client_name":session.name,"client_generation":session.generation,"namespace":client.local_namespace(),"engine_digest":self.engine_bindings.get(client.state_binding()),"state_binding":client.state_binding()});
+        crate::delivery_health::annotate_notification(&mut observation["notification"],&current);
+    }
+
     fn credential(&self, id: &str) -> Option<String> {
         let sessions = self.sessions.read().ok()?;
         std::iter::once(self.admin_token.as_str())
@@ -433,7 +451,7 @@ impl Runtime {
                     let (clients,generations)=self.client_snapshot()?;
                     let mut receivers=Vec::new();
                     for (name,client) in clients {let bindings=client.watch_bindings().await?;if !bindings.is_empty(){receivers.push(json!({"client":name,"client_generation":generations.get(&name),"actor_id":client.actor_id(),"origin":client.origin(),"state_binding":client.state_binding(),"engine_digest":self.engine_bindings.get(client.state_binding()),"bindings":bindings}));}}
-                    Ok(json!({"state":"LOCAL_READY","sdk_version":env!("CARGO_PKG_VERSION"),"optional_features":["resident-scope-rebind-v1","source-client-adoption-v1","host-observation-upload-deadline-v1","current-delivery-observation-v1"],"engines":engines,"receivers":receivers,"hosts":self.hosts.lock().await.statuses(),"pending_client_revocations":self.pending_revocation_status()?,"network_or_host_readiness":"NOT_ATTESTED"}))
+                    Ok(json!({"state":"LOCAL_READY","sdk_version":env!("CARGO_PKG_VERSION"),"optional_features":["resident-scope-rebind-v1","source-client-adoption-v1","host-observation-upload-deadline-v1","current-delivery-observation-v1","current-host-delivery-health-v1"],"engines":engines,"receivers":receivers,"hosts":self.hosts.lock().await.statuses(),"pending_client_revocations":self.pending_revocation_status()?,"network_or_host_readiness":"NOT_ATTESTED"}))
                 },
                 Ok(request)if request.method=="host_ensure"&&request.config.is_some()&&request.rebind.is_none()&&request.recovery.is_none()=>{
                     let (clients,generations)=self.client_snapshot()?;
@@ -464,18 +482,49 @@ impl Runtime {
             let request=ClientRequest::parse(frame.request)?;
             let client=&session.client;
             match request{
-                ClientRequest::Delivery{mode,options}=>self.notifications.control(client,options.as_ref(),&mode).await,
+                ClientRequest::Delivery{mode,options}=>{
+                    let mut value=self.notifications.control(client,options.as_ref(),&mode).await?;
+                    value["actor_id"]=json!(client.actor_id());value["origin"]=json!(client.origin());
+                    if mode=="status" {
+                        let hosts=self.hosts.lock().await.statuses();
+                        if let Some(observations)=value["observations"].as_array_mut(){for observed in observations {
+                            self.project_delivery(&session,observed,&hosts);
+                        }}
+                        if let Some(destinations)=value["destinations"].as_array(){
+                            let projected=destinations.iter().map(|destination|{
+                                let mut destination=destination.clone();
+                                let current=value["observations"].as_array().into_iter().flatten().filter(|v|crate::communication_notifications::destination(&serde_json::from_value::<WatchOptions>(v["binding"].clone()).expect("validated watch"))==destination["destination_digest"].as_str().unwrap_or_default())
+                                    .map(|v|&v["current_delivery"]).min_by_key(|v|if v["state"]=="READY"{2}else if v["state"]=="BLOCKED"{0}else{1});
+                                if let Some(current)=current{crate::delivery_health::annotate_notification(&mut destination,current);}
+                                destination
+                            }).collect::<Vec<_>>();value["destinations"]=json!(projected);
+                        }
+                    }
+                    Ok(value)
+                },
                 ClientRequest::NotificationPoll{options,wait_ms}=>{
+                    if options.host_destination.is_some(){return Err(local("CLAUDE_CHANNEL_SOURCE_ALREADY_BOUND_TO_ANOTHER_HOST"));}
                     let wake=self.notifications.wait_poll(client,&options,wait_ms).await?;
+                    self.notifications.note_channel(&crate::communication_notifications::owner(client,&options))?;
                     Ok(match wake{Some((_,wake))=>json!({"state":"NOTIFICATION_DUE","batch":wake.batch,"revision":wake.revision,"attempt":wake.attempt,"self_test":wake.self_test}),None=>json!({"state":"WAITING_NATIVE_INBOX"})})
                 },
                 ClientRequest::NotificationValidate{batch,revision}=>Ok(json!({"allowed":self.notifications.validate(client,&batch,revision).await?})),
-                ClientRequest::NotificationObserve{batch}=>self.notifications.observe(client,&batch).await,
+                ClientRequest::NotificationObserve{batch}=>{
+                    let mut value=self.notifications.observe(client,&batch).await?;
+                    let options:WatchOptions=serde_json::from_value(value["binding"].clone()).map_err(|_|local("NOTIFICATION_BINDING_CHANGED"))?;
+                    let receiver=client.inbox_metadata(&options).await?;
+                    let mut observation=json!({"binding":options,"receiver":receiver,"notification":value});
+                    self.project_delivery(&session,&mut observation,&self.hosts.lock().await.statuses());
+                    value=observation["notification"].take();Ok(value)
+                },
                 ClientRequest::NotificationRead{batch,view,options,after,cursor,limit,max_bytes}=>self.notifications.read(client,&batch,&view,options.as_ref(),after,cursor.as_deref(),limit,max_bytes).await,
                 request @ (ClientRequest::Inbox{..}|ClientRequest::Watch{..}|ClientRequest::WaitInbox{..})=>{
                     let options=match &request{ClientRequest::Inbox{options,..}|ClientRequest::Watch{options}|ClientRequest::WaitInbox{options,..}=>options.clone(),_=>unreachable!()};
                     let mut value=crate::participant_client_tools::call(client,&session.watches,request).await?;
-                    value["notification_delivery"]=self.notifications.store.status(&crate::communication_notifications::owner(client,&options))?;Ok(value)
+                    value["notification_delivery"]=self.notifications.store.status(&crate::communication_notifications::owner(client,&options))?;
+                    let mut observation=json!({"binding":options,"receiver":value,"notification":value["notification_delivery"]});
+                    self.project_delivery(&session,&mut observation,&self.hosts.lock().await.statuses());
+                    value=observation["receiver"].take();value["current_delivery"]=observation["current_delivery"].take();value["notification_delivery"]=observation["notification"].take();Ok(value)
                 },
                 ClientRequest::Derive{name,capability,expected_capability}=>{
                     let runtime=self.clone();let parent=session.clone();

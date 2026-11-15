@@ -199,6 +199,7 @@ pub(crate) struct CodexFixture {
     pub current_turn: Arc<Mutex<String>>,
     pub status_override: Arc<Mutex<Option<String>>>,
     pub stall_health: Arc<AtomicBool>,
+    pub rpc_error: Arc<Mutex<Option<(String,Value)>>>,
     stop: Arc<AtomicBool>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
@@ -239,6 +240,7 @@ impl CodexFixture {
         let actual_turn = current_turn.clone();
         let status_override=Arc::new(Mutex::new(None::<String>));let override_status=status_override.clone();
         let stall_health=Arc::new(AtomicBool::new(false));let stall=stall_health.clone();
+        let rpc_error=Arc::new(Mutex::new(None::<(String,Value)>));let rejected=rpc_error.clone();
         let stop = Arc::new(AtomicBool::new(false));
         let done = stop.clone();
         let thread = std::thread::spawn(move || {
@@ -267,6 +269,9 @@ impl CodexFixture {
                     log.lock().unwrap().push(value.clone());
                     let Some(id) = value.get("id") else { continue };
                     let method = value["method"].as_str().unwrap();
+                    if let Some((selected,error))=rejected.lock().unwrap().clone(){
+                        if selected==method {let _=ws.send(Message::Text(json!({"id":id,"error":error}).to_string().into()));continue;}
+                    }
                     let result = match method {
                         "initialize" => json!({"userAgent":"synthetic-protocol-fixture"}),
                         "thread/loaded/list"=>json!({"data":["existing-thread"],"nextCursor":null}),
@@ -342,6 +347,7 @@ impl CodexFixture {
             current_turn,
             status_override,
             stall_health,
+            rpc_error,
             stop,
             thread: Some(thread),
         }
@@ -762,4 +768,35 @@ fn slow_partial_websocket_handshake_cannot_reset_the_operation_budget(){
     assert!(result.is_err());assert!(started.elapsed()<Duration::from_secs(2));
     assert_eq!(budget.snapshot()["failure_phase"],"HANDSHAKE");
     server.join().unwrap();
+}
+
+#[test]
+fn codex_writer_conflict_retains_session_and_stops_repeated_resume() {
+    let fixture=CodexFixture::start();fixture.emit_events.store(false,Ordering::SeqCst);
+    let runtime=tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build().unwrap();
+    let mut host=Host::open(fixture.config(),runtime.handle().clone()).unwrap();let destination=host.destination.clone();
+    *fixture.status_override.lock().unwrap()=Some("notLoaded".into());
+    *fixture.rpc_error.lock().unwrap()=Some(("thread/resume".into(),json!({"code":-32600,"message":"session has an active writer SECRET_SENTINEL"})));
+    assert_eq!(host.health(&json!({})).unwrap_err(),"HOST_SESSION_OWNERSHIP_CONFLICT");
+    for _ in 0..4{assert_eq!(host.health(&json!({})).unwrap_err(),"HOST_SESSION_OWNERSHIP_CONFLICT");}
+    assert_eq!(fixture.calls().iter().filter(|c|c["method"]=="thread/resume").count(),1);
+    let diagnostic=host.progress.snapshot();assert_eq!(diagnostic["failure_phase"],"SESSION_RESUME");assert!(!diagnostic.to_string().contains("SECRET_SENTINEL"));
+    drop(host);
+    assert!(matches!(Host::open_recovery(fixture.config(),runtime.handle().clone(),Budget::new(Duration::from_secs(10)),false),Err("HOST_SESSION_OWNERSHIP_CONFLICT")));
+    assert_eq!(fixture.calls().iter().filter(|c|c["method"]=="thread/resume").count(),1);
+    *fixture.status_override.lock().unwrap()=None;*fixture.rpc_error.lock().unwrap()=None;
+    let mut recovered=Host::open_recovery(fixture.config(),runtime.handle().clone(),Budget::new(Duration::from_secs(10)),false).unwrap();
+    assert_eq!(recovered.destination,destination);assert_eq!(recovered.health(&json!({})).unwrap()["ready"],true);
+    assert!(!fixture.calls().iter().any(|c|matches!(c["method"].as_str(),Some("turn/start"|"turn/steer"|"thread/start"|"turn/interrupt"))));
+}
+#[test]
+fn codex_unsupported_metadata_api_is_diagnosed_without_input() {
+    let fixture=CodexFixture::start();fixture.emit_events.store(false,Ordering::SeqCst);
+    *fixture.rpc_error.lock().unwrap()=Some(("thread/read".into(),json!({"code":-32601,"message":"SECRET_METHOD_DETAILS"})));
+    let runtime=tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build().unwrap();
+    let progress=Budget::new(Duration::from_secs(10));
+    assert!(matches!(Host::open_progress(fixture.config(),runtime.handle().clone(),progress.clone()),Err("HOST_API_UNSUPPORTED")));
+    assert_eq!(progress.snapshot()["failure_phase"],"SESSION_READ");assert_eq!(progress.snapshot()["rpc_error_code"],-32601);
+    assert!(!progress.snapshot().to_string().contains("SECRET_METHOD_DETAILS"));
+    assert!(!fixture.calls().iter().any(|c|c["method"]=="thread/resume"));
 }

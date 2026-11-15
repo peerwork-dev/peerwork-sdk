@@ -107,6 +107,7 @@ pub(crate) struct RunningHost {
     adapter:SharedAdapter,
     pub status: Arc<Mutex<Value>>,
     pub progress: crate::communication_host::operation::Budget,
+    observed_at: Arc<Mutex<Option<std::time::Instant>>>,
     pub task: tokio::task::JoinHandle<()>,
     pub sources: Arc<Mutex<Vec<(ParticipantClient, WatchOptions)>>>,
     pub changed: Arc<tokio::sync::Notify>,
@@ -114,7 +115,31 @@ pub(crate) struct RunningHost {
     drain_requested: Arc<Mutex<std::collections::BTreeSet<String>>>,
     drained: Arc<Mutex<std::collections::BTreeSet<String>>>,
 }
+fn observed_snapshot(mut value:Value,at:Option<std::time::Instant>,now:std::time::Instant)->Value {
+    if value["host_observation"].is_object(){
+        value["host_observation"]["observation_age_ms"]=at.map(|at|now.saturating_duration_since(at).as_millis().min(u64::MAX as u128) as u64)
+            .map(|age|json!(age.saturating_add(value["host_observation"]["observation_age_ms"].as_u64().unwrap_or(0)))).unwrap_or(Value::Null);
+    }
+    value
+}
+#[cfg(test)] mod observation_tests {
+    use super::*;
+    #[test] fn cached_health_ages_without_rejuvenating_or_double_counting_provider_age(){
+        let start=std::time::Instant::now();let raw=json!({"host_observation":{"ready":true,"observation_age_ms":12,"coordinator_age_ms":8}});
+        let first=observed_snapshot(raw.clone(),Some(start),start+Duration::from_millis(20));
+        assert_eq!(first["host_observation"]["observation_age_ms"],32);assert_eq!(first["host_observation"]["coordinator_age_ms"],8);
+        let later=observed_snapshot(raw,Some(start),start+Duration::from_secs(11));assert_eq!(later["host_observation"]["observation_age_ms"],11012);
+        assert_eq!(observed_snapshot(json!({"host_observation":{"ready":true}}),Some(start),start)["host_observation"]["observation_age_ms"],0);
+        assert!(observed_snapshot(json!({"host_observation":{"ready":true}}),None,start)["host_observation"]["observation_age_ms"].is_null());
+    }
+}
 impl RunningHost {
+    pub(crate) fn snapshot(&self)->Value {
+        let at=self.observed_at.lock().unwrap();
+        let value=self.status.lock().map(|v|v.clone()).unwrap_or_else(|_|json!({"state":"UNKNOWN"}));
+        observed_snapshot(value,*at,std::time::Instant::now())
+    }
+
     pub(crate) fn borrowed_adapter(&self)->Result<Option<Arc<Mutex<Host>>>> {
         Ok(self.adapter.lock().map_err(|_|error("HOST_STATE_INVALID"))?.upgrade())
     }
@@ -262,16 +287,17 @@ pub(crate) fn start(
         let path = directory.join(format!("host-{key}.state"));
         let progress=crate::communication_host::operation::Budget::new(Duration::from_secs(10));
         let live_progress=progress.clone();
+        let observed_at=Arc::new(Mutex::new(None));let clock=observed_at.clone();
         let task = tokio::spawn(async move {
             let mut attempts=0u32;
             loop {
                 if stop.is_cancelled(){break;}
-                let child=tokio::spawn(run(config.clone(),selected_sources.clone(),path.clone(),status.clone(),stop.clone(),signal.clone(),requested.clone(),acknowledged.clone(),published_adapter.clone(),live_progress.clone()));
+                let child=tokio::spawn(run(config.clone(),selected_sources.clone(),path.clone(),status.clone(),stop.clone(),signal.clone(),requested.clone(),acknowledged.clone(),published_adapter.clone(),live_progress.clone(),clock.clone()));
                 let result=child.await;
                 if stop.is_cancelled(){break;}
                 let code=match result {Ok(Err(e))=>e.code,Ok(Ok(()))=>"HOST_DISPATCHER_STOPPED".into(),Err(_)=>"HOST_DISPATCHER_TASK_FAILED".into()};
                 attempts=attempts.saturating_add(1);
-                let permanent=matches!(code.as_str(),"HOST_STATE_INVALID"|"HOST_BINDING_CHANGED_REQUIRES_REVIEW"|"HOST_SUBSCRIPTION_CONFLICT");
+                let permanent=crate::host_recovery_policy::policy(&code)==crate::host_recovery_policy::Policy::Change;
                 let delay=crate::communication_host::operation::retry_delay(attempts,&path.to_string_lossy());
                 set(&status,json!({"state":if permanent{"BLOCKED"}else{"RECONNECTING"},"code":code,"restart_attempt":attempts,"retry_after_ms":if permanent{Value::Null}else{json!(delay.as_millis() as u64)},"model_response":"NOT_ATTESTED"}));
                 if permanent {tokio::select!{_=stop.cancelled()=>break,_=signal.notified()=>{}}}
@@ -282,6 +308,7 @@ pub(crate) fn start(
             adapter,
             status: state,
             progress,
+            observed_at,
             task,
             sources,
             changed,
@@ -380,6 +407,10 @@ pub(crate) fn host_outcome(
         Err(
             "HOST_NOT_READY"
             | "HOST_PREFLIGHT_FAILED"
+            | "HOST_SESSION_OWNERSHIP_CONFLICT"
+            | "HOST_API_UNSUPPORTED"
+            | "HOST_AUTHENTICATION_FAILED"
+            | "HOST_ACCESS_DENIED"
             | "HOST_PREFLIGHT_DEADLINE"
             | "HOST_LOCK_TIMEOUT"
             | "HOST_INPUT_TOO_LARGE"
@@ -494,6 +525,7 @@ async fn run(
     drained: Arc<Mutex<std::collections::BTreeSet<String>>>,
     published_adapter:SharedAdapter,
     progress:crate::communication_host::operation::Budget,
+    observed_clock:Arc<Mutex<Option<std::time::Instant>>>,
 ) -> Result<()> {
     let launch_fence = path.with_extension("agy-launch.state");
     let owner = SecureStateStore::open(&path).map_err(|_| error("HOST_STATE_ALREADY_OWNED"))?;
@@ -515,7 +547,7 @@ async fn run(
         &mut adapter,
         changed,
         launch_fence,
-        drain_requested,drained,published_adapter,progress,
+        drain_requested,drained,published_adapter,progress,observed_clock,
     )
     .await;
     let closed = close_adapter(&mut adapter).await;
@@ -560,6 +592,7 @@ async fn run_owned(
     drained: Arc<Mutex<std::collections::BTreeSet<String>>>,
     published_adapter:SharedAdapter,
     progress:crate::communication_host::operation::Budget,
+    observed_clock:Arc<Mutex<Option<std::time::Instant>>>,
 ) -> Result<()> {
     let notification_hub=crate::communication_notifications::Hub::open(launch_fence.parent().ok_or_else(||error("HOST_STATE_INVALID"))?)?;
     let handle = tokio::runtime::Handle::current();
@@ -568,6 +601,7 @@ async fn run_owned(
     let mut next = 0usize;
     let mut next_health = std::time::Instant::now();
     let mut open_attempts=0u32;
+    let mut resume_allowed=true;
     let mut current_binding:Option<HostBinding>=None;
     let mut control:Option<crate::communication_host::RetirementControl>=None;
     let mut next_retire = std::time::Instant::now();
@@ -619,15 +653,17 @@ async fn run_owned(
             }
             let executor = handle.clone();
             let operation_progress=progress.clone();
-            let opened = tokio::task::spawn_blocking(move || Host::open_progress(options, executor,operation_progress))
+            let opened = tokio::task::spawn_blocking(move || Host::open_recovery(options, executor,operation_progress,resume_allowed))
                 .await
                 .map_err(|_| error("HOST_TASK_FAILED"))?;
             let host = match opened {
                 Ok(host) => host,
                 Err(code) => {
                     open_attempts=open_attempts.saturating_add(1);
-                    let delay=crate::communication_host::operation::retry_delay(open_attempts,&launch_fence.to_string_lossy());
-                    set(&status,json!({"state":"BLOCKED","code":code,"restart_attempt":open_attempts,"retry_after_ms":delay.as_millis() as u64,"model_response":"NOT_ATTESTED"}));
+                    if code=="HOST_SESSION_OWNERSHIP_CONFLICT"{resume_allowed=false;}
+                    let policy=crate::host_recovery_policy::diagnostic(code);
+                    let delay=crate::host_recovery_policy::delay(code,open_attempts,&launch_fence.to_string_lossy());
+                    set(&status,json!({"state":"BLOCKED","code":code,"recovery":policy,"restart_attempt":open_attempts,"retry_after_ms":delay.as_millis() as u64,"model_response":"NOT_ATTESTED"}));
                     tokio::select! {_=cancel.cancelled()=>break,_=changed.notified()=>{},_=tokio::time::sleep(delay)=>{}}
                     continue;
                 }
@@ -779,12 +815,15 @@ async fn run_owned(
                 .clone()
                 .unwrap_or_else(|code| json!({"mode":mode,"ready":false,"execution_state":"UNKNOWN","reason":code}));
             if let Err(code)=&observed {if let Ok(mut current)=status.lock(){current["state"]=json!("RECONNECTING");current["code"]=json!(code);current["diagnostic"]=progress.snapshot();}}
+            {let mut observation_clock=observed_clock.lock().unwrap();
+            *observation_clock=Some(observed_at);
             if let Ok(mut current)=status.lock(){
                 current["host_observation"]=value.clone();
-                if value["ready"]!=true {
+                if value["ready"]!=true && value["can_attempt"]!=true {
                     current["state"]=json!("BLOCKED");
                     current["code"]=value.get("reason").cloned().unwrap_or_else(||json!(match value["execution_state"].as_str(){Some("WAITING_APPROVAL")=>"HOST_WAITING_APPROVAL",Some("BUSY")=>"HOST_BUSY",_=>"HOST_NOT_READY"}));
                 }else if current["code"]!="HOST_ACCEPTANCE_UNRESOLVED" {current["state"]=json!("HOST_ATTACHED");current.as_object_mut().unwrap().remove("code");}
+            }
             }
             let age=value["observation_age_ms"].as_u64().unwrap_or(0).saturating_add(value["coordinator_age_ms"].as_u64().unwrap_or(0)).min(60000);
             let source_observed_at=observed_at.checked_sub(Duration::from_millis(age)).unwrap_or(observed_at);
@@ -821,6 +860,7 @@ async fn run_owned(
                 }
             }
             next_health = std::time::Instant::now() + Duration::from_secs(3);
+            if observed.as_ref().err()==Some(&"HOST_SESSION_OWNERSHIP_CONFLICT"){resume_allowed=false;}
             if observed.is_err() {
                 close_adapter(adapter).await?;
                 continue;
@@ -919,6 +959,7 @@ mod tests {
                 Arc::new(Mutex::new(Default::default())),
                 Default::default(),
                 crate::communication_host::operation::Budget::new(Duration::from_secs(10)),
+                Arc::new(Mutex::new(None)),
             )
             .await;
             stopping.await.unwrap();

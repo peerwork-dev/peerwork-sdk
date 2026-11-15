@@ -275,12 +275,14 @@ where R:AsyncBufRead+Send+Unpin+'static,W:AsyncWrite+Unpin {
                         let arguments=params.get("arguments").cloned().unwrap_or(json!({}));
                         let request=match AgentRequest::parse(name.unwrap(),arguments.clone()){Ok(v)=>v,Err(_)=>{write(&mut writer,argument_error(id,name.unwrap(),&arguments)).await?;continue;}};
                         let context=claude&&matches!(request,AgentRequest::Context);
+                        let delivery=claude&&matches!(&request,AgentRequest::Delivery{mode,..} if mode=="status");
                         let consume=claude&&matches!(request,AgentRequest::Consume{..});
                         let channel_state=channel_state.clone();
                         let original=arguments["operation_id"].as_str().map(str::to_owned);let tools=tools.clone();let task_key=id_key.clone();
                         let handle=jobs.spawn(async move{
                             let (out,is_error)=match tools.call(request).await{
-                                Ok(mut value)=>{if context{value["host_channel"]=channel_state.status();crate::agent_delivery_status::refresh(&mut value);}let failed=matches!(value["state"].as_str(),Some("FAILED"|"REJECTED_NO_EFFECT"|"REJECTED"));if consume&&!failed{channel_state.consumed();}(value,failed)},
+                                Ok(mut value)=>{if context{value["host_channel"]=channel_state.status();crate::agent_delivery_status::refresh(&mut value);}
+                                    if delivery{crate::agent_delivery_status::refresh_delivery(&mut value,&channel_state.status());}let failed=matches!(value["state"].as_str(),Some("FAILED"|"REJECTED_NO_EFFECT"|"REJECTED"));if consume&&!failed{channel_state.consumed();}(value,failed)},
                                 Err(mut e)=>{if e.operation_id.is_none(){e.operation_id=original;}(json!({"error":e}),true)},
                             };
                             let result=json!({"content":[{"type":"text","text":out.to_string()}],"structuredContent":out,"isError":is_error});

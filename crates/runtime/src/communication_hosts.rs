@@ -197,11 +197,7 @@ impl Hosts {
             .jobs
             .iter()
             .map(|(key, job)| {
-                let mut value = job
-                    .status
-                    .lock()
-                    .map(|v| v.clone())
-                    .unwrap_or_else(|_| json!({"state":"UNKNOWN"}));
+                let mut value = job.snapshot();
                 value["diagnostic"]=job.progress.snapshot();
                 value["dispatcher_running"]=json!(!job.task.is_finished());
                 if job.task.is_finished(){value["state"]=json!(if job.cancel.is_cancelled(){"STOPPED"}else{"FAILED"});value["code"]=json!("HOST_DISPATCHER_TERMINATED");}

@@ -56,6 +56,7 @@ pub(crate) struct Hub {
     inflight: Mutex<BTreeMap<String, usize>>,
     remotes: Mutex<BTreeMap<String, Remote>>,
     local_destinations: Mutex<std::collections::BTreeSet<String>>,
+    channel_observations: Mutex<BTreeMap<String,std::time::Instant>>,
     pub(crate) changed: tokio::sync::Notify,
 }
 struct Remote {
@@ -82,6 +83,7 @@ impl Hub {
             inflight: Mutex::new(BTreeMap::new()),
             remotes: Mutex::new(BTreeMap::new()),
             local_destinations: Default::default(),
+            channel_observations: Default::default(),
             changed: Default::default(),
         });
         hubs.insert(path, Arc::downgrade(&hub));
@@ -145,6 +147,15 @@ impl Hub {
             );
         }
         Ok(())
+    }
+    pub(crate) fn channel_observation(&self, key:&str)->Value {
+        self.channel_observations.lock().ok().and_then(|items|items.get(key).map(|at|json!({"state":"POLLING","observation_age_ms":at.elapsed().as_millis().min(u64::MAX as u128) as u64})))
+            .unwrap_or_else(||json!({"state":"UNKNOWN","reason":"CHANNEL_NOT_OBSERVED"}))
+    }
+    pub(crate) fn note_channel(&self, key:&str)->Result<()> {
+        let mut items=self.channel_observations.lock().map_err(|_|error("NOTIFICATION_STATE_FAILED"))?;
+        if items.len()>=128&&!items.contains_key(key){return Err(error("NOTIFICATION_HOST_LIMIT"));}
+        items.insert(key.into(),std::time::Instant::now());Ok(())
     }
     pub(crate) fn register_local(&self, key: &str) -> Result<()> {
         let mut destinations = self
@@ -419,6 +430,7 @@ impl Hub {
             match self.store.batch(&key, batch) {
                 Ok(_) => {
                     let mut result = self.store.observed(&key, batch)?;
+                    result["binding"]=json!(options);
                     self.changed.notify_waiters();
                     result["enforcement"] = match self.sync_remote(&key, None).await {
                         Ok(v) => v,
