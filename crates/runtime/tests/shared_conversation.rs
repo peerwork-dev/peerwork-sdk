@@ -290,11 +290,11 @@ async fn installed_delivery_status_follows_verified_writer_conflict_and_same_ses
         // only those synthetic fixture events; never assume the next item is it.
         for entry in entries{
             assert_eq!(entry["message"]["assurance"],"SERVICE_ATTESTED_EVENT","unexpected fixture input: {entry}");
-            request+=1;mcp.tool(request,"peerwork_consume",json!({"scope":"team","item":entry["item"]}));
+            request+=1;mcp.tool(request,"peerwork_consume",json!({"scope":"team","items":[entry["item"]]}));
         }
     };
     request+=1;let reply=mcp.tool(request,"peerwork_reply",json!({"scope":"team","item":item,"operation_id":"host-transition-reply","text":"SIGNED-HOST-TRANSITION-REPLY","wait_ms":5000}));assert_eq!(reply["state"],"ACCEPTED");
-    request+=1;mcp.tool(request,"peerwork_consume",json!({"scope":"team","item":item}));mcp.finish();
+    request+=1;mcp.tool(request,"peerwork_consume",json!({"scope":"team","items":[item]}));mcp.finish();
     let stop=Command::new(&cli).args(["runtime","admin",ready["admin_endpoint"].as_str().unwrap(),"stop"]).output().unwrap();assert!(stop.status.success());runtime.finish();
     eprintln!("EXACT_INSTALLED_VERIFIED_CONFLICT_CURRENT_STATUS_SAME_SESSION_REPLY_CONSUME_PASS");
     owner.close().await.unwrap();
