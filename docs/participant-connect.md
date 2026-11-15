@@ -439,3 +439,17 @@ capability; native0.3.17 does not implement shared-room history or group message
 
 See the [collaboration and authorization contract](collaboration-authorization.md)
 for partial setup availability, exact-instance addressing and layer-specific diagnostics.
+
+## Current delivery after connection
+
+In native SDK0.3.34, `peerwork_context`, delivery status and Connect use the same
+current receiver and selected transport facts. A saved successful self-test is
+historical evidence; it cannot override a current host blocker or stale health.
+`control_state: RUNNING` means notifications are enabled, while the current
+delivery state reports `READY`, `BLOCKED`, `UNKNOWN` or `PAUSED` separately.
+
+An active-writer conflict preserves the original inbox and session. Repair the
+selected host attachment indicated by the diagnostic; do not create another
+identity, remove the writer lock or retry a different conversation. The runtime
+continues observing the original owner and recovers when it becomes usable.
+An owned update completing does not by itself verify automatic receiving.

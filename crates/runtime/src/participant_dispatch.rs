@@ -660,7 +660,7 @@ async fn run_owned(
                 Ok(host) => host,
                 Err(code) => {
                     open_attempts=open_attempts.saturating_add(1);
-                    if code=="HOST_SESSION_OWNERSHIP_CONFLICT"{resume_allowed=false;}
+                    if code=="HOST_SESSION_OWNERSHIP_CONFLICT"&&resume_allowed{resume_allowed=false;continue;}
                     let policy=crate::host_recovery_policy::diagnostic(code);
                     let delay=crate::host_recovery_policy::delay(code,open_attempts,&launch_fence.to_string_lossy());
                     set(&status,json!({"state":"BLOCKED","code":code,"recovery":policy,"restart_attempt":open_attempts,"retry_after_ms":delay.as_millis() as u64,"model_response":"NOT_ATTESTED"}));
@@ -861,7 +861,7 @@ async fn run_owned(
             }
             next_health = std::time::Instant::now() + Duration::from_secs(3);
             if observed.as_ref().err()==Some(&"HOST_SESSION_OWNERSHIP_CONFLICT"){resume_allowed=false;}
-            if observed.is_err() {
+            if observed.is_err() && observed.as_ref().err()!=Some(&"HOST_SESSION_OWNERSHIP_CONFLICT") {
                 close_adapter(adapter).await?;
                 continue;
             }

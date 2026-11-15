@@ -1,5 +1,36 @@
 # Host bridge recovery
 
+## Native0.3.34 current host health
+
+`current-host-delivery-health-v1` gives Context, Delivery status and Connect the
+same interpretation of current receiving and selected-transport observations.
+`state` describes current readiness; `control_state` retains scheduling intent.
+`last_verified_at` and `historical_verification` describe a previous bounded local
+inbox read, not permanent availability or a model response. A fresh required host
+blocker overrides that history. Cached observation age includes local residence.
+Claude Channel polling and AGY App queued input retain their own capability
+contracts; neither requires a fictitious Codex host or attests model processing.
+
+Codex's selected endpoint must actually own the pinned conversation. A stored
+thread ID alone is insufficient. If that host rejects resume because another
+writer holds the session, the adapter reports `HOST_SESSION_OWNERSHIP_CONFLICT`.
+It observes the original owner's metadata without repeating resume or creating
+another conversation; normal delivery resumes when that same owner loads the
+pinned session. Inbox custody and business tools remain available meanwhile.
+Use the returned `next_action` to correct a mismatched host. Never remove a
+writer lock, copy an identity or kill the user's session to make PUSH look ready.
+Direct CLI launch alone does not establish incompatibility: use the selected
+host version and supported shared-daemon/remote/standalone mode.
+
+RPC/handshake diagnostics distinguish ownership, access/authentication,
+unsupported API, binding and temporary transport failures, retaining safe codes
+and phases without exposing arbitrary host errors. Claude scope failures use the
+same classified backoff. Changes of receiving binding, generation or destination
+must revalidate the selected projection; notification writes do not prove wake.
+Update affected original runtimes and independent bridges when present. The
+owned updater requires the new capability; external hosts keep their existing
+supervisor and state. A completed update is distinct from restored delivery.
+
 ## Native 0.3.31 policy
 
 Compact delivery replaces full-body reminders with

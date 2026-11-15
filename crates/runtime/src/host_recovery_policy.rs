@@ -63,6 +63,8 @@ pub(crate) fn rpc_error(value: &Value) -> &'static str {
         assert_eq!(policy("HOST_SESSION_OWNERSHIP_CONFLICT"),Policy::Observe);
         assert_eq!(policy("HOST_API_UNSUPPORTED"),Policy::Change);
         assert_eq!(policy("HOST_OPERATION_TIMEOUT"),Policy::Retry);
+        assert_eq!(delay("CLAUDE_CHANNEL_SOURCE_ALREADY_BOUND_TO_ANOTHER_HOST",1,"selected"),Duration::from_secs(60));
+        assert_eq!(delay("CLAUDE_CHANNEL_SOURCE_ALREADY_BOUND_TO_ANOTHER_HOST",50,"selected"),Duration::from_secs(60));
         assert!(!diagnostic("HOST_API_UNSUPPORTED").to_string().contains("SECRET"));
     }
 }

@@ -751,7 +751,7 @@ fn provider_loop(config:Value,executor:tokio::runtime::Handle,progress:crate::co
                 let _=notice_fence.finish(owner,batch,attempt,&value);
             }
         }
-        if let Err(code)=&result{if *code=="HOST_SESSION_OWNERSHIP_CONFLICT"{resume_allowed=false;}progress.failure(code,None);drop(host.take());}
+        if let Err(code)=&result{if *code=="HOST_SESSION_OWNERSHIP_CONFLICT"{resume_allowed=false;}progress.failure(code,None);if *code!="HOST_SESSION_OWNERSHIP_CONFLICT"{drop(host.take());}}
         let _=request.reply.send(result);
     }
     drop(host);Ok(())

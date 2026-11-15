@@ -778,12 +778,15 @@ fn codex_writer_conflict_retains_session_and_stops_repeated_resume() {
     *fixture.status_override.lock().unwrap()=Some("notLoaded".into());
     *fixture.rpc_error.lock().unwrap()=Some(("thread/resume".into(),json!({"code":-32600,"message":"session has an active writer SECRET_SENTINEL"})));
     assert_eq!(host.health(&json!({})).unwrap_err(),"HOST_SESSION_OWNERSHIP_CONFLICT");
+    assert_eq!(host.progress.snapshot()["failure_phase"],"SESSION_RESUME");
     for _ in 0..4{assert_eq!(host.health(&json!({})).unwrap_err(),"HOST_SESSION_OWNERSHIP_CONFLICT");}
     assert_eq!(fixture.calls().iter().filter(|c|c["method"]=="thread/resume").count(),1);
-    let diagnostic=host.progress.snapshot();assert_eq!(diagnostic["failure_phase"],"SESSION_RESUME");assert!(!diagnostic.to_string().contains("SECRET_SENTINEL"));
+    let diagnostic=host.progress.snapshot();assert_eq!(diagnostic["failure_phase"],"SESSION_READ");assert!(!diagnostic.to_string().contains("SECRET_SENTINEL"));
     drop(host);
-    assert!(matches!(Host::open_recovery(fixture.config(),runtime.handle().clone(),Budget::new(Duration::from_secs(10)),false),Err("HOST_SESSION_OWNERSHIP_CONFLICT")));
+    let mut observer=Host::open_recovery(fixture.config(),runtime.handle().clone(),Budget::new(Duration::from_secs(10)),false).unwrap();
+    assert_eq!(observer.health(&json!({})).unwrap_err(),"HOST_SESSION_OWNERSHIP_CONFLICT");
     assert_eq!(fixture.calls().iter().filter(|c|c["method"]=="thread/resume").count(),1);
+    drop(observer);
     *fixture.status_override.lock().unwrap()=None;*fixture.rpc_error.lock().unwrap()=None;
     let mut recovered=Host::open_recovery(fixture.config(),runtime.handle().clone(),Budget::new(Duration::from_secs(10)),false).unwrap();
     assert_eq!(recovered.destination,destination);assert_eq!(recovered.health(&json!({})).unwrap()["ready"],true);
@@ -799,4 +802,13 @@ fn codex_unsupported_metadata_api_is_diagnosed_without_input() {
     assert_eq!(progress.snapshot()["failure_phase"],"SESSION_READ");assert_eq!(progress.snapshot()["rpc_error_code"],-32601);
     assert!(!progress.snapshot().to_string().contains("SECRET_METHOD_DETAILS"));
     assert!(!fixture.calls().iter().any(|c|c["method"]=="thread/resume"));
+}
+
+#[test]
+fn codex_handshake_access_denial_is_not_a_transient_stream_failure(){
+    let listener=std::net::TcpListener::bind("127.0.0.1:0").unwrap();let address=listener.local_addr().unwrap();
+    let server=std::thread::spawn(move||{let(mut stream,_)=listener.accept().unwrap();let _=stream.write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");});
+    let runtime=tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build().unwrap();
+    assert!(matches!(Host::open(json!({"kind":"codex","endpoint":format!("ws://{address}"),"thread_id":"owned-thread"}),runtime.handle().clone()),Err("HOST_AUTHENTICATION_FAILED")));
+    server.join().unwrap();
 }

@@ -443,6 +443,15 @@ pub(super) fn initial_host_available(directory:&Path,base:&[HostConfig],target:&
 mod initial_selection_tests {
     use super::*;
     #[test]
+    fn changing_control_socket_cannot_create_an_alias_dispatcher() {
+        let watch=WatchOptions{workspace_id:"w".repeat(43),mailbox_id:"m".repeat(43),membership_id:"g".repeat(43),consumer_id:"inbox".into(),host_destination:None};
+        let original=HostConfig{name:"canonical".into(),adapter:json!({"kind":"codex","endpoint":"codex-proxy://local","thread_id":"selected","expected_session_id":"session","control_socket":"/synthetic/original.sock"}),subscriptions:vec![crate::participant_dispatch::HostSubscription{client:"peer".into(),client_generation:Some(7),watch}]};
+        let mut alias=original.clone();alias.name="alias".into();alias.adapter["control_socket"]=json!("/synthetic/other.sock");
+        let mut configs=vec![original.clone()];
+        assert_eq!(merge(&mut configs,alias).unwrap_err().code,"HOST_SELECTION_CONFLICT");
+        assert_eq!(configs.len(),1);assert_eq!(configs[0].adapter,original.adapter);
+    }
+    #[test]
     fn first_host_does_not_write_duplicate_base_physical_host_groups() {
         let root=crate::test_support::protected_test_dir();
         let watch=WatchOptions{workspace_id:"w".repeat(43),mailbox_id:"m".repeat(43),membership_id:"g".repeat(43),consumer_id:"inbox".into(),host_destination:None};

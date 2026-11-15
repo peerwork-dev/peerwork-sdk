@@ -500,6 +500,7 @@ impl Runtime {
                             }).collect::<Vec<_>>();value["destinations"]=json!(projected);
                         }
                     }
+                    if mode=="status"{crate::delivery_health::summarize(&mut value);}
                     Ok(value)
                 },
                 ClientRequest::NotificationPoll{options,wait_ms}=>{
@@ -524,7 +525,7 @@ impl Runtime {
                     value["notification_delivery"]=self.notifications.store.status(&crate::communication_notifications::owner(client,&options))?;
                     let mut observation=json!({"binding":options,"receiver":value,"notification":value["notification_delivery"]});
                     self.project_delivery(&session,&mut observation,&self.hosts.lock().await.statuses());
-                    value=observation["receiver"].take();value["current_delivery"]=observation["current_delivery"].take();value["notification_delivery"]=observation["notification"].take();Ok(value)
+                    value=observation["receiver"].take();value["current_delivery"]=observation["current_delivery"].take();value["transport"]=observation["transport"].take();value["transport_health"]=observation["transport_health"].take();value["notification_delivery"]=observation["notification"].take();Ok(value)
                 },
                 ClientRequest::Derive{name,capability,expected_capability}=>{
                     let runtime=self.clone();let parent=session.clone();

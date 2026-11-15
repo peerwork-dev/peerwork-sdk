@@ -6,7 +6,8 @@ pub(crate) fn evaluate(receiver: &Value, notification: &Value, transport: &str, 
     let linked=receiver["receiver_link_verified"]==true && receiver["state"]=="RECEIVER_LINK_VERIFIED" && receiver["verification_failure"].is_null();
     let body=&receiver["presence"];let keys=body["key_current"]==true && matches!(body["body_key"]["state"].as_str(),Some("READY"|"NOT_REQUIRED"));
     let automatic=transport!="NATIVE_INBOX";
-    let verified=notification["state"]=="RUNNING" && (notification["historical_verification"]["state"]=="VERIFIED" || notification["automatic_receiving"]=="VERIFIED");
+    let control=notification["control_state"].as_str().or_else(||notification["state"].as_str());
+    let verified=control==Some("RUNNING") && (notification["historical_verification"]["state"]=="VERIFIED" || notification["automatic_receiving"]=="VERIFIED");
     let age=health["observation_age_ms"].as_u64().map(|age|age.saturating_add(health["coordinator_age_ms"].as_u64().unwrap_or(0)));
     let fresh=age.is_some_and(|age|age<FRESH_MS);
     let host_code=health["code"].as_str().or_else(||health["reason"].as_str());
@@ -15,7 +16,7 @@ pub(crate) fn evaluate(receiver: &Value, notification: &Value, transport: &str, 
         fresh && !matches!(health["state"].as_str(),None|Some("UNKNOWN"|"BLOCKED"|"STARTING"|"STOPPED"))
     } else { fresh && (health["ready"]==true || health["can_attempt"]==true) };
     let (state,code)=if receiver["state"]=="LOCAL_STOPPED" {("STOPPED","RECEIVER_STOPPED")}
-        else if automatic && notification["state"]=="PAUSED" {("PAUSED","DELIVERY_PAUSED")}
+        else if automatic && control==Some("PAUSED") {("PAUSED","DELIVERY_PAUSED")}
         else if !receiver["verification_failure"].is_null() || receiver["state"]=="BLOCKED" {("BLOCKED",receiver["code"].as_str().unwrap_or("RECEIVER_NOT_VERIFIED"))}
         else if !linked {("UNKNOWN",receiver["code"].as_str().unwrap_or("RECEIVER_NOT_VERIFIED"))}
         else if !automatic {("READY","READY")}
@@ -81,6 +82,16 @@ pub(crate) fn selected_host(binding:&Value, hosts:&[Value], name:&str, generatio
 pub(crate) fn annotate_notification(value:&mut Value, current:&Value) {
     if !value.is_object(){return;}
     if value["historical_verification"].is_null(){value["historical_verification"]=json!({"state":if value["last_verified_at"].is_number(){"VERIFIED"}else{"UNCONFIRMED"},"at":value["last_verified_at"],"evidence":"BOUND_LOCAL_INBOX_READ"});}
+    if value["control_state"].is_null(){value["control_state"]=value["state"].clone();}
+    value["state"]=current["state"].clone();
     value["automatic_receiving"]=current["automatic_receiving"].clone();
     value["current_delivery"]=current.clone();
+}
+
+pub(crate) fn summarize(value:&mut Value){
+    if let Some(observations)=value["observations"].as_array(){
+        if let Some(current)=observations.iter().map(|v|&v["current_delivery"]).filter(|v|v.is_object()).min_by_key(|v|match v["state"].as_str(){Some("BLOCKED")=>0,Some("PAUSED"|"STOPPED")=>1,Some("UNKNOWN"|"VERIFYING")=>2,_=>3}).cloned(){
+            value["state"]=current["state"].clone();value["code"]=current["code"].clone();value["next_action"]=current["next_action"].clone();
+        }
+    }
 }

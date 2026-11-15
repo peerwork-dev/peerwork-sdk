@@ -56,7 +56,7 @@ fn refresh_at(context: &mut Value, now: i64) {
                 "observed_at_ms":observation.map(|v|&v["observed_at_ms"]),
                 "receiver":receiver,"channel":channel,"host":host,
                 "next_action":current["next_action"],"code":current["code"],"current_delivery":current,
-                "delivery_control":notification["state"],
+                "delivery_control":notification.get("control_state").unwrap_or(&notification["state"]),
                 "automatic_receiving":current["automatic_receiving"],
                 "last_verified_at":notification["last_verified_at"],
                 "model_response":"NOT_ATTESTED"}));
@@ -100,6 +100,7 @@ pub(crate) fn refresh_delivery(value:&mut Value, channel:&Value) {
             destination
         }).collect::<Vec<_>>());
     }
+    crate::delivery_health::summarize(value);
 }
 
 #[cfg(test)]
@@ -110,7 +111,8 @@ mod tests {
         json!({"actor_id":"a","origin":"https://example.invalid/","scopes":{"space":scope},"bindings":[scope],
             "receiving_binding":{"client_generation":2,"client_name":"original"},
             "delivery_observations":{"observations":[{"binding":scope,"observed_at_ms":1000,
-                "receiver":{"state":"RECEIVER_LINK_VERIFIED","receiver_link_verified":true,"presence":{"key_current":true}},
+                "receiver":{"state":"RECEIVER_LINK_VERIFIED","receiver_link_verified":true,"presence":{"key_current":true,"body_key":{"state":"READY"}}},
+                "transport":"MCP_STDIO_CHANNEL","transport_health":{"state":"POLLING","observation_age_ms":0},
                 "notification":{"state":"RUNNING","automatic_receiving":"VERIFIED"}}]},
             "onboarding":{"setups":[{"setup_id":"pending","actor_id":"a","origin":"https://example.invalid/",
                 "receiving_scopes":{"space":scope},"state":"PENDING","blocker":{"code":"ROLE_APPROVAL_REQUIRED"},
@@ -122,7 +124,7 @@ mod tests {
         let bound=binding(&value,&value["scopes"]["space"]);
         value["host_channel"]=json!({"notifications_written":8,"scopes":{"space":{"binding":bound,"state":"WAITING_READ","observation_age_ms":5}}});
         refresh_at(&mut value,1001);
-        assert_eq!(value["delivery_status"]["scopes"]["space"]["state"],"RECEIVING");
+        assert_eq!(value["delivery_status"]["scopes"]["space"]["state"],"READY");
         assert_eq!(value["delivery_status"]["scopes"]["space"]["transport"],"MCP_STDIO_CHANNEL");
         assert_eq!(value["delivery_status"]["setups"][0]["objectives_complete"],false);
         assert_eq!(value["delivery_status"]["setups"][0]["receiving_scope"],"MATCHED");

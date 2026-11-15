@@ -59,6 +59,12 @@ fn socket_error(error:tungstenite::Error)->&'static str {
         _=>"HOST_ACK_UNKNOWN",
     }
 }
+fn handshake_error<Role:tungstenite::handshake::HandshakeRole>(error:tungstenite::HandshakeError<Role>)->&'static str {
+    match error {
+        tungstenite::HandshakeError::Failure(tungstenite::Error::Http(response))=>match response.status().as_u16(){401|403=>"HOST_AUTHENTICATION_FAILED",404=>"HOST_ENDPOINT_INVALID",426=>"HOST_API_UNSUPPORTED",500..=599=>"HOST_UNAVAILABLE",_=>"HOST_WEBSOCKET_HANDSHAKE_FAILED"},
+        _=>"HOST_WEBSOCKET_HANDSHAKE_FAILED",
+    }
+}
 impl Socket {
     fn write(&mut self, value: Value) -> R<()> {
         let message = Message::Text(value.to_string().into());
@@ -130,7 +136,7 @@ impl Codex {
             request = "ws://localhost/".into_client_request().map_err(|_|"HOST_ENDPOINT_INVALID")?;
             let proxy=codex_proxy::Proxy::open(config,executor,budget.clone())?;
             socket=Socket::Proxy(tungstenite::client::client_with_config(request,proxy,Some(ws_config))
-                .map_err(|_|"HOST_WEBSOCKET_HANDSHAKE_FAILED")?.0);
+                .map_err(handshake_error)?.0);
         } else if let Some(file) = endpoint.strip_prefix("unix://") {
             #[cfg(unix)]
             {
@@ -153,7 +159,7 @@ impl Codex {
                 budget.phase("HANDSHAKE");
                 socket = Socket::Unix(
                     tungstenite::client::client_with_config(request, stream, Some(ws_config))
-                        .map_err(|_| "HOST_WEBSOCKET_HANDSHAKE_FAILED")?
+                        .map_err(handshake_error)?
                         .0,
                 );
             }
@@ -197,7 +203,7 @@ impl Codex {
             budget.phase("HANDSHAKE");
             socket = Socket::Tcp(
                 tungstenite::client_tls_with_config(request, stream, Some(ws_config), None)
-                    .map_err(|_| "HOST_WEBSOCKET_HANDSHAKE_FAILED")?
+                    .map_err(handshake_error)?
                     .0,
             );
         }
@@ -242,6 +248,9 @@ impl Codex {
         host.session = text(&current["thread"], "sessionId")
             .map_err(|_| "HOST_SESSION_BINDING_UNAVAILABLE")?.into();
         if current["thread"]["status"]["type"]=="notLoaded" {
+            // A prior active-writer rejection allows observing this exact
+            // owner's metadata, never repeatedly loading its stored rollout.
+            if !resume_allowed{return Ok(host);}
             host.resume_original()?;
         } else if !matches!(current["thread"]["status"]["type"].as_str(),Some("idle"|"active")) {
             return Err(if current["thread"]["status"]["type"]=="systemError"{"HOST_SESSION_ERROR"}else{"HOST_STATUS_UNSUPPORTED"});

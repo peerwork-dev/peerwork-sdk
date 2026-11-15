@@ -57,6 +57,13 @@ path only, without a business action, external test message or new model process
 it does not establish service-to-model delivery or a model reply. Already-written
 host input cannot be recalled. Runtime, frontend and original bridge when present
 need compatible capability support; a frontend-only upgrade is insufficient.
+Native0.3.34 separates current delivery health from scheduling control and
+historical verification. In `peerwork_delivery` status, inspect `state`, `code`
+and `next_action`; `control_state: RUNNING` and `last_verified_at` do not prove
+current PUSH. A session ownership conflict requires the actual owning host,
+not another permission request or repeated resume. Preserve the existing inbox,
+identity and pending work. The updater's component completion does not prove
+receiving or model wake; follow its exact remaining host continuation.
 For a current receiving question, use `peerwork_delivery {"mode":"status"}` rather
 than repeating full discovery. Observations can expire; reused context is not
 permanent readiness or cached authority. Actual operations retain current

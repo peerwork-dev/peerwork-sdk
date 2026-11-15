@@ -199,3 +199,89 @@ fn shared_conversation_tools_are_workspace_first_and_keep_explicit_parent_bounda
     let request=Invoke::new("group","structure.conversation.post",Scope{workspace_id:Some("W".repeat(43)),..Default::default()},json!({}));assert!(capability.authorize(&request).is_ok());
     capability.mailbox_ids=Some(["M".repeat(43)].into());assert_eq!(capability.authorize(&request).unwrap_err().code,"LOCAL_SCOPE_DENIED");
 }
+
+/// Synthetic App Server ownership changes over real WebSocket IO. No model or
+/// user conversation is started; only the explicitly selected test thread exists.
+struct DeliveryHost {
+    endpoint:String,
+    writer:std::sync::Arc<std::sync::atomic::AtomicBool>,
+    stop:std::sync::Arc<std::sync::atomic::AtomicBool>,
+    calls:std::sync::Arc<std::sync::Mutex<Vec<Value>>>,
+    thread:Option<std::thread::JoinHandle<()>>,
+}
+impl DeliveryHost {
+    fn start()->Self {
+        use std::sync::{Arc,Mutex,atomic::{AtomicBool,Ordering}};
+        let listener=std::net::TcpListener::bind("127.0.0.1:0").unwrap();listener.set_nonblocking(true).unwrap();
+        let endpoint=format!("ws://{}",listener.local_addr().unwrap());
+        let writer=Arc::new(AtomicBool::new(false));let foreign=writer.clone();let stop=Arc::new(AtomicBool::new(false));let done=stop.clone();
+        let calls=Arc::new(Mutex::new(Vec::new()));let log=calls.clone();
+        let thread=std::thread::spawn(move||while !done.load(Ordering::SeqCst){
+            let (stream,_)=match listener.accept(){Ok(v)=>v,Err(e)if e.kind()==std::io::ErrorKind::WouldBlock=>{std::thread::sleep(Duration::from_millis(5));continue},Err(_)=>break};
+            stream.set_read_timeout(Some(Duration::from_millis(200))).unwrap();stream.set_write_timeout(Some(Duration::from_secs(2))).unwrap();
+            let mut ws=match tungstenite::accept(stream){Ok(ws)=>ws,Err(_)=>continue};
+            while !done.load(Ordering::SeqCst){
+                let text=match ws.read(){Ok(tungstenite::Message::Text(v))=>v,Err(tungstenite::Error::Io(e))if matches!(e.kind(),std::io::ErrorKind::TimedOut|std::io::ErrorKind::WouldBlock)=>continue,_=>break};
+                let value:Value=serde_json::from_str(&text).unwrap();log.lock().unwrap().push(value.clone());
+                let Some(id)=value.get("id")else{continue};let method=value["method"].as_str().unwrap();
+                if method=="thread/resume"&&foreign.load(Ordering::SeqCst){let _=ws.send(tungstenite::Message::Text(json!({"id":id,"error":{"code":-32600,"data":{"type":"activeWriter"},"message":"selected rollout has an active writer"}}).to_string().into()));continue;}
+                let result=match method{
+                    "initialize"=>json!({"userAgent":"synthetic-existing-owner"}),
+                    "thread/read"|"thread/resume"=>json!({"thread":{"id":"qualified-thread","sessionId":"qualified-session","status":{"type":if foreign.load(Ordering::SeqCst){"notLoaded"}else{"idle"}}}}),
+                    "turn/start"|"turn/steer"=>json!({"turn":{"id":"qualified-turn"}}),
+                    _=>panic!("unexpected synthetic host method {method}"),
+                };
+                if ws.send(tungstenite::Message::Text(json!({"id":id,"result":result}).to_string().into())).is_err(){break;}
+            }
+        });
+        Self{endpoint,writer,stop,calls,thread:Some(thread)}
+    }
+    fn batch(&self,index:usize)->Option<String>{
+        self.calls.lock().unwrap().iter().filter(|v|matches!(v["method"].as_str(),Some("turn/start"|"turn/steer"))).nth(index).map(|v|{
+            let text=v["params"]["input"][0]["text"].as_str().unwrap();let start=text.find("{\"batch\"").expect("compact notification only");let end=text[start..].find('}').unwrap()+start;
+            serde_json::from_str::<Value>(&text[start..=end]).unwrap()["batch"].as_str().unwrap().to_owned()
+        })
+    }
+}
+impl Drop for DeliveryHost {fn drop(&mut self){self.stop.store(true,std::sync::atomic::Ordering::SeqCst);if let Some(thread)=self.thread.take(){thread.join().unwrap();}}}
+
+#[tokio::test(flavor="multi_thread",worker_threads=2)]
+#[ignore="requires exact installed CLI and selected local TEST PostgreSQL/product fixture"]
+async fn installed_delivery_status_follows_verified_writer_conflict_and_same_session_recovery(){
+    use std::sync::atomic::Ordering;
+    let cli=PathBuf::from(std::env::var("PEERWORK_TEST_CLI").expect("exact installed CLI"));
+    let service=Service::start();let owner_root=private_dir();let peer_root=private_dir();
+    let owner_config=configuration(owner_root.path(),&service.origin);let peer_config=configuration(peer_root.path(),&service.origin);
+    let owner=ParticipantClient::open(owner_config.clone()).await.unwrap();let peer=ParticipantClient::open(peer_config.clone()).await.unwrap();
+    let workspace=mutate(&owner,"host-space","structure.workspace.create",&Scope::default(),json!({"name":"Host transition qualification"})).await["workspace_id"].as_str().unwrap().to_owned();
+    let scope=Scope{workspace_id:Some(workspace.clone()),..Default::default()};let meta=selected(&owner,"structure.workspace.get",&scope,json!({})).await;
+    let mut join=Invoke::new("host-join","structure.member.set",scope.clone(),json!({"actor_id":peer.actor_id(),"state":"ACTIVE","expected_membership_id":null}));join.expected_workspace_revision=meta["workspace_revision"].as_u64();structure(&owner.invoke(join,Duration::from_secs(5)).await.unwrap());
+    let key=install_synthetic_key(&owner_config,&service.origin,&workspace,&[51;32],None);install_synthetic_key(&peer_config,&service.origin,&workspace,&[51;32],None);
+    mutate(&owner,"host-key","structure.content-key.set",&scope,json!({"key_id":key,"expected_epoch":0,"expected_head_revision":null})).await;
+    let mailbox=selected(&peer,"structure.mailboxes.read",&scope,json!({"limit":8})).await["mailboxes"][0].clone();let actor=peer.actor_id().to_owned();peer.close().await.unwrap();
+    service.config(json!({"resident_worker":true})).await;
+    let host=DeliveryHost::start();let mut capability=Capability::owner();capability.allow_root=false;capability.workspace_ids=Some([workspace.clone()].into());
+    let options=json!({"workspace_id":workspace,"mailbox_id":mailbox["mailbox_id"],"membership_id":mailbox["membership_id"],"consumer_id":"qualified-host","host_destination":null});
+    let config=peer_root.path().join("runtime.json");private_json(&config,json!({"format":"peerwork.participant-runtime.v1","state_directory":peer_root.path().join("runtime"),"engines":[{"name":"peer","origin":service.origin,"expected_actor":actor,"identity_path":peer_config.identity_path,"state_directory":peer_config.state_directory,"allow_loopback_http":true,"max_inflight":2,"max_pending":8}],"clients":[{"name":"agent","engine":"peer","capability":capability}],"hosts":[{"name":"qualified","adapter":{"kind":"codex","endpoint":host.endpoint,"thread_id":"qualified-thread","expected_session_id":"qualified-session"},"subscriptions":[{"client":"agent","watch":options}]}]}));
+    let mut runtime=InstalledProcess::start(&cli,&["runtime","run",config.to_str().unwrap()]);let ready=runtime.frames.recv_timeout(Duration::from_secs(20)).unwrap();assert_eq!(ready["state"],"LOCAL_READY");
+    let profile=peer_root.path().join("agent.json");private_json(&profile,json!({"format":"peerwork.agent-profile.v1","endpoint_path":ready["client_endpoints"]["agent"],"expected_origin":service.origin,"expected_actor":actor,"workspaces":{"team":workspace},"scopes":{"team":{"workspace_id":workspace,"mailbox_id":mailbox["mailbox_id"],"membership_id":mailbox["membership_id"]}}}));
+    let mut mcp=InstalledProcess::start(&cli,&["agent","--profile",profile.to_str().unwrap(),"mcp"]);mcp.rpc(1,"initialize",json!({"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"host-transition","version":"1"}}));mcp.write(json!({"jsonrpc":"2.0","method":"notifications/initialized"}));
+    let end=std::time::Instant::now()+Duration::from_secs(20);
+    let batch=loop{if let Some(batch)=host.batch(0){break batch}assert!(std::time::Instant::now()<end,"no native self-test notification");tokio::time::sleep(Duration::from_millis(25)).await;};
+    let observed=mcp.tool(2,"peerwork_inbox",json!({"batch":batch}));assert_eq!(observed["state"],"SELF_TEST_OBSERVED");
+    let live=mcp.tool(3,"peerwork_delivery",json!({"mode":"status","scope":"team"}));assert_eq!(live["state"],"READY","{live}");let verified=live["destinations"][0]["last_verified_at"].clone();assert!(verified.is_number());
+    host.writer.store(true,Ordering::SeqCst);let end=std::time::Instant::now()+Duration::from_secs(15);let mut request=4;
+    loop{request+=1;let state=mcp.tool(request,"peerwork_delivery",json!({"mode":"status","scope":"team"}));if state["code"]=="HOST_SESSION_OWNERSHIP_CONFLICT"{assert_eq!(state["state"],"BLOCKED");assert_eq!(state["destinations"][0]["last_verified_at"],verified);assert_eq!(state["observations"][0]["receiver"]["receiver_link_verified"],true);break}assert!(std::time::Instant::now()<end,"host conflict not reflected: {state}");tokio::time::sleep(Duration::from_millis(200)).await;}
+    request+=1;let context=mcp.tool(request,"peerwork_context",json!({}));assert_eq!(context["delivery_status"]["scopes"]["team"]["state"],"BLOCKED");assert_eq!(context["delivery_status"]["scopes"]["team"]["code"],"HOST_SESSION_OWNERSHIP_CONFLICT");
+    tokio::time::sleep(Duration::from_secs(4)).await;assert_eq!(host.calls.lock().unwrap().iter().filter(|v|v["method"]=="thread/resume").count(),1,"conflict must not repeat resume attempts");
+    host.writer.store(false,Ordering::SeqCst);let end=std::time::Instant::now()+Duration::from_secs(12);
+    loop{request+=1;let state=mcp.tool(request,"peerwork_delivery",json!({"mode":"status","scope":"team"}));if state["state"]=="READY"{break}assert!(std::time::Instant::now()<end,"same-owner recovery failed: {state}");tokio::time::sleep(Duration::from_millis(200)).await;}
+    let room=peerwork_core::communication::space_conversation_id(&workspace).unwrap();let mut post=Invoke::new("fresh-host-message","structure.conversation.post",scope.clone(),json!({"conversation_id":room,"audience":"SPACE_MEMBERS","thread_root":null,"reply_to":null,"context":null,"mentions":[actor],"content":{"mode":"WORKSPACE_E2EE"}}));post.plaintext_message=Some("HOST-TRANSITION-RECOVERED".into());structure(&owner.invoke(post,Duration::from_secs(5)).await.unwrap());
+    let end=std::time::Instant::now()+Duration::from_secs(15);let next=loop{if let Some(batch)=host.batch(1){break batch}assert!(std::time::Instant::now()<end,"fresh message not automatically notified");tokio::time::sleep(Duration::from_millis(25)).await;};
+    request+=1;let page=mcp.tool(request,"peerwork_inbox",json!({"batch":next}));assert!(page.to_string().contains("HOST-TRANSITION-RECOVERED"),"{page}");let item=page["items"][0]["item"].clone();
+    request+=1;let reply=mcp.tool(request,"peerwork_reply",json!({"scope":"team","item":item,"operation_id":"host-transition-reply","text":"SIGNED-HOST-TRANSITION-REPLY","wait_ms":5000}));assert_eq!(reply["state"],"ACCEPTED");
+    request+=1;mcp.tool(request,"peerwork_consume",json!({"scope":"team","item":item}));mcp.finish();
+    let stop=Command::new(&cli).args(["runtime","admin",ready["admin_endpoint"].as_str().unwrap(),"stop"]).output().unwrap();assert!(stop.status.success());runtime.finish();
+    eprintln!("EXACT_INSTALLED_VERIFIED_CONFLICT_CURRENT_STATUS_SAME_SESSION_REPLY_CONSUME_PASS");
+    owner.close().await.unwrap();
+}

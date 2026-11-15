@@ -44,11 +44,11 @@ and recovery, not new ordinary work. The complete native Participant API and
 low-level Kernel command recovery remain available. Release availability and
 qualified platform artifacts are listed in the [release notes](docs/releases/).
 
-Native0.3.33 refreshes uploaded host observations before expiry, presents current
+Native0.3.34 distinguishes current delivery health from historical verification, diagnoses Codex session ownership conflicts, and preserves the original client during recovery. It also refreshes uploaded host observations before expiry and presents current
 receiving facts together, and updates the original owned installation through
 `peerwork connect --update status|apply`. Presence snapshots use bounded replay
 without skipping business history.
-[Release notes](docs/releases/0.3.33.md).
+[Release notes](docs/releases/0.3.34.md).
 
 Native0.3.32 finishes exhausted inbox batches without an extra EOF read,
 clarifies selected-context reuse across wakes, and preserves safe local-state
