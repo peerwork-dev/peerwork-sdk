@@ -8,6 +8,7 @@ or a production response-time SLA. PostgreSQL must be isolated test data.
 """
 import argparse
 import base64
+import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
@@ -78,12 +79,15 @@ class Model(ThreadingHTTPServer):
                     return None, 'Synthetic qualification: notification observed.'
                 assert len(items) == 1, 'EXPECTED_ONE_SYNTHETIC_PING'
                 item = self.items[batch] = items[0]
+                item['_fixture_scope'] = page['scope']
                 nonce = item['message']['text'].split()[1].rstrip('.')
                 name = 'peerwork_reply'
-                arguments = dict(item['reply']['arguments'], operation_id='v2-pong-' + str(item['item']['sequence']), text='PONG ' + nonce)
+                arguments = {'scope': page['scope'], 'item': item['item'],
+                             'operation_id': 'v2-pong-' + str(item['item']['sequence']), 'text': 'PONG ' + nonce}
             elif called.endswith('peerwork_reply'):
                 name = 'peerwork_consume'
-                arguments = self.items[batch]['consume']['arguments']
+                item = self.items[batch]
+                arguments = {'scope': item['_fixture_scope'], 'items': [item['item']]}
             else:
                 assert called.endswith('peerwork_consume'), called
                 return None, 'Synthetic qualification: reply and consume completed.'
@@ -126,6 +130,9 @@ def main():
     for name in ('opencode', 'test-binary', 'cli', 'sdk', 'product', 'node', 'postgres', 'output'):
         parser.add_argument('--' + name, required=True)
     args = parser.parse_args()
+    def interrupted(*_):
+        raise KeyboardInterrupt('OWNED_QUALIFICATION_INTERRUPTED')
+    signal.signal(signal.SIGTERM, interrupted)
     os.umask(0o077)
     root = Path(args.output).resolve()
     root.mkdir(mode=0o700, parents=True, exist_ok=False)
@@ -157,7 +164,8 @@ def main():
         auth = base64.b64encode(('opencode:' + registration['password']).encode()).decode()
         req = urllib.request.Request(registration['url'].rstrip('/') + path,
             data=json.dumps(body).encode() if body is not None else None,
-            headers={'Authorization': 'Basic ' + auth, 'Content-Type': 'application/json'})
+            headers={'Authorization': 'Basic ' + auth, 'Content-Type': 'application/json',
+                     'x-opencode-directory': urllib.parse.quote(str(project), safe='')})
         return json.loads(opener.open(req, timeout=10).read())
 
     def start():
@@ -184,6 +192,7 @@ def main():
 
     try:
         host = start()
+        initial_service = json.loads(service.read_text())
         session = api('/api/session', {'location': {'directory': str(project)}, 'title': 'Native Peerwork V2 qualification'})['data']['id']
         facts['session_id'] = session
         state = root / 'native-state'
@@ -208,19 +217,34 @@ def main():
         host.terminate()
         host.wait(timeout=15)
         host = start()
+        current_service = json.loads(service.read_text())
+        facts['transport_rotation'] = {'port_changed': initial_service['url'] != current_service['url'],
+                                       'credential_changed': initial_service['password'] != current_service['password']}
+        # V2 may deliberately retain its password across restarts. The native
+        # adapter must reread it; password-change behavior is also fault-tested.
+        assert facts['transport_rotation']['port_changed'] and initial_service['pid'] != current_service['pid']
         assert api('/api/session/' + session)['data']['id'] == session
+        def loaded():
+            servers = api('/api/mcp')['data']
+            assert all(s['status']['status'] != 'failed' for s in servers), servers
+            return any(s['name'] == 'peerwork' and s['status']['status'] == 'connected' for s in servers)
+        wait_for(loaded)
         (state / 'observed-host-ready').write_text('Original selected session retained after service restart.\n')
         facts['fixture_exit_code'] = fixture.wait(timeout=230)
         result = json.loads((state / 'result.json').read_text())
         facts.update(state='PASS' if fixture.returncode == 0 and result['state'] == 'COMPLETED' else 'FAILED',
-                     native_result=result, model_requests=model.requests, tool_calls=[v['tool'] for v in model.calls])
+                     native_result=result, model_requests=model.requests, tool_calls=[v['tool'] for v in model.calls],
+                     candidate_binary_sha256=hashlib.sha256(Path(args.cli).read_bytes()).hexdigest())
         assert facts['state'] == 'PASS', 'INSPECT_RETAINED_FIXTURE_LOG'
         assert facts['tool_calls'].count('peerwork_reply') == 2
         assert facts['tool_calls'].count('peerwork_consume') == 2
     finally:
         for child in (fixture, host):
-            if child and child.poll() is None:
-                os.killpg(child.pid, signal.SIGTERM)
+            if child:
+                try:
+                    os.killpg(child.pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
                 child.wait(timeout=15)
         model.shutdown()
         model.server_close()

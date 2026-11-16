@@ -557,6 +557,7 @@ async fn qualify_native_reply(mcp_only: bool) {
         );
         crate::communication_store::private_json(&host_path, 65536).unwrap()
     };
+    let compact_opencode = !mcp_only && host["kind"] == "opencode";
     let root = PathBuf::from(
         std::env::var("PEERWORK_LIVE_HOST_STATE_DIR")
             .expect("explicit empty protected fixture root required"),
@@ -874,11 +875,13 @@ async fn qualify_native_reply(mcp_only: bool) {
             // same-observer upper bound is not an internal host-only span.
             let early_ack = tokio::time::timeout(Duration::from_secs(20), async {
                 loop {
-                    let status = worker_client
-                        .call(json!({"method":"delivery_status","options":worker_watch,"item":item}))
-                        .await
-                        .unwrap();
-                    if status["host"] == "HOST_ACCEPTED" {
+                    let status = worker_client.call(if compact_opencode {
+                        json!({"method":"delivery","mode":"status","options":worker_watch})
+                    } else {json!({"method":"delivery_status","options":worker_watch,"item":item})}).await.unwrap();
+                    let observed = if compact_opencode {
+                        status["destinations"].as_array().is_some_and(|all| !all.is_empty() && all.iter().all(|d|d["automatic_receiving"]=="VERIFIED"))
+                    } else {status["host"] == "HOST_ACCEPTED"};
+                    if observed {
                         return started.elapsed().as_millis();
                     }
                     tokio::time::sleep(Duration::from_millis(20)).await;
@@ -887,7 +890,7 @@ async fn qualify_native_reply(mcp_only: bool) {
             .await;
             result["host_ack_observed_ms"] = json!(early_ack.as_ref().ok().copied());
             result["host_ack_observation_state"] = json!(if early_ack.is_ok() {
-                "HOST_ACCEPTED"
+                if compact_opencode {"COMPACT_NOTIFICATION_VERIFIED"} else {"HOST_ACCEPTED"}
             } else {
                 "OBSERVATION_BUDGET_EXCEEDED"
             });
@@ -925,7 +928,14 @@ async fn qualify_native_reply(mcp_only: bool) {
         })
         .await;
         result["reply_observed_ms"] = json!(started.elapsed().as_millis());
-        let local = if mcp_only {
+        let local = if compact_opencode {
+            // Compact delivery deliberately retires old per-item host proofs.
+            // Require its actual notification self-test plus the correlated
+            // fresh signed reply and consumption, not a retired legacy proof.
+            let status=worker_client.call(json!({"method":"delivery","mode":"status","options":worker_watch})).await.unwrap();
+            let verified=status["destinations"].as_array().is_some_and(|all|!all.is_empty()&&all.iter().all(|d|d["automatic_receiving"]=="VERIFIED"));
+            json!({"host":if verified{"COMPACT_NOTIFICATION_VERIFIED"}else{"COMPACT_NOTIFICATION_UNVERIFIED"}})
+        } else if mcp_only {
             json!({"host":"NOT_CONFIGURED"})
         } else {
             worker_client
@@ -936,7 +946,7 @@ async fn qualify_native_reply(mcp_only: bool) {
         result["host_fact"] = local["host"].clone();
         let model_reply_observed = observed.as_ref().is_ok_and(|v| v.is_object());
         result["model_reply_observed"] = json!(model_reply_observed);
-        let mut qualified = model_reply_observed && (mcp_only || local["host"] == "HOST_ACCEPTED");
+        let mut qualified = model_reply_observed && (mcp_only || local["host"] == "HOST_ACCEPTED" || compact_opencode && local["host"]=="COMPACT_NOTIFICATION_VERIFIED");
         let consumed = if require_consumption && qualified {
             let done = tokio::time::timeout(Duration::from_secs(30), async {
                 loop {

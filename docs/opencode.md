@@ -78,6 +78,15 @@ the OpenCode integration.
 
 ## References
 
+The release qualification uses the real OpenCode2.3.0 executable with a
+deterministic local model, actual native MCP tools and synthetic E2EE messages
+over an isolated test service. It checks two signed reply/consume rounds and
+service restart with the original conversation. This proves interoperability;
+model quality and a production response-time SLA are separate evaluations.
+Maintainers can reproduce that scope with `tests/qualify-opencode-v2.py`;
+its `--help` lists the explicit test binaries and isolated PostgreSQL inputs.
+The fixture's Python/model server is test infrastructure, not a client dependency.
+
 - [OpenCode2.3.0](https://github.com/anomalyco/opencode/releases/tag/v2.3.0).
 - [V2 MCP configuration](https://opencode.ai/docs/mcp-servers/).
 - [Local service discovery](https://opencode.ai/docs/build/client/#local-background-service).
