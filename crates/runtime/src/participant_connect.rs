@@ -1570,6 +1570,20 @@ pub fn schema() -> Value {
     }}})
 }
 
+fn prepare_cli_intent(values:&mut BTreeMap<String,String>)->bool {
+    let normal = ![
+        "--id","--alias","--role","--management","--contact","--attach","--protocol",
+        "--context","--resume","--update","--uninstall","--approve-request","--approve-code",
+        "--profile","--issuer","--adopt-policy","--confirm-original","--binding-recovery","--decision-id",
+        "--client","--actor","--identity","--engine-state","--journal","--engine-config","--runtime-config",
+    ].iter().any(|key|values.contains_key(*key));
+    if values.contains_key("--codex-chat") || normal && values.get("--install").is_some_and(|host|host=="codex")
+        && !["--host","--program","--receive-mode","--tools-only","--no-receive","--agy-managed","--codex-endpoint"].iter().any(|key|values.contains_key(*key)) {
+        values.insert("--codex".into(),"true".into());
+    }
+    normal
+}
+
 pub fn cli(args: &[String]) -> Value {
     crate::onboarding_files::take_diagnostic();
     fn parse(args: &[String]) -> Result<BTreeMap<String, String>> {
@@ -1716,10 +1730,7 @@ pub fn cli(args: &[String]) -> Value {
         if values.contains_key("--new") && ["--context","--uninstall","--update","--approve-request","--approve-code","--binding-recovery","--confirm-original"].iter().any(|key|values.contains_key(*key)) {
             return Err(local("NEW_PEER_USES_CREATION_INTENT_ONLY"));
         }
-        if values.contains_key("--codex-chat") || values.get("--install").is_some_and(|host|host=="codex")
-            && !["--host","--program","--receive-mode","--tools-only","--no-receive","--agy-managed","--codex-endpoint"].iter().any(|key|values.contains_key(*key)) {
-            values.insert("--codex".into(),"true".into());
-        }
+        let normal=prepare_cli_intent(&mut values);
         // Reject mixed intents before context/profile/discovery early returns.
         if let Some(mode)=values.get("--update") {
             if !matches!(mode.as_str(),"status"|"apply") || values.keys().any(|key|!["--local","--participant","--project","--update"].contains(&key.as_str())) {
@@ -1894,7 +1905,6 @@ pub fn cli(args: &[String]) -> Value {
                 .map_err(|_| local("EXECUTOR_FAILED"))?;
             return runtime.block_on(connect.approve(&handle, &required("--id")?, request));
         }
-        let normal = !["--id","--alias","--role","--management","--contact","--attach","--protocol"].iter().any(|key|values.contains_key(*key));
         let mut request = ConnectRequest {
             setup_id: values.get("--id").cloned().unwrap_or_default(),
             participant: handle.clone(),
@@ -2085,6 +2095,35 @@ pub fn cli(args: &[String]) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn codex_install_implies_attachment_only_for_ordinary_connection_intent() {
+        let selection=|flags:&[&str]| {
+            let mut values=BTreeMap::from([("--install".into(),"codex".into()),("--workspace".into(),"W".repeat(43))]);
+            for flag in flags {values.insert((*flag).into(),"selected".into());}
+            values
+        };
+        for flags in [vec![],vec!["--new"],vec!["--participant"],vec!["--new","--origin","--allow-loopback-http"]] {
+            let mut values=selection(&flags);assert!(prepare_cli_intent(&mut values));
+            assert!(values.contains_key("--codex"),"{flags:?}");
+        }
+        for manual in ["--program","--receive-mode","--tools-only","--no-receive","--host","--agy-managed","--codex-endpoint"] {
+            let mut values=selection(&[manual]);assert!(prepare_cli_intent(&mut values));
+            assert!(!values.contains_key("--codex"),"{manual}");
+        }
+        for advanced in ["--id","--alias","--role","--management","--contact","--attach","--protocol",
+            "--client","--actor","--identity","--engine-state","--journal","--engine-config","--runtime-config",
+            "--context","--resume","--update","--uninstall","--approve-request","--approve-code",
+            "--profile","--issuer","--adopt-policy","--confirm-original","--binding-recovery","--decision-id"] {
+            let mut values=selection(&[advanced]);assert!(!prepare_cli_intent(&mut values));
+            assert!(!values.contains_key("--codex"),"{advanced}");
+        }
+        // Explicit attachment intent remains explicit even with advanced local
+        // runtime selection; ordinary MCP installation never creates it.
+        let mut explicit=selection(&["--runtime-config","--codex-chat"]);
+        assert!(!prepare_cli_intent(&mut explicit));assert!(explicit.contains_key("--codex"));
+        let mut installed=selection(&["--client","--id","--send"]);
+        assert!(!prepare_cli_intent(&mut installed));assert!(!installed.contains_key("--codex"));
+    }
     #[test]
     fn resumed_profile_snapshots_preserve_legacy_files_and_stale_readers() {
         let root=crate::test_support::protected_test_dir();let mut connect=Connect::open(root.path()).unwrap();
