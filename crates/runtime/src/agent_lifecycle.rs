@@ -20,7 +20,7 @@ pub(crate) struct Lifecycle {
 }
 impl Lifecycle {
     pub(crate) fn startup_observation(&self) -> Value {
-        self.startup.snapshot(true).unwrap_or_else(|| json!({"state":"STARTING","model_wake":"NOT_ATTESTED"}))
+        self.startup.peek().unwrap_or_else(|| json!({"state":"STARTING","model_wake":"NOT_ATTESTED"}))
     }
     pub(crate) fn profile(profile:AgentProfile)->Self {
         Self{startup:startup::State::default(),profile:Some(profile),local:None,handle:None,workspace:None,client:OnceCell::new(),selected:Mutex::new(None),source_guard:Mutex::new(None),source_directory:std::sync::Mutex::new(None),identity:std::sync::OnceLock::new()}

@@ -31,7 +31,7 @@ impl Connect {
                 "next_action":"RESTORE_ORIGINAL_INSTALLATION_ONCE"}));
         }
         let policy = crate::runtime_startup::enroll(directory)?;
-        Ok(json!({"state":if policy.automatic {"AUTOMATIC"} else {"DISABLED"},"revision":policy.revision}))
+        Ok(json!({"state":if !policy.automatic {"DISABLED"} else if policy.qualified {"AUTOMATIC"} else {"VERIFYING_RUNTIME_SUPPORT"},"revision":policy.revision}))
     }
 }
 

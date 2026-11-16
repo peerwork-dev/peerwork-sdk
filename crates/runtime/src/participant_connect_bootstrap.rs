@@ -142,6 +142,8 @@ struct Launch {
     config_digest: String,
     pid: Option<u32>,
     process_token: Option<String>,
+    #[serde(default)]
+    launcher: Option<crate::runtime_startup::Launcher>,
 }
 fn alive(pid: u32, expected: Option<&str>) -> Result<bool> {
     if pid == 0 {
@@ -313,6 +315,9 @@ fn verify_existing_launch_config(path: &Path, expected: &RuntimeConfig) -> Resul
     Ok(())
 }
 async fn launch_at(config: RuntimeConfig, selected: Registration, config_path: PathBuf) -> Result<(Registration, PathBuf)> {
+    launch_using(config,selected,config_path,None).await
+}
+async fn launch_using(config: RuntimeConfig, selected: Registration, config_path: PathBuf, executable: Option<&Path>) -> Result<(Registration, PathBuf)> {
     let runtime_dir = config.state_directory.clone();
     create_private_state_directory(&runtime_dir)
         .map_err(|_| local("RUNTIME_DIRECTORY_NOT_PRIVATE"))?;
@@ -390,9 +395,9 @@ async fn launch_at(config: RuntimeConfig, selected: Registration, config_path: P
         .append(true)
         .open(&log)
         .map_err(|_| local("RUNTIME_LOG_NOT_PRIVATE"))?;
-    let mut command = std::process::Command::new(
-        std::env::current_exe().map_err(|_| local("EXECUTABLE_UNAVAILABLE"))?,
-    );
+    let executable = match executable {Some(path)=>path.to_path_buf(),None=>std::env::current_exe().map_err(|_|local("EXECUTABLE_UNAVAILABLE"))?};
+    let launcher = crate::runtime_startup::Launcher::capture(executable.clone())?;
+    let mut command = std::process::Command::new(&executable);
     command
         .args(["runtime", "run"])
         .arg(&config_path)
@@ -427,6 +432,7 @@ async fn launch_at(config: RuntimeConfig, selected: Registration, config_path: P
                 config_digest: config_digest.clone(),
                 pid: None,
                 process_token: None,
+                launcher: Some(launcher.clone()),
             })
             .map_err(|_| local("RUNTIME_LAUNCH_RECOVERY_REQUIRED"))?,
         )
@@ -441,6 +447,7 @@ async fn launch_at(config: RuntimeConfig, selected: Registration, config_path: P
                         config_digest: config_digest.clone(),
                         pid: Some(0),
                         process_token: None,
+                        launcher: Some(launcher.clone()),
                     })
                     .unwrap(),
                 )
@@ -452,6 +459,7 @@ async fn launch_at(config: RuntimeConfig, selected: Registration, config_path: P
         config_digest,
         pid: Some(child.id()),
         process_token: crate::communication_store::process_token(child.id()),
+        launcher: Some(launcher),
     };
     owner
         .write_exact(
@@ -537,6 +545,13 @@ impl OwnedRuntime {
         Err(local("ORIGINAL_RUNTIME_STOP_PENDING"))
     }
     pub async fn restart(&self, committed:&RuntimeConfig)->Result<()> {
+        self.restart_using(committed,None).await
+    }
+    pub async fn restart_pinned(&self, committed:&RuntimeConfig, launcher:&crate::runtime_startup::Launcher)->Result<()> {
+        launcher.verify()?;
+        self.restart_using(committed,Some(&launcher.executable)).await
+    }
+    async fn restart_using(&self, committed:&RuntimeConfig, executable:Option<&Path>)->Result<()> {
         self.same_engine(committed)?;
         if serde_json::to_value(self.load()?).ok()!=serde_json::to_value(committed).ok(){return Err(local("ORIGINAL_RUNTIME_CONFIG_CHANGED"));}
         let marker=self.config.state_directory.join("bootstrap.state");
@@ -550,11 +565,11 @@ impl OwnedRuntime {
             if previous.as_ref().is_none_or(|p|p.config_digest!=target) {
                 let _fence=SecureStateStore::open(&committed.state_directory.join("runtime.state")).map_err(|_|local("HOST_REBIND_STOP_RUNTIME_FIRST"))?;
                 if let Some(previous)=&previous {if alive(previous.pid.ok_or_else(||local("RUNTIME_LAUNCH_RECOVERY_REQUIRED"))?,previous.process_token.as_deref())? {return Err(local("HOST_REBIND_STOP_RUNTIME_FIRST"));}}
-                store.write_exact(&serde_json::to_vec(&Launch{config_digest:target,pid:Some(0),process_token:None}).unwrap())
+                store.write_exact(&serde_json::to_vec(&Launch{config_digest:target,pid:Some(0),process_token:None,launcher:None}).unwrap())
                     .map_err(|_|local("RUNTIME_LAUNCH_RECOVERY_REQUIRED"))?;
             }
         }
-        launch_at(committed.clone(),self.registration.clone(),self.path()).await?;
+        launch_using(committed.clone(),self.registration.clone(),self.path(),executable).await?;
         Ok(())
     }
 }

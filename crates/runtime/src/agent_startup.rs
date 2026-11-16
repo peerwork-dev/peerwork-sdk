@@ -6,6 +6,10 @@ use std::{path::PathBuf, time::Duration};
 #[derive(Default)]
 pub(super) struct State(std::sync::Mutex<(Value, bool)>);
 impl State {
+    pub(super) fn peek(&self) -> Option<Value> {
+        let current=self.0.lock().expect("startup observation lock");
+        (!current.0.is_null()).then(||current.0.clone())
+    }
     fn set(&self, state: &str, code: &str) {
         let value = json!({"state":state,"code":code,"model_wake":"NOT_ATTESTED"});
         let mut current = self.0.lock().expect("startup observation lock");
@@ -107,7 +111,14 @@ impl Lifecycle {
                     }
                 }
                 if attempt == 0 { self.startup.set("RECOVERING", "RESTORING_ORIGINAL_RUNTIME"); }
-                runtime.restart(&runtime.config).await?;
+                // Maintenance may have committed while we acquired the fence.
+                // Re-read its configuration, policy and target under that fence.
+                if self.startup_update()?.is_some() { return Ok(()); }
+                let runtime=self.startup_runtime()?.ok_or_else(||ParticipantError::local("ORIGINAL_INSTALLATION_RECOVERY_REQUIRED","STARTUP"))?;
+                let policy=crate::runtime_startup::read(&runtime.config.state_directory)?.ok_or_else(||ParticipantError::local("RUNTIME_STARTUP_POLICY_REQUIRED","STARTUP"))?;
+                if !policy.automatic {return Ok(());}
+                let launcher=policy.launcher.as_ref().ok_or_else(||ParticipantError::local("RUNTIME_STARTUP_SUPPORT_UNCONFIRMED_UPDATE_ORIGINAL_RUNTIME","STARTUP"))?;
+                runtime.restart_pinned(&runtime.config,launcher).await?;
                 self.startup.set("RUNTIME_RUNNING", "CHECK_CURRENT_DELIVERY_FOR_HOST_READINESS");
                 Ok(())
             }.await;
@@ -120,6 +131,7 @@ impl Lifecycle {
                     "RUNTIME_CONFIG_INVALID" | "RUNTIME_CONFIG_NOT_PRIVATE" |
                     "UPDATE_RESUME_ORIGINAL_ARTIFACT_AND_SELECTION" | "UPDATE_STATE_INVALID" |
                     "UPDATE_RUNTIME_UPGRADE_REQUIRED" |
+                    "RUNTIME_STARTUP_ARTIFACT_CHANGED" | "RUNTIME_STARTUP_ARTIFACT_INVALID" |
                     "ORIGINAL_PROFILE_SOURCE_CHANGED" | "CLIENT_IDENTITY_OR_ORIGIN_MISMATCH");
                 self.startup.set(if blocked { "BLOCKED" } else { "RECOVERING" }, &error.code);
                 delay = if blocked { Duration::from_secs(60) } else {

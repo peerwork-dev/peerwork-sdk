@@ -1,7 +1,26 @@
 //! Durable user intent for an already owned runtime, independent of liveness.
 use crate::{participant::{ParticipantError, Result}, secure_state::SecureStateStore};
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::{path::{Path, PathBuf}, io::Read};
+use sha2::{Digest, Sha256};
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct Launcher { pub executable: PathBuf, pub sha256: String }
+impl Launcher {
+    pub(crate) fn capture(executable: PathBuf) -> Result<Self> {
+        if !executable.is_absolute() { return Err(error("RUNTIME_STARTUP_ARTIFACT_INVALID")); }
+        let mut file = std::fs::File::open(&executable).map_err(|_| error("RUNTIME_STARTUP_ARTIFACT_UNAVAILABLE"))?;
+        let mut hash = Sha256::new(); let mut buffer = [0u8; 65536];
+        loop { let n = file.read(&mut buffer).map_err(|_| error("RUNTIME_STARTUP_ARTIFACT_UNAVAILABLE"))?;
+            if n == 0 { break; } hash.update(&buffer[..n]); }
+        Ok(Self { executable, sha256:format!("{:x}",hash.finalize()) })
+    }
+    pub(crate) fn verify(&self) -> Result<()> {
+        if Self::capture(self.executable.clone())? != *self { return Err(error("RUNTIME_STARTUP_ARTIFACT_CHANGED")); }
+        Ok(())
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -11,6 +30,10 @@ pub(crate) struct Policy {
     pub revision: u64,
     #[serde(default)]
     pub qualified: bool,
+    #[serde(default)]
+    pub launcher: Option<Launcher>,
+    #[serde(default)]
+    qualified_pid: u32,
 }
 fn error(code: &str) -> ParticipantError { ParticipantError::local(code, "STARTUP") }
 fn decode(bytes: &[u8]) -> Result<Policy> {
@@ -25,13 +48,30 @@ pub(crate) fn read(directory: &Path) -> Result<Option<Policy>> {
     match std::fs::symlink_metadata(&path) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(_) => Err(error("RUNTIME_STARTUP_POLICY_UNAVAILABLE")),
-        Ok(_) => decode(&SecureStateStore::read_snapshot(&path, 4096)
+        Ok(_) => decode(&SecureStateStore::read_snapshot(&path, 65536)
             .map_err(|_| error("RUNTIME_STARTUP_POLICY_UNAVAILABLE"))?).map(Some),
     }
 }
 /// Enrollment is explicit installation work. Reinstallation never clears stop.
 pub(crate) fn enroll(directory: &Path) -> Result<Policy> {
-    change(directory, None)
+    let mut policy = change(directory, None)?;
+    // New owned launch records pin the actual executable, before installation
+    // returns. This closes the first-install crash window without a timer.
+    let path = directory.join("bootstrap.state");
+    if path.exists() {
+        let launch: serde_json::Value = serde_json::from_slice(&SecureStateStore::read_snapshot(&path,65536)
+            .map_err(|_|error("RUNTIME_STARTUP_POLICY_UNAVAILABLE"))?).map_err(|_|error("RUNTIME_STARTUP_POLICY_INVALID"))?;
+        if let Some(value) = launch.get("launcher").filter(|v|!v.is_null()) {
+            let launcher: Launcher = serde_json::from_value(value.clone()).map_err(|_|error("RUNTIME_STARTUP_ARTIFACT_INVALID"))?;
+            launcher.verify()?;
+            let store = SecureStateStore::open(&directory.join("startup.state")).map_err(|_|error("RUNTIME_STARTUP_POLICY_BUSY"))?;
+            policy = decode(&store.read_exact().map_err(|_|error("RUNTIME_STARTUP_POLICY_UNAVAILABLE"))?.ok_or_else(||error("RUNTIME_STARTUP_POLICY_INVALID"))?)?;
+            policy.qualified=true; policy.launcher=Some(launcher);
+            policy.qualified_pid=launch["pid"].as_u64().unwrap_or(0) as u32;
+            store.write_exact(&serde_json::to_vec(&policy).unwrap()).map_err(|_|error("RUNTIME_STARTUP_POLICY_WRITE_FAILED"))?;
+        }
+    }
+    Ok(policy)
 }
 fn change(directory: &Path, enabled: Option<bool>) -> Result<Policy> {
     let store = SecureStateStore::open(&directory.join("startup.state"))
@@ -41,7 +81,9 @@ fn change(directory: &Path, enabled: Option<bool>) -> Result<Policy> {
     let automatic = enabled.unwrap_or_else(|| old.as_ref().is_none_or(|p| p.automatic));
     if let Some(old) = &old { if old.automatic == automatic { return Ok(old.clone()); } }
     let qualified = old.as_ref().is_some_and(|p| p.qualified);
-    let policy = Policy { format: "peerwork.runtime-startup.v1".into(), automatic, qualified,
+    let launcher = old.as_ref().and_then(|p|p.launcher.clone());
+    let qualified_pid = old.as_ref().map_or(0,|p|p.qualified_pid);
+    let policy = Policy { format: "peerwork.runtime-startup.v1".into(), automatic, qualified, launcher, qualified_pid,
         revision: old.map_or(Some(1), |p| p.revision.checked_add(1)).ok_or_else(|| error("RUNTIME_STARTUP_POLICY_INVALID"))? };
     store.write_exact(&serde_json::to_vec(&policy).map_err(|_| error("RUNTIME_STARTUP_POLICY_INVALID"))?)
         .map_err(|_| error("RUNTIME_STARTUP_POLICY_WRITE_FAILED"))?;
@@ -87,12 +129,15 @@ pub(crate) fn recovery_fence(directory: &Path) -> Result<SecureStateStore> {
 /// frontend must not silently arm an old runtime's unsupported stop semantics.
 pub(crate) fn qualify(directory: &Path) -> Result<()> {
     let Some(policy) = read(directory)? else { return Ok(()); };
-    if policy.qualified { return Ok(()); }
+    if policy.qualified && policy.qualified_pid==std::process::id() { return Ok(()); }
+    let launcher=Launcher::capture(std::env::current_exe().map_err(|_|error("RUNTIME_STARTUP_ARTIFACT_UNAVAILABLE"))?)?;
     let store = SecureStateStore::open(&directory.join("startup.state"))
         .map_err(|_| error("RUNTIME_STARTUP_POLICY_BUSY"))?;
     let mut policy = decode(&store.read_exact().map_err(|_| error("RUNTIME_STARTUP_POLICY_UNAVAILABLE"))?
         .ok_or_else(|| error("RUNTIME_STARTUP_POLICY_INVALID"))?)?;
     policy.qualified = true;
+    policy.qualified_pid = std::process::id();
+    policy.launcher = Some(launcher);
     store.write_exact(&serde_json::to_vec(&policy).map_err(|_| error("RUNTIME_STARTUP_POLICY_INVALID"))?)
         .map_err(|_| error("RUNTIME_STARTUP_POLICY_WRITE_FAILED"))
 }

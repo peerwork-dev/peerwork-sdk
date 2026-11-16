@@ -56,7 +56,8 @@ impl Fixture {
             .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap());
         let store = SecureStateStore::open(&runtime.join("bootstrap.state")).unwrap();
         store.write_exact(&serde_json::to_vec(&json!({"config_digest":sha256_hex(&bytes),"pid":first.0.id(),
-            "process_token":crate::communication_store::process_token(first.0.id())})).unwrap()).unwrap(); drop(store);
+            "process_token":crate::communication_store::process_token(first.0.id()),
+            "launcher":crate::runtime_startup::Launcher::capture(binary.clone()).unwrap()})).unwrap()).unwrap(); drop(store);
         let registration = Registration { origin:config.engines[0].origin.clone(), actor_id:identity.actor_id().into(), endpoint_path:runtime.join("client-bootstrap.json") };
         for _ in 0..200 {
             if RuntimeClient::connect(registration.endpoint_path.clone(), &registration.origin, &registration.actor_id).await.is_ok() { break; }
@@ -70,10 +71,7 @@ impl Fixture {
         let project = root.path().join("project"); create_private_state_directory(&project).unwrap();
         let installed = connect.install("peer", &"W".repeat(43), Installation { host:"codex".into(), project, executable:binary.clone() }).unwrap();
         assert_eq!(installed["automatic_startup"]["state"], "AUTOMATIC"); drop(connect);
-        for _ in 0..200 {
-            if crate::runtime_startup::read(&runtime).unwrap().is_some_and(|p|p.qualified) { break; }
-            tokio::time::sleep(Duration::from_millis(25)).await;
-        }
+        // Installation itself must persist qualification; no timer grace period.
         assert!(crate::runtime_startup::read(&runtime).unwrap().unwrap().qualified);
         Self { root, binary, first, directory, config, registration, binding }
     }
@@ -148,6 +146,23 @@ async fn concurrent_frontends_wait_for_maintenance_then_restore_one_original_wri
     let restored = fixture.restored(first).await;
     tokio::time::sleep(Duration::from_secs(4)).await;
     assert_eq!(fixture.launch(), restored, "frontends must share one original runtime");
+}
+
+#[tokio::test(flavor="multi_thread",worker_threads=2)]
+#[ignore="requires exact candidate CLI and synthetic process/loopback IPC"]
+async fn surviving_frontend_restores_the_committed_launcher_instead_of_itself() {
+    let mut fixture=Fixture::new().await;
+    let target=fixture.root.path().join("committed-peerwork");std::fs::copy(&fixture.binary,&target).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&target,std::fs::Permissions::from_mode(0o700)).unwrap();
+    let mut policy=crate::runtime_startup::read(&fixture.config.state_directory).unwrap().unwrap();
+    policy.launcher=Some(crate::runtime_startup::Launcher::capture(target.clone()).unwrap());
+    let store=SecureStateStore::open(&fixture.config.state_directory.join("startup.state")).unwrap();
+    store.write_exact(&serde_json::to_vec(&policy).unwrap()).unwrap();drop(store);
+    let previous=fixture.launch()["pid"].as_u64().unwrap();fixture.crash();
+    let _mcp=Mcp::new(&fixture.binary,&fixture.directory);
+    let restored=fixture.restored(previous).await;
+    assert_eq!(std::fs::read_link(format!("/proc/{}/exe",restored["pid"])).unwrap(),target);
 }
 
 #[tokio::test(flavor="multi_thread",worker_threads=3)]

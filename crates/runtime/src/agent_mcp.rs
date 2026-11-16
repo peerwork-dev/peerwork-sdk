@@ -438,10 +438,13 @@ mod tests {
         assert!(list["result"]["tools"].as_array().unwrap().iter().any(|v| v["name"] == "peerwork_connect"));
         assert_eq!(list["result"]["resultType"], "complete");
         send(&mut cw, modern(2, "server/discover", json!({}))).await;
+        let discovery=receive(&mut cr).await;
         assert_eq!(
-            receive(&mut cr).await["result"]["supportedVersions"],
+            discovery["result"]["supportedVersions"],
             json!([MODERN, LEGACY])
         );
+        assert!(discovery["result"]["_meta"]["peerwork/startup"].is_object());
+        assert!(discovery["result"]["_meta"]["io.modelcontextprotocol/serverInfo"].is_object());
         // Prior metadata cannot be inherited by a later independent request.
         send(
             &mut cw,
@@ -507,6 +510,7 @@ mod tests {
         send(&mut cw,json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":LEGACY,"capabilities":{},"clientInfo":{"name":"synthetic","version":"1"}}})).await;
         let init = receive(&mut cr).await;
         assert_eq!(init["result"]["protocolVersion"], LEGACY);
+        assert!(init["result"]["_meta"]["peerwork/startup"].is_object());
         assert!(init["result"].get("resultType").is_none());
         send(
             &mut cw,

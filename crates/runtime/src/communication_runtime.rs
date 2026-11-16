@@ -911,6 +911,7 @@ pub async fn serve(
     if crate::runtime_startup::read(&config.state_directory)?.is_some_and(|p| !p.automatic) {
         return Err(local("RUNTIME_AUTOMATIC_START_DISABLED"));
     }
+    crate::runtime_startup::qualify(&config.state_directory)?;
     let mut owners = BTreeMap::new();
     let mut sessions = Vec::new();
     let mut names = BTreeSet::new();
