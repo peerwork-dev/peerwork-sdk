@@ -155,6 +155,10 @@ impl Connect {
             json!({"method":"status"}),
         )
         .await?;
+        if selected.adapter["kind"]=="opencode" && !status["value"]["optional_features"].as_array().is_some_and(|features|features.iter().any(|v|v=="opencode-v2-host-v1")) {
+            let mut error=local("LOCAL_RUNTIME_UPGRADE_REQUIRED");
+            error.details=Some(json!({"missing_features":["opencode-v2-host-v1"],"next_action":"UPDATE_ORIGINAL_OWNED_RUNTIME","existing_operations_preserved":true}));return Err(error);
+        }
         if status["ok"] != true
             || !status["value"]["engines"]
                 .as_array()

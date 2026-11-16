@@ -26,6 +26,47 @@ mod tests {
         connect.save().unwrap();
     }
     #[test]
+    fn opencode_v2_owned_install_discovery_and_uninstall_keep_original_identity_and_other_servers() {
+        let root=crate::test_support::protected_test_dir();let project=root.path().join("project with spaces");files::directory(&project,false).unwrap();
+        let dir=project.join(".opencode");files::directory(&dir,false).unwrap();
+        let config=dir.join("opencode.json");
+        let original=json!({"mcp":{"servers":{"unrelated":{"type":"local","command":["preserve"]}},"timeout":{"startup":45000}},"model":"preserve/model"});
+        files::replace(&config,&serde_json::to_vec(&original).unwrap()).unwrap();
+        let mut c=Connect::open(&root.path().join("local")).unwrap();registration(&mut c);
+        let identity=serde_json::to_value(&c.registry.participants).unwrap();let ws="W".repeat(43);
+        let spec=Installation{host:"opencode".into(),project:project.clone(),executable:std::env::current_exe().unwrap()};
+        let installed=c.install("worker",&ws,spec.clone()).unwrap();let name=installed["server_name"].as_str().unwrap();
+        let value=json_config(&config).unwrap();let entry=&value["mcp"]["servers"][name];
+        assert_eq!(entry["type"],"local");assert_eq!(entry["protocol"],"2026-07-28");assert_eq!(entry["command"].as_array().unwrap().len(),9);
+        assert!(entry.get("enabled").is_none());assert!(entry.get("args").is_none());assert!(value.get("mcpServers").is_none());
+        assert_eq!(value["mcp"]["servers"]["unrelated"],original["mcp"]["servers"]["unrelated"]);
+        assert_eq!(std::fs::read(dir.join("skills/peerwork/SKILL.md")).unwrap(),SKILL.as_bytes());
+        let before=std::fs::read(&config).unwrap();let at=std::fs::metadata(&config).unwrap().modified().unwrap();
+        assert_eq!(c.install("worker",&ws,spec.clone()).unwrap(),installed);assert_eq!(std::fs::metadata(&config).unwrap().modified().unwrap(),at);
+        assert_eq!(std::fs::read(&config).unwrap(),before);
+        let choices=super::super::discovery::project_bindings(&project,Some(&ws)).unwrap();
+        assert_eq!(choices.len(),1);
+        assert_eq!(serde_json::to_value(&c.registry.participants).unwrap(),identity);
+        c.uninstall("worker",&ws,spec).unwrap();assert_eq!(json_config(&config).unwrap(),original);
+        assert!(!dir.join("skills/peerwork/SKILL.md").exists());
+    }
+    #[test]
+    fn opencode_v1_config_is_rejected_and_user_edited_v2_entry_is_named() {
+        let root=crate::test_support::protected_test_dir();let project=root.path().join("project");files::directory(&project,false).unwrap();
+        let dir=project.join(".opencode");files::directory(&dir,false).unwrap();let config=dir.join("opencode.json");
+        let v1=json!({"mcp":{"existing":{"type":"local","command":["keep"],"enabled":true}}});
+        files::replace(&config,&serde_json::to_vec(&v1).unwrap()).unwrap();
+        let mut c=Connect::open(&root.path().join("local")).unwrap();registration(&mut c);let ws="W".repeat(43);
+        let spec=Installation{host:"opencode".into(),project:project.clone(),executable:std::env::current_exe().unwrap()};
+        assert_eq!(c.install("worker",&ws,spec.clone()).unwrap_err().code,"HOST_CONFIGURATION_REQUIRES_OPENCODE_V2_MCP_SERVERS");
+        assert_eq!(json_config(&config).unwrap(),v1);
+        files::replace(&config,b"{}").unwrap();let result=c.install("worker",&ws,spec.clone()).unwrap();let name=result["server_name"].as_str().unwrap();
+        let mut value=json_config(&config).unwrap();value["mcp"]["servers"][name]["command"]=json!(["user-edited"]);
+        files::replace(&config,&serde_json::to_vec(&value).unwrap()).unwrap();
+        let error=c.uninstall("worker",&ws,spec).unwrap_err();assert_eq!(error.code,"HOST_CONFIGURATION_CHANGED");
+        assert_eq!(error.details.unwrap()["field"],format!("mcp.servers.{name}"));assert_eq!(json_config(&config).unwrap(),value);
+    }
+    #[test]
     fn claude_installs_native_mcp_and_skill_without_replacing_other_hosts_or_identity() {
         let root=crate::test_support::protected_test_dir();let project=root.path().join("project");files::directory(&project,false).unwrap();
         let original=json!({"mcpServers":{"unrelated":{"command":"preserve","args":["original"]}},"extra":{"keep":true}});
@@ -395,11 +436,34 @@ fn entry(directory: &Path, participant: &str, workspace: &str, spec: &Installati
         value["type"]=json!("stdio");
         value["args"].as_array_mut().unwrap().push(json!("--claude-channel"));
     }
+    if spec.host=="opencode" {
+        let mut command=vec![json!(spec.executable)];
+        command.extend(value["args"].as_array().unwrap().iter().cloned());
+        value=json!({"type":"local","command":command,"protocol":"2026-07-28","codemode":false});
+    }
     value
 }
-fn skill_root(host:&str)->&str {if host=="claude"{".claude"}else{".agents"}}
+fn skill_root(host:&str)->&str {match host {"claude"=>".claude","opencode"=>".opencode",_=>".agents"}}
 fn config_location(host:&str)->(Option<&str>,&str) {
-    match host {"codex"=>(Some(".codex"),"config.toml"),"claude"=>(None,".mcp.json"),_=>(Some(".agents"),"mcp_config.json")}
+    match host {"codex"=>(Some(".codex"),"config.toml"),"claude"=>(None,".mcp.json"),"opencode"=>(Some(".opencode"),"opencode.json"),_=>(Some(".agents"),"mcp_config.json")}
+}
+fn server_entries<'a>(value:&'a mut Value,host:&str)->Result<&'a mut serde_json::Map<String,Value>> {
+    if host=="opencode" {
+        if value.get("mcp").is_none(){value["mcp"]=json!({"servers":{}});}
+        if !value["mcp"].is_object() || value["mcp"].as_object().unwrap().keys().any(|key|!matches!(key.as_str(),"servers"|"timeout")) {
+            return Err(local("HOST_CONFIGURATION_REQUIRES_OPENCODE_V2_MCP_SERVERS"));
+        }
+        if value["mcp"].get("servers").is_none(){value["mcp"]["servers"]=json!({});}
+        value["mcp"]["servers"].as_object_mut().ok_or_else(||local("HOST_CONFIGURATION_INVALID"))
+    }else{
+        if value.get("mcpServers").is_none(){value["mcpServers"]=json!({});}
+        value["mcpServers"].as_object_mut().ok_or_else(||local("HOST_CONFIGURATION_INVALID"))
+    }
+}
+fn changed_config(host:&str,path:&Path,name:&str)->ParticipantError {
+    let mut error=local("HOST_CONFIGURATION_CHANGED");
+    if host=="opencode" {error.details=Some(json!({"file":path,"field":format!("mcp.servers.{name}"),"next_action":"RESTORE_OR_RESELECT_ORIGINAL_OWNED_ENTRY"}));}
+    error
 }
 #[derive(Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -434,7 +498,7 @@ impl ProjectFiles {
             OwnershipStore::anchored(directory,"ownership.state",true)?
         }else{
             if kind==Some("OTHER"){return Err(local("HOST_INSTALLATION_RECOVERY_REQUIRED"))}
-            let directory=crate::onboarding_state::project(project,if host=="claude"{"claude-installations"}else{"installations"},true)?.unwrap();
+            let directory=crate::onboarding_state::project(project,match host {"claude"=>"claude-installations","opencode"=>"opencode-installations",_=>"installations"},true)?.unwrap();
             if kind.is_some() && !directory.join("ownership.state").is_file(){return Err(local("HOST_INSTALLATION_ORIGINAL_STATE_REQUIRED"))}
             let store=SecureStateStore::open(&directory.join("ownership.state")).map_err(|_|local("HOST_INSTALLATION_ALREADY_OWNED_OR_UNSAFE"))?;
             OwnershipStore::Protected(store)
@@ -574,7 +638,7 @@ impl Connect {
         self.require_writer()?;
         if !self.registry.participants.contains_key(participant)
             || !token(workspace)
-            || !["codex", "agy", "claude"].contains(&spec.host.as_str())
+            || !["codex", "agy", "claude", "opencode"].contains(&spec.host.as_str())
             || !spec.executable.is_absolute()
             || !std::fs::metadata(&spec.executable).is_ok_and(|m| m.is_file())
         {
@@ -616,11 +680,9 @@ impl Connect {
                 false,
             )?
         } else {
-            let mut value = parse_json_config(old_config.as_deref())?;
-            if value.get("mcpServers").is_none() {
-                value["mcpServers"] = json!({});
-            }
-            let existing = &value["mcpServers"][&name];
+            let mut value = if spec.host=="opencode" && old_config.is_none(){json!({})}else{parse_json_config(old_config.as_deref())?};
+            let entries=server_entries(&mut value,&spec.host)?;
+            let existing = entries.get(&name).unwrap_or(&Value::Null);
             if !existing.is_null()
                 && existing != &wanted
                 && prior.as_ref().is_none_or(|p| {
@@ -628,12 +690,12 @@ impl Connect {
                         || (existing != &p.entry && p.previous_entry.as_ref() != Some(existing))
                 })
             {
-                return Err(local("HOST_CONFIGURATION_CHANGED"));
+                return Err(changed_config(&spec.host,&config,&name));
             }
             if existing == &wanted {
                 None
             } else {
-                value["mcpServers"][&name] = wanted.clone();
+                entries.insert(name.clone(),wanted.clone());
                 Some(
                     serde_json::to_vec_pretty(&value)
                         .map_err(|_| local("HOST_CONFIGURATION_INVALID"))?,
@@ -741,6 +803,10 @@ impl Connect {
         if spec.host=="claude" {
             result["channel"]=json!({"state":"ACTIVATION_REQUIRED","maturity":"RESEARCH_PREVIEW","start_argv":["claude","--dangerously-load-development-channels",format!("server:{name}")],"host_acceptance":"NOT_ATTESTED","next_action":"ENABLE_CHANNEL_IN_CLAUDE_AND_VERIFY_A_REAL_MESSAGE"});
         }
+        if spec.host=="opencode" {
+            result["supported_host_api"]=json!("OPENCODE_V2");
+            result["host_delivery"]=json!("VERIFY_BOUND_OPENCODE_SESSION");
+        }
         Ok(result)
     }
     pub fn uninstall(
@@ -777,19 +843,17 @@ impl Connect {
             )?
         } else {
             let mut value = parse_json_config(old_config.as_deref())?;
-            if value["mcpServers"][&owned.name].is_null() {
+            let entries=server_entries(&mut value,&spec.host)?;
+            if !entries.contains_key(&owned.name) {
                 None
             } else {
-                if value["mcpServers"][&owned.name] != owned.entry
+                if entries[&owned.name] != owned.entry
                     && (owned.committed
-                        || owned.previous_entry.as_ref() != Some(&value["mcpServers"][&owned.name]))
+                        || owned.previous_entry.as_ref() != Some(&entries[&owned.name]))
                 {
-                    return Err(local("HOST_CONFIGURATION_CHANGED"));
+                    return Err(changed_config(&spec.host,&config_directory.path().join(config_name),&owned.name));
                 }
-                value["mcpServers"]
-                    .as_object_mut()
-                    .ok_or_else(|| local("HOST_CONFIGURATION_INVALID"))?
-                    .remove(&owned.name);
+                entries.remove(&owned.name);
                 Some(
                     serde_json::to_vec_pretty(&value)
                         .map_err(|_| local("HOST_CONFIGURATION_INVALID"))?,

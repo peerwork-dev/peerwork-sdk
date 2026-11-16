@@ -43,6 +43,8 @@ mod source;
 pub use discovery::Discovery;
 #[path="participant_connect_intent.rs"]
 mod intent;
+#[path="participant_connect_opencode.rs"]
+mod opencode;
 pub use intent::ConnectIntent;
 
 fn local(code: &str) -> ParticipantError {
@@ -1657,6 +1659,8 @@ pub fn cli(args: &[String]) -> Value {
                 "--codex-thread",
                 "--codex-session",
                 "--codex-auth-env",
+                "--opencode-session",
+                "--opencode-service",
                 "--agy-managed",
                 "--agy-executable",
                 "--agy-conversation",
@@ -1689,6 +1693,7 @@ pub fn cli(args: &[String]) -> Value {
         return json!({"state":"HELP","usage":[
             "peerwork connect --workspace WORKSPACE --install codex",
             "peerwork connect --workspace WORKSPACE --install claude",
+            "peerwork connect --workspace WORKSPACE --install opencode",
             "peerwork connect --workspace WORKSPACE --host EXISTING_AGY_HOST --install agy",
             "peerwork connect --new --workspace WORKSPACE --install HOST",
             "peerwork connect --workspace WORKSPACE --program"],
@@ -1970,6 +1975,11 @@ pub fn cli(args: &[String]) -> Value {
                     )
                     .await?;
             }
+            let mut selected_adapter=selected_adapter;
+            if values.get("--install").is_some_and(|host|host=="opencode") || values.contains_key("--opencode-session") || values.contains_key("--opencode-service") {
+                if selected_adapter.is_some(){return Err(local("SELECT_ONE_HOST_ADAPTER"));}
+                selected_adapter=opencode::select(&connect,&handle,&request.workspace_id,&project,&values).await?;
+            }
             let mut resume = false;
             if normal {
                 let ordinary = ConnectIntent {
@@ -1977,7 +1987,8 @@ pub fn cli(args: &[String]) -> Value {
                     host:values.get("--host").cloned(),
                     send:if values.contains_key("--tools-only")||values.contains_key("--no-send"){Some(false)}else if values.contains_key("--send"){Some(true)}else{None},
                     receive:if values.contains_key("--tools-only")||values.contains_key("--no-receive"){Some(false)}else if values.contains_key("--receive")&&!values.contains_key("--codex"){Some(true)}else{None},
-                    receive_mode:values.get("--receive-mode").map(|v|if v=="inbox"{ReceiveMode::Inbox}else{ReceiveMode::Push}),
+                    receive_mode:values.get("--receive-mode").map(|v|if v=="inbox"{ReceiveMode::Inbox}else{ReceiveMode::Push})
+                        .or_else(||selected_adapter.as_ref().filter(|a|a["kind"]=="opencode").map(|_|ReceiveMode::Push)),
                     require_body_keys:if values.contains_key("--body-keys"){Some(true)}else if values.contains_key("--tools-only"){Some(false)}else{None},
                     request_membership:if values.contains_key("--join"){Some(true)}else if values.contains_key("--tools-only"){Some(false)}else{None},
                 };
@@ -2073,6 +2084,9 @@ pub fn cli(args: &[String]) -> Value {
         })
     };
     let mut output = result().unwrap_or_else(|error| {
+        if matches!(error.code.as_str(),"OPENCODE_SESSION_SELECTION_REQUIRED"|"OPENCODE_SERVICE_UNAVAILABLE") {
+            return json!({"state":"PENDING","phase":"OPENCODE_HOST","blocker":{"code":error.code,"next_action":if error.code=="OPENCODE_SESSION_SELECTION_REQUIRED"{"SELECT_EXACT_EXISTING_OPENCODE_SESSION"}else{"START_OR_RESTORE_ORIGINAL_OPENCODE_V2_SERVICE"}},"details":error.details,"error":error});
+        }
         if matches!(error.code.as_str(),"RUNTIME_STARTING_REOBSERVE_SAME_BINDING"|"PROCESS_IDENTITY_UNCONFIRMED"|"RUNTIME_LAUNCH_RECOVERY_REQUIRED"){
             let selection=parse(args).unwrap_or_default();
             json!({"state":"PENDING","phase":"LOCAL_RUNTIME_STARTUP","setup_id":selection.get("--id"),"participant":selection.get("--participant"),"workspace_id":selection.get("--workspace"),"error":error,"next_action":if error.code=="RUNTIME_STARTING_REOBSERVE_SAME_BINDING"{"REOBSERVE_SAME_BINDING"}else{"VERIFY_ORIGINAL_LAUNCH_EVIDENCE"}})

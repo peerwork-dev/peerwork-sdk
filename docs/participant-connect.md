@@ -429,6 +429,7 @@ There is no automatic binary upgrade or replacement signer.
 
 | Entry | What this candidate can establish |
 | --- | --- |
+| OpenCode V2 | Native MCP/Skill installation, original local-service discovery and selected-session queued input through the shared Runtime. See [OpenCode](opencode.md). V1 is excluded. |
 | Existing selected Codex/managed AGY binding | Reuse the named destination; current caller and tools remain separately observed. |
 | Program already owning a Codex App Server client | Rust `Connect::connect_current` accepts `HostInvocation::CodexDynamicTool` from the actual server callback, checks its exact thread against the selected adapter and retains the host stage across approval. The owning program must integrate this call. |
 | AGY App owning integration | The same API accepts exact App conversation context and the explicitly enabled Sidecar/agentapi adapter. This is not CLI root metadata or a universal installed plugin. |

@@ -19,6 +19,8 @@ type R<T> = Result<T, &'static str>;
 mod agy_stdio;
 #[path = "communication_codex_proxy.rs"]
 mod codex_proxy;
+#[path = "communication_opencode.rs"]
+pub(crate) mod opencode;
 #[path = "communication_host_budget.rs"]
 pub(crate) mod operation;
 use operation::{Budget, Deadline};
@@ -593,6 +595,7 @@ impl Host {
     fn connect_recovery(config: Value, executor: tokio::runtime::Handle,progress:Budget,resume_allowed:bool) -> R<Self> {
         let kind = text(&config, "kind")?;
         let (name, mode, destination) = match kind {
+            "opencode" => ("OPENCODE_V2","LIVE",opencode::destination(&config)?),
             "codex" => (
                 "CODEX_APP_SERVER",
                 "LIVE",
@@ -792,6 +795,7 @@ impl Host {
         result
     }
     fn health_inner(&mut self, binding: &Value) -> R<Value> {
+        if self.config["kind"]=="opencode" {return opencode::health(self)}
         if self.config["kind"]=="codex"&&self.codex.is_none(){self.reconnect()?;}
         if let Some(host) = &mut self.agy_stdio {
             return host.health();
@@ -830,6 +834,7 @@ impl Host {
         result
     }
     fn deliver_inner(&mut self, binding: &Value, message: &Value) -> R<Value> {
+        if self.config["kind"]=="opencode" {return opencode::deliver(self,message)}
         if let Some(host) = &mut self.agy_stdio {
             return host.deliver(message);
         }

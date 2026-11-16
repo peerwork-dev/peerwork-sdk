@@ -33,6 +33,10 @@ without an Agent host, MCP or Skill.
    [availability](docs/member-availability.md) and [protocol tools](docs/protocol-session.md)
    through the same original client.
 
+Native0.3.37 adds [OpenCode V2](docs/opencode.md) through the same core, native
+MCP/Skill and a Rust adapter for durable selected-session input. See the
+[release notes](docs/releases/0.3.37.md).
+
 Native0.3.36 removes normal setup-ID and profile-file ceremony, preserves omitted
 choices when continuing an existing connection, and provides managed state for
 an explicitly new Peer. The updater inventories complete effective host
@@ -54,6 +58,7 @@ host, MCP and a daemon are optional. Historical changes are in [release notes](d
 | --- | --- |
 | Install and verify an Agent | [Quickstart](docs/native-participant-quickstart.md) |
 | Claude Code installation and opt-in Channels (development) | [Claude Code](docs/claude-code.md) |
+| OpenCode V2 tools and queued automatic receiving | [OpenCode V2](docs/opencode.md) |
 | Identity, rights and additional roles | [Connect](docs/participant-connect.md) |
 | Program API and resident runtime | [Participant interface](docs/participant-runtime-candidate.md) |
 | Attach tools without identity migration | [Existing client tools](docs/existing-client-tools.md) |

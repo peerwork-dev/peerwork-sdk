@@ -65,6 +65,7 @@ impl HostOwner {
     /// Refuse a duplicate selection before connecting to an occupied endpoint.
     pub fn select(config: &Value) -> R<Option<Self>> {
         let selection = match config["kind"].as_str() {
+            Some("opencode")=>json!(["peerwork.host-selection.v1","opencode",config["service_file"],config["session_id"]]),
             Some("bridge") => return Ok(None), // The host-user bridge owns the physical session.
             Some("codex") => json!([
                 "peerwork.host-selection.v1",

@@ -44,6 +44,7 @@ impl HostConfig {
             return Err(error("HOST_CONFIG_INVALID"));
         }
         let keys: &[&str] = match self.adapter["kind"].as_str() {
+            Some("opencode")=>&["kind","service_file","session_id","directory"],
             Some("codex") => &[
                 "kind",
                 "endpoint",
@@ -84,6 +85,7 @@ impl HostConfig {
             }
             target.watch.validate()?;
         }
+        if self.adapter["kind"]=="opencode" {crate::communication_host::opencode::destination(&self.adapter).map_err(error)?;}
         let credential = if self.adapter["kind"] == "bridge" {
             let path = self.adapter["token_file"]
                 .as_str()
@@ -99,7 +101,9 @@ impl HostConfig {
         } else {
             None
         };
-        Ok(peerwork_core::crypto::sha256_hex(json!({"kind":self.adapter["kind"],"endpoint":self.adapter["endpoint"],"thread":self.adapter["thread_id"],"conversation":self.adapter["conversation_id"],"destination":self.adapter["destination"],"credential":credential}).to_string().as_bytes()))
+        let mut key=json!({"kind":self.adapter["kind"],"endpoint":self.adapter["endpoint"],"thread":self.adapter["thread_id"],"conversation":self.adapter["conversation_id"],"destination":self.adapter["destination"],"credential":credential});
+        if self.adapter["kind"]=="opencode" {key["opencode"]=json!([self.adapter["service_file"],self.adapter["session_id"],self.adapter["directory"]]);}
+        Ok(peerwork_core::crypto::sha256_hex(key.to_string().as_bytes()))
     }
 }
 type SharedAdapter=Arc<Mutex<std::sync::Weak<Mutex<Host>>>>;

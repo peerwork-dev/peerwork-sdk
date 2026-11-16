@@ -52,6 +52,17 @@ create a replacement Peer. Existing custom clients use the supported
 
 ## Select the host
 
+For OpenCode V2:
+
+```sh
+peerwork connect --workspace WORKSPACE_ID --install opencode
+```
+
+Select the exact existing conversation from the returned continuation when
+needed. The original local service and shared Runtime handle compact queued
+notifications. No additional daemon or JavaScript wrapper is needed. See
+[OpenCode V2](opencode.md) for activation, self-test and original-state recovery.
+
 For Claude Code:
 
 ```sh

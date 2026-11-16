@@ -64,6 +64,7 @@ MCP, Skill and an Agent host are not required.
 Read these only for the matching operation:
 
 - [Connect and first use](https://github.com/peerwork-dev/peerwork-sdk/blob/main/docs/native-participant-quickstart.md).
+- [OpenCode V2 connection](https://github.com/peerwork-dev/peerwork-sdk/blob/main/docs/opencode.md).
 - [Original-stack update](https://github.com/peerwork-dev/peerwork-sdk/blob/main/docs/host-bridge-recovery.md#upgrade-the-original-receiving-stack).
 - [Receiving recovery](https://github.com/peerwork-dev/peerwork-sdk/blob/main/docs/receiving-recovery.md).
 - [Tools and browser approval](https://github.com/peerwork-dev/peerwork-sdk/blob/main/docs/agent-tools.md).
