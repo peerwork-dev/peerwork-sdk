@@ -165,6 +165,53 @@ async fn surviving_frontend_restores_the_committed_launcher_instead_of_itself() 
     assert_eq!(std::fs::read_link(format!("/proc/{}/exe",restored["pid"])).unwrap(),target);
 }
 
+#[tokio::test(flavor="multi_thread",worker_threads=2)]
+#[ignore="requires exact candidate CLI and synthetic process/loopback IPC"]
+async fn explicit_resume_and_adopt_preserve_the_committed_launcher() {
+    let mut fixture=Fixture::new().await;
+    let target=fixture.root.path().join("committed-peerwork");std::fs::copy(&fixture.binary,&target).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&target,std::fs::Permissions::from_mode(0o700)).unwrap();
+    let previous=fixture.launch()["pid"].as_u64().unwrap(); fixture.stop();
+    let output=Command::new(&target).args(["connect","--local"]).arg(&fixture.directory)
+        .args(["--participant","peer","--update","apply"]).output().unwrap();
+    let updated:Value=serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(updated["runtime"],"STOPPED_PRESERVED","{updated}");
+    let stopped=crate::runtime_startup::read(&fixture.config.state_directory).unwrap().unwrap();
+    assert!(!stopped.automatic); assert_eq!(stopped.launcher.unwrap().executable,target);
+    // The receiving fixture has no business profile. Resume must restore the
+    // original runtime before profile selection, regardless of that later error.
+    let _=Command::new(&fixture.binary).args(["agent","--local"]).arg(&fixture.directory)
+        .args(["--participant","peer","delivery","resume"]).output().unwrap();
+    let restored=fixture.restored(previous).await;
+    assert_eq!(std::fs::read_link(format!("/proc/{}/exe",restored["pid"])).unwrap(),target);
+    fixture.crash();
+    let mut connect=Connect::open(&fixture.directory).unwrap();
+    connect.adopt("peer").await.unwrap();drop(connect);
+    let adopted=fixture.restored(restored["pid"].as_u64().unwrap()).await;
+    assert_eq!(std::fs::read_link(format!("/proc/{}/exe",adopted["pid"])).unwrap(),target);
+}
+
+#[tokio::test(flavor="multi_thread",worker_threads=2)]
+#[ignore="requires exact candidate CLI and synthetic process/loopback IPC"]
+async fn fast_child_waits_for_the_parent_intent_record() {
+    let fixture=Fixture::new().await;fixture.stop();
+    crate::runtime_startup::enable(&fixture.config.state_directory).unwrap();
+    let intent=crate::runtime_startup::launch_guard(&fixture.config.state_directory).unwrap();
+    let mut child=OriginalChild(Command::new(&fixture.binary).args(["runtime","run"])
+        .arg(fixture.config.state_directory.join("config.json"))
+        .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap());
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    assert!(child.0.try_wait().unwrap().is_none(),"short intent lock must not kill a fast child");
+    drop(intent);
+    tokio::time::timeout(Duration::from_secs(10),async {loop {
+        if RuntimeClient::connect(fixture.registration.endpoint_path.clone(),&fixture.registration.origin,&fixture.registration.actor_id).await.is_ok(){break;}
+        assert!(child.0.try_wait().unwrap().is_none());
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }}).await.unwrap();
+    fixture.stop();
+}
+
 #[tokio::test(flavor="multi_thread",worker_threads=3)]
 #[ignore="requires exact candidate CLI and selected local TEST PostgreSQL/product fixture"]
 async fn restarted_installation_automatically_notifies_a_fresh_encrypted_message() {

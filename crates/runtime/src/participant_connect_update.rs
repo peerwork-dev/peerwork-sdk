@@ -254,7 +254,8 @@ impl Connect {
             if executable_digest(&update.executable)? != update.executable_digest {
                 return Err(local("UPDATE_RESUME_ORIGINAL_ARTIFACT_AND_SELECTION"));
             }
-            update.original.restart(&update.original.config).await?;
+            let launcher=crate::runtime_startup::Launcher { executable:update.executable.clone(), sha256:update.executable_digest.clone() };
+            update.original.restart_pinned(&update.original.config,&launcher).await?;
             let status = observation(&update.original).await?;
             if !compatible(&status, &required) {
                 return Err(local("UPDATE_TARGET_MISSING_REQUIRED_FEATURE"));
@@ -270,6 +271,10 @@ impl Connect {
             }
         } else if bootstrap::owned_runtime(self, &handle)?.running()? {
             return Err(local("UPDATE_RUNTIME_STATE_CHANGED"));
+        } else {
+            bootstrap::owned_runtime(self,&handle)?.commit_stopped_launcher(crate::runtime_startup::Launcher {
+                executable:update.executable.clone(),sha256:update.executable_digest.clone()
+            })?;
         }
         update.phase = Phase::Complete;
         save(&store, &update)?;

@@ -911,7 +911,20 @@ pub async fn serve(
     if crate::runtime_startup::read(&config.state_directory)?.is_some_and(|p| !p.automatic) {
         return Err(local("RUNTIME_AUTOMATIC_START_DISABLED"));
     }
-    crate::runtime_startup::qualify(&config.state_directory)?;
+    // The parent records PID/launcher while holding the short intent fence.
+    // A fast child waits for that record instead of treating Busy as failure.
+    for attempt in 0..=50 {
+        match crate::runtime_startup::qualify(&config.state_directory) {
+            Ok(()) => break,
+            Err(error) if error.code == "RUNTIME_STARTUP_POLICY_BUSY" && attempt < 50 => {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            },
+            Err(error) => return Err(error),
+        }
+    }
+    if crate::runtime_startup::read(&config.state_directory)?.is_some_and(|p| !p.automatic) {
+        return Err(local("RUNTIME_AUTOMATIC_START_DISABLED"));
+    }
     let mut owners = BTreeMap::new();
     let mut sessions = Vec::new();
     let mut names = BTreeSet::new();

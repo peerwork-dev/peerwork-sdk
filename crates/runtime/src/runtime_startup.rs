@@ -55,6 +55,7 @@ pub(crate) fn read(directory: &Path) -> Result<Option<Policy>> {
 /// Enrollment is explicit installation work. Reinstallation never clears stop.
 pub(crate) fn enroll(directory: &Path) -> Result<Policy> {
     let mut policy = change(directory, None)?;
+    if policy.qualified { return Ok(policy); }
     // New owned launch records pin the actual executable, before installation
     // returns. This closes the first-install crash window without a timer.
     let path = directory.join("bootstrap.state");
@@ -109,6 +110,18 @@ pub(crate) fn disable(directory: &Path) -> Result<()> {
 pub(crate) fn enable(directory: &Path) -> Result<()> {
     if read(directory)?.is_some() { change(directory, Some(true))?; }
     Ok(())
+}
+/// An explicit stopped-stack update commits the next artifact without enabling
+/// startup or claiming that a runtime/host is live.
+pub(crate) fn select_launcher(directory: &Path, launcher: Launcher) -> Result<()> {
+    if read(directory)?.is_none() { return Ok(()); }
+    launcher.verify()?;
+    let store=SecureStateStore::open(&directory.join("startup.state"))
+        .map_err(|_|error("RUNTIME_STARTUP_POLICY_BUSY"))?;
+    let mut policy=decode(&store.read_exact().map_err(|_|error("RUNTIME_STARTUP_POLICY_UNAVAILABLE"))?
+        .ok_or_else(||error("RUNTIME_STARTUP_POLICY_INVALID"))?)?;
+    policy.launcher=Some(launcher); policy.qualified=true; policy.qualified_pid=0;
+    store.write_exact(&serde_json::to_vec(&policy).unwrap()).map_err(|_|error("RUNTIME_STARTUP_POLICY_WRITE_FAILED"))
 }
 /// Hold only across the synchronous spawn/record transition. User stop can
 /// proceed during endpoint readiness/network waits, and wins before next spawn.

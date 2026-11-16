@@ -172,7 +172,7 @@ impl Connect {
             // another engine or synthesize an empty journal after interruption.
             self.registry.profile_upgrades.insert(id.clone(),owned.clone());self.save()?;
             let _maintenance=crate::runtime_startup::recovery_fence(&owned.config.state_directory)?;
-            owned.stop().await?;owned.restart(&owned.config).await?;
+            owned.stop().await?;owned.upgrade_current(&owned.config).await?;
         }
         let source=self.original_client(&handle).await?;
         let binding=source.call(json!({"method":"binding"})).await?;
