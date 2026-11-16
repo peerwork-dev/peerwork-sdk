@@ -33,6 +33,9 @@ use tokio::sync::{mpsc, oneshot};
 pub type Result<T> = std::result::Result<T, ParticipantError>;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ParticipantError {
+    /// Owner-local filesystem observations. Never serialized into RPC/MCP data.
+    #[serde(skip)]
+    pub local_diagnostic: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub details: Option<Value>,
     pub code: String,
@@ -45,7 +48,7 @@ pub struct ParticipantError {
 impl ParticipantError {
     pub(crate) fn local(code: &str, phase: &str) -> Self {
         Self {
-            details: None,
+            local_diagnostic: None, details: None,
             code: code.into(),
             phase: phase.into(),
             effect_certainty: "NOT_SUBMITTED".into(),
@@ -55,7 +58,7 @@ impl ParticipantError {
     }
     fn unavailable() -> Self {
         Self {
-            details: None,
+            local_diagnostic: None, details: None,
             code: "ENGINE_UNAVAILABLE".into(),
             phase: "LOCAL_IPC".into(),
             effect_certainty: "UNKNOWN".into(),
@@ -254,7 +257,7 @@ impl Invoke {
                 .or_else(|| value["result"]["structure"]["instance"][field].as_str());
             if selected.is_some_and(|actual| actual != expected) {
                 return Err(ParticipantError {
-                    details: None, code: "VERIFIED_SCOPE_MISMATCH".into(),
+                    local_diagnostic: None, details: None, code: "VERIFIED_SCOPE_MISMATCH".into(),
                     phase: "VERIFICATION".into(),
                     effect_certainty: "UNKNOWN".into(),
                     recovery: "INSPECT_PINNED_SCOPE".into(),
@@ -1379,7 +1382,7 @@ async fn engine_loop(
                             let value=op.outcome.as_ref().ok_or_else(||ParticipantError::local("RESULT_NOT_AVAILABLE","OBSERVATION"))?;
                             let prepared=if value["detail_source"]=="VERIFIED_NATIVE_JOURNAL"{
                                 let command=op.command_id.as_deref().ok_or_else(||ParticipantError::local("RESULT_NOT_AVAILABLE","OBSERVATION"))?;
-                                let result=access.cached_participant_result(command,&stop).map_err(|e|ParticipantError{details: None, code:KernelPublicError::from(e).code.into(),phase:"RESULT_VERIFICATION".into(),effect_certainty:op.effect_certainty.clone(),recovery:"INSPECT_ORIGINAL_OPERATION".into(),operation_id:Some(id.clone())})?
+                                let result=access.cached_participant_result(command,&stop).map_err(|e|ParticipantError{local_diagnostic: None, details: None, code:KernelPublicError::from(e).code.into(),phase:"RESULT_VERIFICATION".into(),effect_certainty:op.effect_certainty.clone(),recovery:"INSPECT_ORIGINAL_OPERATION".into(),operation_id:Some(id.clone())})?
                                     .ok_or_else(||ParticipantError::local("RESULT_NOT_AVAILABLE","OBSERVATION"))?;
                                 let verified=request.verify_result_scope(crate::participant_outcome::accepted(result))?;
                                 selection.prepare("VERIFIED_NATIVE_COMMAND_RESULT",&verified)?
@@ -1415,7 +1418,7 @@ async fn engine_loop(
                                 if details.get("retryable").is_none(){details["retryable"]=json!(matches!(e.code,"TIMEOUT"|"TRANSPORT_FAILED"));}
                             }
                             let recovery=if read{details["recovery"].as_str().unwrap_or(if matches!(e.code,"TIMEOUT"|"TRANSPORT_FAILED"){"REPEAT_SELECTED_READ"}else{"INSPECT_SELECTED_READ_OR_CONFIGURATION"})}else{"REPEAT_SELECTED_READ_OR_CONTROL"}.to_owned();
-                            ParticipantError{details:Some(details),code:e.code.into(),phase:if read{"READ"}else{"REQUEST"}.into(),effect_certainty:if read{"NO_EFFECT"}else{"UNKNOWN"}.into(),recovery,operation_id:if read{None}else{Some(request.operation_id.clone())}}
+                            ParticipantError{local_diagnostic: None, details:Some(details),code:e.code.into(),phase:if read{"READ"}else{"REQUEST"}.into(),effect_certainty:if read{"NO_EFFECT"}else{"UNKNOWN"}.into(),recovery,operation_id:if read{None}else{Some(request.operation_id.clone())}}
                         }).and_then(|value|request.verify_result_scope(value));let _=reply.send(r);JobResult::Request
                     });
                     job_kinds.insert(handle.id(),JobKind::Request);

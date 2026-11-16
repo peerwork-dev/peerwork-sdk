@@ -275,7 +275,11 @@ where R:AsyncBufRead+Send+Unpin+'static,W:AsyncWrite+Unpin {
                             // an identity-bound tool catalog across local clients.
                             if modern {result["ttlMs"]=json!(0);result["cacheScope"]=json!("private");}
                             write(&mut writer,success(id,result,modern)).await?
-                        },Err(e)=>write(&mut writer,error_response(id,&e.code)).await?};
+                        },Err(e)=>{
+                            if let Some(diagnostic)=&e.local_diagnostic{eprintln!("Peerwork local diagnostic: {diagnostic}");}
+                            let mut response=error_response(id,&e.code);response["error"]["data"]=json!({"error":e});
+                            write(&mut writer,response).await?
+                        }};
                     },
                     "tools/call"=>{
                         if calls.len()>=MAX_INFLIGHT{write(&mut writer,error(id,1001,"MCP_INFLIGHT_LIMIT; no new tool admission")).await?;continue;}
@@ -292,7 +296,7 @@ where R:AsyncBufRead+Send+Unpin+'static,W:AsyncWrite+Unpin {
                             let (out,is_error)=match tools.call(request).await{
                                 Ok(mut value)=>{if context{value["host_channel"]=channel_state.status();crate::agent_delivery_status::refresh(&mut value);}
                                     if delivery{crate::agent_delivery_status::refresh_delivery(&mut value,&channel_state.status());}let failed=matches!(value["state"].as_str(),Some("FAILED"|"REJECTED_NO_EFFECT"|"REJECTED"));if consume&&!failed{channel_state.consumed();}(value,failed)},
-                                Err(mut e)=>{if e.operation_id.is_none(){e.operation_id=original;}(json!({"error":e}),true)},
+                                Err(mut e)=>{if let Some(diagnostic)=&e.local_diagnostic{eprintln!("Peerwork local diagnostic: {diagnostic}");}if e.operation_id.is_none(){e.operation_id=original;}(json!({"error":e}),true)},
                             };
                             let result=json!({"content":[{"type":"text","text":out.to_string()}],"structuredContent":out,"isError":is_error});
                             (task_key,success(id,result,modern))
@@ -479,7 +483,7 @@ mod tests {
         assert_eq!(offline["result"]["isError"], true);
         assert_eq!(
             offline["result"]["structuredContent"]["error"]["code"],
-            "ENDPOINT_NOT_PRIVATE"
+            "ENDPOINT_NOT_FOUND"
         );
         drop(cw);
         drop(cr);

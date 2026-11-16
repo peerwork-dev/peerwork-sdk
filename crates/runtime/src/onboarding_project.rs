@@ -54,7 +54,14 @@ mod platform {
         if !matches!(node.policy, Policy::Namespace) {
             if m.uid() != unsafe { libc::geteuid() } { return Err(failure(&node.path, "STAT", "OWNER_MISMATCH")); }
             let mask = if matches!(node.policy, Policy::Private) { 0o077 } else { 0o022 };
-            if m.mode() & mask != 0 { return Err(failure(&node.path, "STAT", "CONFIGURATION_PERMISSIONS")); }
+            if m.mode() & mask != 0 {
+                let mut error=failure(&node.path,"STAT","CONFIGURATION_PERMISSIONS");
+                for value in error.local_diagnostic.iter_mut().chain(error.details.iter_mut().filter_map(|d|d.get_mut("local_diagnostic"))) {
+                    value["permission_requirement"]=serde_json::json!(if matches!(node.policy,Policy::Private){"OWNER_ONLY"}else{"NO_GROUP_OR_OTHER_WRITE"});
+                    value["expected_mode"]=serde_json::json!(if matches!(node.policy,Policy::Private){"0700"}else{"0755"});
+                }
+                return Err(error);
+            }
         }
         Ok(m)
     }
@@ -131,6 +138,17 @@ mod platform {
             }
             Ok(())
         }
+        /// Reuse an established private directory without reinterpreting its
+        /// namespace ancestors. Reads stay relative to its original descriptor.
+        /// A changed named directory is rejected, never adopted as the original.
+        fn verify_selected(&self) -> Result<()> {
+            let opened=metadata(&self.0)?;
+            let named=std::fs::symlink_metadata(self.path()).map_err(|e|io_error(self.path(),"VERIFY",&e))?;
+            if named.file_type().is_symlink() || !named.is_dir() || named.dev()!=opened.dev() || named.ino()!=opened.ino() {
+                return Err(failure(self.path(),"VERIFY","PATH_CHANGED"));
+            }
+            Ok(())
+        }
         pub(crate) fn child(&self, value: &str, create: bool, private: bool) -> Result<Option<Self>> {
             self.verify()?; let path = self.path().join(value); let n = name(OsStr::new(value), &path)?;
             let flags = libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW;
@@ -148,8 +166,14 @@ mod platform {
             result.verify()?; Ok(Some(result))
         }
         pub(crate) fn read(&self, value: &str, limit: usize, private: bool) -> Result<Option<Vec<u8>>> {
+            self.read_inner(value,limit,private,false)
+        }
+        pub(crate) fn read_selected(&self,value:&str,limit:usize)->Result<Option<Vec<u8>>> {
+            self.read_inner(value,limit,true,true)
+        }
+        fn read_inner(&self,value:&str,limit:usize,private:bool,selected:bool)->Result<Option<Vec<u8>>> {
             use std::os::unix::fs::FileTypeExt;
-            self.verify()?;
+            if selected {self.verify_selected()?;}else{self.verify()?;}
             if private {
                 let m = metadata(&self.0)?;
                 if m.uid() != unsafe { libc::geteuid() } || m.mode() & 0o077 != 0 { return Err(failure(self.path(), "READ", "PRIVATE_PARENT_REQUIRED")); }
@@ -171,7 +195,7 @@ mod platform {
                 || named.st_dev as u64 != opened.dev() || named.st_ino as u64 != opened.ino() || after.uid() != opened.uid() || after.mode() != opened.mode() || after.nlink() != 1 {
                 return Err(failure(&path, "READ", "PATH_OR_CONTENT_CHANGED"));
             }
-            self.verify()?; Ok(Some(bytes))
+            if selected {self.verify_selected()?;}else{self.verify()?;} Ok(Some(bytes))
         }
         pub(crate) fn replace(&self, value: &str, expected: Option<&[u8]>, bytes: &[u8]) -> Result<()> {
             self.replace_with(value, expected, bytes, || {})
@@ -266,6 +290,7 @@ mod platform {
             if create{crate::onboarding_files::directory(&p,private)?;}else{crate::onboarding_files::check_directory(&p,private)?;}Self::open(&p).map(Some)
         }
         pub(crate) fn read(&self,name:&str,max:usize,private:bool)->Result<Option<Vec<u8>>>{self.verify()?;if private{crate::onboarding_files::read_optional(&self.path.join(name),max)}else{crate::onboarding_files::read_public_optional(&self.path.join(name),max)}}
+        pub(crate) fn read_selected(&self,name:&str,max:usize)->Result<Option<Vec<u8>>>{self.read(name,max,true)}
         pub(crate) fn replace(&self,name:&str,old:Option<&[u8]>,bytes:&[u8])->Result<()>{self.verify()?;crate::onboarding_files::replace_if_unchanged(&self.path.join(name),old,bytes)}
         pub(crate) fn replace_private(&self,name:&str,old:Option<&[u8]>,bytes:&[u8])->Result<()>{self.verify()?;crate::onboarding_files::replace_if_unchanged(&self.path.join(name),old,bytes)}
         pub(crate) fn remove(&self,name:&str,old:&[u8])->Result<()>{self.verify()?;crate::onboarding_files::remove_if_unchanged(&self.path.join(name),old)}

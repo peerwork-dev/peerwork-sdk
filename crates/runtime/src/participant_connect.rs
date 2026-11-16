@@ -324,6 +324,14 @@ impl Connect {
         let (registry,private_directory)=discovery::inspect_original_store(directory)?;
         Ok(Self{directory:directory.into(),private_directory,store:None,registry,#[cfg(test)] interrupt_after_admission:false})
     }
+    pub(crate) fn inspection_directory(&self)->crate::onboarding_project::Directory {
+        self.private_directory.clone()
+    }
+    pub(crate) fn inspect_opened(directory:crate::onboarding_project::Directory)->Result<Self> {
+        let registry=discovery::inspect_opened_store(&directory)?;
+        Ok(Self{directory:directory.path().into(),private_directory:directory,store:None,registry,
+            #[cfg(test)] interrupt_after_admission:false})
+    }
     fn require_writer(&self) -> Result<()> {
         if self.store.is_some() {
             Ok(())
@@ -2108,7 +2116,9 @@ pub fn cli(args: &[String]) -> Value {
             Ok(out)
         })
     };
+    let mut owner_diagnostic=None;
     let mut output = result().unwrap_or_else(|error| {
+        owner_diagnostic=error.local_diagnostic.clone();
         if matches!(error.code.as_str(),"OPENCODE_SESSION_SELECTION_REQUIRED"|"OPENCODE_SERVICE_UNAVAILABLE") {
             return json!({"state":"PENDING","phase":"OPENCODE_HOST","blocker":{"code":error.code,"next_action":if error.code=="OPENCODE_SESSION_SELECTION_REQUIRED"{"SELECT_EXACT_EXISTING_OPENCODE_SESSION"}else{"START_OR_RESTORE_ORIGINAL_OPENCODE_V2_SERVICE"}},"details":error.details,"error":error});
         }
@@ -2118,7 +2128,7 @@ pub fn cli(args: &[String]) -> Value {
         } else {json!({"state":"FAILED","error":error})}
     });
     if output["state"] == "FAILED" {
-        if let Some(diagnostic) = crate::onboarding_files::take_diagnostic() {
+        if let Some(diagnostic) = owner_diagnostic.or_else(crate::onboarding_files::take_diagnostic) {
             if output["error"]["code"]=="ORIGINAL_LOCAL_REGISTRY_CONFIRMATION_REQUIRED" {
                 if let Some(path)=diagnostic["original_registry"].as_str(){
                     output["next_actor"]=json!("LOCAL_RUNTIME_OWNER");

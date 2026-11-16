@@ -879,7 +879,7 @@ fn endpoint(path: &Path, address: SocketAddr, token: &str, access: &str) -> Resu
 }
 fn endpoint_control(path: &Path, address: SocketAddr, token: &str, access: &str,control_address:Option<SocketAddr>) -> Result<()> {
     if path.exists() {
-        private_json(path, 4096).map_err(|_| local("ENDPOINT_NOT_PRIVATE"))?;
+        endpoint_json(path)?;
         std::fs::remove_file(path).map_err(|_| local("ENDPOINT_WRITE_FAILED"))?;
     }
     let wire = serde_json::to_vec(&Endpoint {
@@ -1107,7 +1107,7 @@ pub async fn serve(
 /// Native frontends use RuntimeClient; the shared encrypted channel owns the
 /// wire protocol rather than making each language reimplement its handshake.
 fn load_endpoint(endpoint_path: &Path) -> Result<Endpoint> {
-    let value = private_json(endpoint_path, 4096).map_err(|_| local("ENDPOINT_NOT_PRIVATE"))?;
+    let value = endpoint_json(endpoint_path)?;
     let endpoint: Endpoint =
         serde_json::from_value(value).map_err(|_| local("ENDPOINT_INVALID"))?;
     if endpoint.format != ENDPOINT_FORMAT
@@ -1121,6 +1121,23 @@ fn load_endpoint(endpoint_path: &Path) -> Result<Endpoint> {
     }
     if endpoint.control_address.is_some_and(|address|!address.ip().is_loopback()||address.port()==0){return Err(local("ENDPOINT_INVALID"));}
     Ok(endpoint)
+}
+fn endpoint_json(path:&Path)->Result<Value> {
+    let bytes=crate::secure_state::read_private_file_diagnosed(path,4096).map_err(|mut error| {
+        let reason=error.details.as_ref().and_then(|d|d["local_diagnostic"]["reason"].as_str()).unwrap_or("");
+        error.code=match reason {
+            "NOT_FOUND"=>"ENDPOINT_NOT_FOUND",
+            "PERMISSION_DENIED"=>"ENDPOINT_ACCESS_DENIED",
+            "FILE_TOO_LARGE"=>"ENDPOINT_TOO_LARGE",
+            "PATH_CHANGED"=>"ENDPOINT_CHANGED",
+            "FILESYSTEM_ERROR"=>"ENDPOINT_READ_FAILED",
+            _=>"ENDPOINT_NOT_PRIVATE",
+        }.into();error.phase="LOCAL_IPC".into();error
+    })?;
+    peerwork_core::strict_json::parse_strict_json(&bytes).map_err(|_| {
+        let mut error=crate::onboarding_files::path_error(path,"LOCAL_ENDPOINT","PARSE","INVALID_JSON");
+        error.code="ENDPOINT_JSON_INVALID".into();error.phase="LOCAL_IPC".into();error
+    })
 }
 /// Low-level local RPC, including the separately authorized admin interface.
 pub async fn call(endpoint_path: &Path, request: Value) -> Result<Value> {

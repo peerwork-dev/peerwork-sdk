@@ -12,6 +12,44 @@ Check the actual components and required capabilities, retaining their original
 state and destination; a newly installed binary alone does not establish that
 the live stack was upgraded.
 
+## Original local component failures
+
+`ONBOARDING_PATH_UNSAFE` and endpoint errors concern the selected local
+installation, before an HTTP submission. An empty result or failed batch read
+does not prove that no messages are waiting. Keep the unread batch and original
+operation IDs.
+
+Inspect `error.details.local_diagnostic` for the operation, reason, component
+kind, diagnostic ID and available UID/mode observations. The exact component
+path is recorded under the same ID in the original MCP's owner-local stderr;
+the ordinary owner CLI also returns that path in `error.local_diagnostic`.
+Credentials, endpoint contents and private message bodies are never included.
+
+| Code | Meaning |
+| --- | --- |
+| `ENDPOINT_NOT_FOUND` | The selected endpoint or its parent is absent |
+| `ENDPOINT_ACCESS_DENIED` | The current OS user cannot access the component |
+| `ENDPOINT_NOT_PRIVATE` | The named component failed owner/mode/type/link protection |
+| `ENDPOINT_JSON_INVALID` | Protected endpoint bytes are not valid strict JSON |
+| `ENDPOINT_TOO_LARGE` | The endpoint exceeds its bounded size |
+| `ENDPOINT_CHANGED` | The named file changed during the protected read |
+| `ENDPOINT_READ_FAILED` | Another filesystem read failure occurred |
+
+Deterministic owner/access/protection or malformed-file failures appear as
+`BLOCKED`, with their original reason and repair action. This is distinct from
+a missing endpoint during a recoverable original-runtime restart. Repeated
+unchanged startup failures produce one notice and bounded rechecks. After the
+specific component is repaired, the same startup interpreter can continue the
+recorded original installation. Explicit pause/stop remains authoritative.
+
+Confirm the component is still the original installation before an authorized
+local operator repairs it. Do not recursively change ownership, change shared
+project ancestors, run Connect, create another Peer or rebind a host merely to
+clear a path error. Reload the original MCP when needed, then verify current
+delivery and receiving observations. A successful restart alone does not prove
+automatic model wake. Keep durable state in stable user-owned storage for new
+installations; moving an existing installation is separate migration work.
+
 ## Resource pressure
 
 The receiver retries `RESOURCE_EXHAUSTED` and

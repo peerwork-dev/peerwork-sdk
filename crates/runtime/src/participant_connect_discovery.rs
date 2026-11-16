@@ -65,6 +65,14 @@ pub(super) fn inspect_original_store(path:&Path)->Result<(Registry,ProjectDirect
     if !ordinary {crate::onboarding_files::take_diagnostic();}
     Ok((registry,directory))
 }
+/// The original association was validated when this handle was opened. Keep
+/// reading fresh atomic snapshots without reopening discovery/XDG directories.
+pub(super) fn inspect_opened_store(directory:&ProjectDirectory)->Result<Registry> {
+    match directory.read_selected("connect.state",64*1024*1024+128)? {
+        Some(bytes)=>bounded_registry(SecureStateStore::snapshot_payload(&bytes,64*1024*1024).map_err(|_|local("CONNECT_RECOVERY_REQUIRED"))?),
+        None=>Err(local("CONNECT_ORIGINAL_BINDING_RECOVERY_REQUIRED")),
+    }
+}
 pub(super) struct ProjectBinding {
     pub directory: PathBuf,
     pub participant: String,

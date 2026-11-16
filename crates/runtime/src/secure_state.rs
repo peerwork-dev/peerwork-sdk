@@ -71,24 +71,53 @@ pub(crate) fn read_private_file_bounded(
     path: &Path,
     max_bytes: usize,
 ) -> Result<Zeroizing<Vec<u8>>, SecureStateError> {
-    check_private_parent(path)?;
-    check_private_file(path)?;
-    let mut file = open_state_read(path)?;
-    let opened = file.metadata()?;
+    read_private_file_inner(path,max_bytes).map_err(|error|error.source)
+}
+
+struct PrivateReadError {source:SecureStateError,path:PathBuf,operation:&'static str,reason:&'static str}
+impl PrivateReadError {
+    fn io(path:&Path,operation:&'static str,error:std::io::Error)->Self {
+        let reason=match error.kind(){std::io::ErrorKind::NotFound=>"NOT_FOUND",std::io::ErrorKind::PermissionDenied=>"PERMISSION_DENIED",_=>"FILESYSTEM_ERROR"};
+        Self{source:SecureStateError::Io(error),path:path.into(),operation,reason}
+    }
+    fn protection(path:&Path,reason:&'static str)->Self {
+        Self{source:SecureStateError::Protection,path:path.into(),operation:"STAT",reason}
+    }
+}
+/// The same private reader with actionable local diagnostics, without contents
+/// or OS error text. Legacy secret-state callers keep their existing error type.
+pub(crate) fn read_private_file_diagnosed(path:&Path,max_bytes:usize)->crate::participant::Result<Zeroizing<Vec<u8>>> {
+    read_private_file_inner(path,max_bytes).map_err(|failure| {
+        let mut error=crate::onboarding_files::path_error(&failure.path,"LOCAL_ENDPOINT",failure.operation,failure.reason);
+        for value in error.local_diagnostic.iter_mut().chain(error.details.iter_mut().filter_map(|d|d.get_mut("local_diagnostic"))) {
+            value["expected_owner"]=serde_json::json!("EFFECTIVE_USER");
+            value["expected_mode"]=serde_json::json!(if failure.path==path{"0600"}else{"0700"});
+        }
+        error
+    })
+}
+fn read_private_file_inner(path:&Path,max_bytes:usize)->Result<Zeroizing<Vec<u8>>,PrivateReadError> {
+    private_parent(path)?;
+    private_file(path)?;
+    let mut file = open_state_read(path).map_err(|source| match source {
+        SecureStateError::Io(error)=>PrivateReadError::io(path,"OPEN",error),
+        source=>PrivateReadError{source,path:path.into(),operation:"OPEN",reason:"PROTECTION"},
+    })?;
+    let opened = file.metadata().map_err(|e|PrivateReadError::io(path,"STAT",e))?;
     if opened.len() > max_bytes as u64 {
-        return Err(SecureStateError::TooLarge);
+        return Err(PrivateReadError{source:SecureStateError::TooLarge,path:path.into(),operation:"READ",reason:"FILE_TOO_LARGE"});
     }
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        let named = std::fs::symlink_metadata(path)?;
+        let named = std::fs::symlink_metadata(path).map_err(|e|PrivateReadError::io(path,"STAT",e))?;
         if opened.dev() != named.dev() || opened.ino() != named.ino() {
-            return Err(SecureStateError::Protection);
+            return Err(PrivateReadError::protection(path,"PATH_CHANGED"));
         }
     }
     let mut bytes = Zeroizing::new(vec![0u8; opened.len() as usize]);
-    file.read_exact(&mut bytes)?;
-    check_private_file(path)?;
+    file.read_exact(&mut bytes).map_err(|e|PrivateReadError::io(path,"READ",e))?;
+    private_file(path)?;
     Ok(bytes)
 }
 
@@ -444,36 +473,36 @@ fn open_state_read(path: &Path) -> Result<File, SecureStateError> {
 
 #[cfg(unix)]
 fn check_private_parent(path: &Path) -> Result<(), SecureStateError> {
+    private_parent(path).map_err(|_|SecureStateError::Protection)
+}
+#[cfg(unix)]
+fn private_parent(path:&Path)->Result<(),PrivateReadError> {
     use std::os::unix::fs::MetadataExt;
     if !path.is_absolute() {
-        return Err(SecureStateError::Protection);
+        return Err(PrivateReadError::protection(path,"ABSOLUTE_CANONICAL_PATH_REQUIRED"));
     }
-    let parent = path.parent().ok_or(SecureStateError::Protection)?;
-    let meta = fs::symlink_metadata(parent).map_err(|_| SecureStateError::Protection)?;
-    if !meta.is_dir()
-        || meta.file_type().is_symlink()
-        || meta.mode() & 0o077 != 0
-        || meta.uid() != unsafe { libc::geteuid() }
-        || fs::canonicalize(parent).map_err(|_| SecureStateError::Protection)? != parent
-    {
-        return Err(SecureStateError::Protection);
-    }
+    let parent = path.parent().ok_or_else(||PrivateReadError::protection(path,"PARENT_REQUIRED"))?;
+    let meta = fs::symlink_metadata(parent).map_err(|e|PrivateReadError::io(parent,"STAT",e))?;
+    if !meta.is_dir() || meta.file_type().is_symlink(){return Err(PrivateReadError::protection(parent,"NOT_DIRECTORY_OR_SYMLINK"));}
+    if meta.uid()!=unsafe{libc::geteuid()}{return Err(PrivateReadError::protection(parent,"OWNER_MISMATCH"));}
+    if meta.mode() & 0o077!=0{return Err(PrivateReadError::protection(parent,"DIRECTORY_PERMISSIONS"));}
+    if fs::canonicalize(parent).map_err(|e|PrivateReadError::io(parent,"RESOLVE",e))?!=parent{return Err(PrivateReadError::protection(parent,"SYMLINK_OR_PATH_ALIAS"));}
     Ok(())
 }
 
 #[cfg(unix)]
 fn check_private_file(path: &Path) -> Result<(), SecureStateError> {
+    private_file(path).map_err(|_|SecureStateError::Protection)
+}
+#[cfg(unix)]
+fn private_file(path:&Path)->Result<(),PrivateReadError> {
     use std::os::unix::fs::MetadataExt;
-    let meta = fs::symlink_metadata(path).map_err(|_| SecureStateError::Protection)?;
-    if !meta.is_file()
-        || meta.file_type().is_symlink()
-        || meta.mode() & 0o077 != 0
-        || meta.nlink() != 1
-        || meta.uid() != unsafe { libc::geteuid() }
-        || meta.len() > MAX_STATE_BYTES + MAGIC.len() as u64
-    {
-        return Err(SecureStateError::Protection);
-    }
+    let meta = fs::symlink_metadata(path).map_err(|e|PrivateReadError::io(path,"STAT",e))?;
+    if !meta.is_file() || meta.file_type().is_symlink(){return Err(PrivateReadError::protection(path,"REGULAR_FILE_REQUIRED"));}
+    if meta.uid()!=unsafe{libc::geteuid()}{return Err(PrivateReadError::protection(path,"OWNER_MISMATCH"));}
+    if meta.mode() & 0o077!=0{return Err(PrivateReadError::protection(path,"FILE_PERMISSIONS"));}
+    if meta.nlink()!=1{return Err(PrivateReadError::protection(path,"HARDLINK"));}
+    if meta.len()>MAX_STATE_BYTES+MAGIC.len() as u64{return Err(PrivateReadError::protection(path,"FILE_TOO_LARGE"));}
     Ok(())
 }
 
@@ -515,6 +544,10 @@ fn check_private_parent(_: &Path) -> Result<(), SecureStateError> {
 fn check_private_file(_: &Path) -> Result<(), SecureStateError> {
     Err(SecureStateError::UnsupportedPlatform)
 }
+#[cfg(not(unix))]
+fn private_parent(path:&Path)->Result<(),PrivateReadError>{check_private_parent(path).map_err(|source|PrivateReadError{source,path:path.parent().unwrap_or(path).into(),operation:"STAT",reason:"PROTECTION"})}
+#[cfg(not(unix))]
+fn private_file(path:&Path)->Result<(),PrivateReadError>{check_private_file(path).map_err(|source|PrivateReadError{source,path:path.into(),operation:"STAT",reason:"PROTECTION"})}
 #[cfg(not(any(unix, windows)))]
 fn lock_exclusive(_: &File) -> Result<(), SecureStateError> {
     Err(SecureStateError::UnsupportedPlatform)

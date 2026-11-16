@@ -16,7 +16,10 @@ fn original(connect:&Connect,handle:&str,trigger:Trigger)->Result<Option<bootstr
 /// writer before entering; the updater reacquires its original operation locks.
 /// Maintenance executors use the lower-level launch primitives, never recurse.
 pub(crate) async fn recover(directory:&Path,handle:Option<&str>,trigger:Trigger)->Result<Value> {
-    let mut connect=Connect::inspect(directory)?;
+    recover_opened(Connect::inspect(directory)?,handle,trigger).await
+}
+pub(crate) async fn recover_opened(mut connect:Connect,handle:Option<&str>,trigger:Trigger)->Result<Value> {
+    let directory=connect.directory.clone();
     let Some(handle)=connect.selected_handle(handle)? else {return Ok(observation("NOT_CONFIGURED","LOCAL_SELECTION_REQUIRED"));};
     let Some(runtime)=original(&connect,&handle,trigger)? else {return Ok(observation("NOT_MANAGED","EXTERNAL_OR_MANUAL_LIFECYCLE"));};
     if trigger==Trigger::Resume {
@@ -35,7 +38,7 @@ pub(crate) async fn recover(directory:&Path,handle:Option<&str>,trigger:Trigger)
         if result["state"]!="OWNED_UPDATE_COMPLETE" {
             return Err(serde_json::from_value(result["error"].clone()).unwrap_or_else(|_|local("ORIGINAL_UPDATE_NOT_COMPLETE")));
         }
-        connect=Connect::inspect(directory)?;
+        connect=Connect::inspect(&directory)?;
     }
     let runtime=original(&connect,&handle,trigger)?.ok_or_else(||local("ORIGINAL_INSTALLATION_RECOVERY_REQUIRED"))?;
     let policy=crate::runtime_startup::read(&runtime.config.state_directory)?;
@@ -47,7 +50,7 @@ pub(crate) async fn recover(directory:&Path,handle:Option<&str>,trigger:Trigger)
     let _maintenance=crate::runtime_startup::recovery_fence(&runtime.config.state_directory)?;
     // A concurrent maintenance operation may have committed while acquiring the
     // fence. Reinterpret the latest operation, target and intent before launch.
-    let current=Connect::inspect(directory)?;
+    let current=Connect::inspect(&directory)?;
     if current.startup_update(Some(&handle))?.is_some() {return Err(local("ORIGINAL_UPDATE_RECOVERY_REQUIRED"));}
     let runtime=original(&current,&handle,trigger)?.ok_or_else(||local("ORIGINAL_INSTALLATION_RECOVERY_REQUIRED"))?;
     let policy=crate::runtime_startup::read(&runtime.config.state_directory)?;

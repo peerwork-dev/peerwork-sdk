@@ -16,6 +16,7 @@ pub(crate) struct Lifecycle {
     selected:Mutex<Option<(String,Arc<AgentTools>)>>,
     source_guard:Mutex<Option<(Value,crate::communication_runtime::RuntimeClient)>>,
     source_directory:std::sync::Mutex<Option<std::path::PathBuf>>,
+    registry_directory:std::sync::Mutex<Option<crate::onboarding_project::Directory>>,
     identity:std::sync::OnceLock<(String,String)>,
 }
 impl Lifecycle {
@@ -23,13 +24,25 @@ impl Lifecycle {
         self.startup.peek().unwrap_or_else(|| json!({"state":"STARTING","model_wake":"NOT_ATTESTED"}))
     }
     pub(crate) fn profile(profile:AgentProfile)->Self {
-        Self{startup:startup::State::default(),profile:Some(profile),local:None,handle:None,workspace:None,client:OnceCell::new(),selected:Mutex::new(None),source_guard:Mutex::new(None),source_directory:std::sync::Mutex::new(None),identity:std::sync::OnceLock::new()}
+        Self{startup:startup::State::default(),profile:Some(profile),local:None,handle:None,workspace:None,client:OnceCell::new(),selected:Mutex::new(None),source_guard:Mutex::new(None),source_directory:std::sync::Mutex::new(None),registry_directory:std::sync::Mutex::new(None),identity:std::sync::OnceLock::new()}
     }
     pub(crate) fn local(directory:std::path::PathBuf,handle:Option<String>,workspace:Option<String>)->Self {
-        Self{startup:startup::State::default(),profile:None,local:Some(directory),handle,workspace,client:OnceCell::new(),selected:Mutex::new(None),source_guard:Mutex::new(None),source_directory:std::sync::Mutex::new(None),identity:std::sync::OnceLock::new()}
+        Self{startup:startup::State::default(),profile:None,local:Some(directory),handle,workspace,client:OnceCell::new(),selected:Mutex::new(None),source_guard:Mutex::new(None),source_directory:std::sync::Mutex::new(None),registry_directory:std::sync::Mutex::new(None),identity:std::sync::OnceLock::new()}
     }
     pub(crate) fn attached(tools:AgentTools)->Self {
-        Self{startup:startup::State::default(),profile:None,local:None,handle:None,workspace:None,client:OnceCell::new_with(Some(tools)),selected:Mutex::new(None),source_guard:Mutex::new(None),source_directory:std::sync::Mutex::new(None),identity:std::sync::OnceLock::new()}
+        Self{startup:startup::State::default(),profile:None,local:None,handle:None,workspace:None,client:OnceCell::new_with(Some(tools)),selected:Mutex::new(None),source_guard:Mutex::new(None),source_directory:std::sync::Mutex::new(None),registry_directory:std::sync::Mutex::new(None),identity:std::sync::OnceLock::new()}
+    }
+    fn inspect(&self,path:&std::path::Path)->Result<crate::participant_connect::Connect> {
+        let mut selected=self.registry_directory.lock().map_err(|_|ParticipantError::local("CONNECT_RECOVERY_REQUIRED","CONNECT"))?;
+        if let Some(directory)=&*selected {
+            if directory.path()!=path {return Err(ParticipantError::local("ORIGINAL_PROFILE_SOURCE_CHANGED","CONNECT"));}
+            return crate::participant_connect::Connect::inspect_opened(directory.clone());
+        }
+        let connect=crate::participant_connect::Connect::inspect(path)?;
+        // An unconfigured empty directory has no established installation yet.
+        // Do not pin absence as if it were an original registry snapshot.
+        if path.join("connect.state").is_file(){*selected=Some(connect.inspection_directory());}
+        Ok(connect)
     }
     async fn selected_tools(&self,profile:AgentProfile,binding:Option<Value>)->Result<Arc<AgentTools>> {
         let key=serde_json::to_string(&json!([profile,binding])).map_err(|_|ParticipantError::local("AGENT_PROFILE_INVALID","CONNECT"))?;
@@ -50,12 +63,12 @@ impl Lifecycle {
     fn source_selection(&self,profile:&AgentProfile)->Result<Option<(std::path::PathBuf,crate::participant_connect::Connect,String)>> {
         let cached=self.source_directory.lock().map_err(|_|ParticipantError::local("CONNECT_RECOVERY_REQUIRED","CONNECT"))?.clone();
         if let Some(directory)=cached {
-            let connect=crate::participant_connect::Connect::inspect(&directory)?;
+            let connect=self.inspect(&directory)?;
             let handle=connect.source_handle(profile)?.ok_or_else(||ParticipantError::local("ORIGINAL_PROFILE_SOURCE_CHANGED","CONNECT"))?;
             return Ok(Some((directory,connect,handle)));
         }
         let Some((directory,handle))=crate::participant_connect::Connect::profile_source(profile)? else{return Ok(None);};
-        let connect=crate::participant_connect::Connect::inspect(&directory)?;
+        let connect=self.inspect(&directory)?;
         *self.source_directory.lock().map_err(|_|ParticipantError::local("CONNECT_RECOVERY_REQUIRED","CONNECT"))?=Some(directory.clone());
         Ok(Some((directory,connect,handle)))
     }
@@ -113,7 +126,7 @@ impl Lifecycle {
     }
     pub(crate) fn channel_profile(&self)->Result<Option<AgentProfile>> {
         if let Some(directory)=&self.local {
-            return crate::participant_connect::Connect::inspect(directory)?.profile_for_scope(self.handle.as_deref(),self.workspace.as_deref());
+            return self.inspect(directory)?.profile_for_scope(self.handle.as_deref(),self.workspace.as_deref());
         }
         if let Some(profile)=&self.profile {
             if let Some((_directory,connect,handle))=self.source_selection(profile)? {
@@ -133,7 +146,7 @@ impl Lifecycle {
             .await
     }
     async fn call_local(&self,directory:&std::path::Path,handle_pin:Option<&str>,workspace_pin:Option<&str>,request:AgentRequest)->Result<Value> {
-        let connect=crate::participant_connect::Connect::inspect(directory)?;
+        let connect=self.inspect(directory)?;
         self.call_snapshot(connect,directory,handle_pin,workspace_pin,request).await
     }
     async fn call_snapshot(&self,connect:crate::participant_connect::Connect,directory:&std::path::Path,handle_pin:Option<&str>,workspace_pin:Option<&str>,request:AgentRequest)->Result<Value> {
@@ -213,22 +226,22 @@ impl Lifecycle {
                 if has_recovery {if let Some(original)=selected.original_request(&request).await?{return Ok(original);}}
                 let result=selected.call_observed(request).await;
                 let mut value=match result {
-                    Err(error)if agent_tools::refresh_workspace_error(&error).is_some() && crate::participant_connect::Connect::inspect(directory)?.workspace_profile_refreshable(handle_pin,agent_tools::refresh_workspace_error(&error).unwrap())?=>{
+                    Err(error)if agent_tools::refresh_workspace_error(&error).is_some() && self.inspect(directory)?.workspace_profile_refreshable(handle_pin,agent_tools::refresh_workspace_error(&error).unwrap())?=>{
                         if let Some(original)=selected.original_request(&retry).await?{return Ok(original);}
                         let workspace=agent_tools::refresh_workspace_error(&error).unwrap();
                         if !crate::participant_connect::Connect::open(directory)?.refresh_workspace_profile(handle_pin,workspace).await? {return Err(error);}
-                        let next=crate::participant_connect::Connect::inspect(directory)?.profile_for_scope(handle_pin,workspace_pin)?.ok_or_else(||ParticipantError::local("LOCAL_SELECTION_REQUIRED","CONNECT"))?;
-                        self.selected_tools(next.clone(),crate::participant_connect::Connect::inspect(directory)?.selected_profile_binding(handle_pin,&next)?).await?.call(retry).await?
+                        let next=self.inspect(directory)?.profile_for_scope(handle_pin,workspace_pin)?.ok_or_else(||ParticipantError::local("LOCAL_SELECTION_REQUIRED","CONNECT"))?;
+                        self.selected_tools(next.clone(),self.inspect(directory)?.selected_profile_binding(handle_pin,&next)?).await?.call(retry).await?
                     },
                     Err(error)if alias.is_some()&&error.code=="PROTOCOL_OPERATION_ROUTE_EXISTS"=>{
-                        let next=crate::participant_connect::Connect::inspect(directory)?.profile_for_scope(handle_pin,workspace_pin)?.ok_or_else(||ParticipantError::local("LOCAL_SELECTION_REQUIRED","CONNECT"))?;
-                        self.selected_tools(next.clone(),crate::participant_connect::Connect::inspect(directory)?.selected_profile_binding(handle_pin,&next)?).await?.call(retry).await?
+                        let next=self.inspect(directory)?.profile_for_scope(handle_pin,workspace_pin)?.ok_or_else(||ParticipantError::local("LOCAL_SELECTION_REQUIRED","CONNECT"))?;
+                        self.selected_tools(next.clone(),self.inspect(directory)?.selected_profile_binding(handle_pin,&next)?).await?.call(retry).await?
                     },
                     Err(error)if alias.is_some()&&agent_tools::refresh_protocol_error(&error)=>{
                         if let Some(original)=selected.original_request(&retry).await?{return Ok(original);}
                         if let Err(error)=crate::participant_connect::Connect::open(directory)?.refresh_protocol_alias(handle_pin,workspace_pin,alias.as_deref().unwrap(),error.details.as_ref()).await{if !agent_tools::refresh_nonblocking(&error,&retry){return Err(error);}}
-                        let next=crate::participant_connect::Connect::inspect(directory)?.profile_for_scope(handle_pin,workspace_pin)?.ok_or_else(||ParticipantError::local("LOCAL_SELECTION_REQUIRED","CONNECT"))?;
-                        self.selected_tools(next.clone(),crate::participant_connect::Connect::inspect(directory)?.selected_profile_binding(handle_pin,&next)?).await?.call(retry).await?
+                        let next=self.inspect(directory)?.profile_for_scope(handle_pin,workspace_pin)?.ok_or_else(||ParticipantError::local("LOCAL_SELECTION_REQUIRED","CONNECT"))?;
+                        self.selected_tools(next.clone(),self.inspect(directory)?.selected_profile_binding(handle_pin,&next)?).await?.call(retry).await?
                     },other=>other?,
                 };
                 if is_context {value["onboarding"]=context;crate::agent_delivery_status::refresh(&mut value);}
@@ -244,7 +257,7 @@ impl Lifecycle {
             tools.retain(|v| !matches!(v["name"].as_str(), Some("peerwork_connect" | "peerwork_connect_approve")));
         }
         if let Some(directory)=&self.local {
-            let connect=crate::participant_connect::Connect::inspect(directory)?;
+            let connect=self.inspect(directory)?;
             let profile=match connect.profile_for_scope(self.handle.as_deref(),self.workspace.as_deref()) {
                 Ok(profile)=>profile,
                 Err(error) if ["MULTIPLE_IDENTITIES_SELECT_FRONTEND_PARTICIPANT","MULTIPLE_WORKSPACES_SELECT_FRONTEND_WORKSPACE"].contains(&error.code.as_str())=>None,

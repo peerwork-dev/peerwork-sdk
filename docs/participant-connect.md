@@ -385,8 +385,18 @@ original-engine-binding-v1 feature (native0.3.3 or later), not a server migratio
 
 CLI errors include a local_diagnostic with operation, policy, failed component,
 actual effective UID and reason. Full paths stay local; MCP exposes only the
-sanitized blocker. Distinguish ancestor-write, owner mismatch, symlink and OS
-access denial. Never chmod/chown another user's directories to clear a blocker.
+safe structured diagnostic and a diagnostic ID. The same ID identifies the
+exact component in the original MCP process's owner-local stderr. Ordinary
+`peerwork agent --local ORIGINAL_REGISTRY context` failures also include the
+owner-local diagnostic; running Connect is not required to diagnose a failed
+read. Distinguish ancestor-write, owner mismatch, symlink and OS access denial.
+Never chmod/chown another user's directories to clear a blocker.
+
+Established MCP reads reuse the original opened registry directory and read
+fresh atomic registry snapshots. They do not repeat discovery or consult XDG
+association storage on every tool call. Directory replacement, changed private
+component permissions and invalid files still fail before private work. A
+configuration change or writer operation retains its full installation checks.
 
 ## How the original installation is found
 

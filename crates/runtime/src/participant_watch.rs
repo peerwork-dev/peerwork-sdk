@@ -26,7 +26,7 @@ use std::{
 use tokio::sync::{mpsc, oneshot};
 fn error(code: &str) -> ParticipantError {
     ParticipantError {
-        details: None, code: code.into(),
+        local_diagnostic: None, details: None, code: code.into(),
         phase: "MAILBOX_WATCH".into(),
         effect_certainty: "UNKNOWN".into(),
         recovery: "RETAIN_ORIGINAL_BINDING_AND_RECONNECT".into(),

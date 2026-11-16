@@ -144,7 +144,12 @@ pub fn cli(args: &[String]) -> Value {
     };
     match run() {
         Ok(v) => v,
-        Err(error) => json!({"state":"FAILED","error":error}),
+        Err(error) => {
+            let diagnostic=error.local_diagnostic.clone();
+            let mut value=json!({"state":"FAILED","error":error});
+            if let Some(diagnostic)=diagnostic{value["error"]["local_diagnostic"]=diagnostic;}
+            value
+        },
     }
 }
 #[cfg(test)]

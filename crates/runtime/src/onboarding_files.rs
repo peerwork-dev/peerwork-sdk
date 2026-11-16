@@ -8,8 +8,8 @@ pub(crate) mod windows;
 thread_local! {
     static DIAGNOSTIC: std::cell::RefCell<Option<serde_json::Value>> = const { std::cell::RefCell::new(None) };
 }
-// Full paths stay on the calling CLI thread. ParticipantError and MCP never
-// serialize these local filesystem observations.
+// Retain the old CLI continuation, but errors carry their own diagnostic across
+// async task boundaries. Full paths are rendered only by owner-local frontends.
 pub(crate) fn take_diagnostic() -> Option<serde_json::Value> {
     DIAGNOSTIC.with(|d| d.borrow_mut().take())
 }
@@ -21,7 +21,8 @@ pub(crate) fn original_confirmation(path:&Path) {
     });
 }
 pub(crate) fn path_error(path: &Path, policy: &str, operation: &str, reason: &str) -> ParticipantError {
-    let mut value = serde_json::json!({"component":path.to_string_lossy(),"policy":policy,"operation":operation,"reason":reason});
+    let mut value = serde_json::json!({"component":path.to_string_lossy(),"component_kind":"UNKNOWN","policy":policy,"operation":operation,"reason":reason,"metadata_observation":"BEST_EFFORT_AT_FAILURE"});
+    value["diagnostic_id"] = serde_json::json!(peerwork_core::crypto::sha256_hex(path.as_os_str().as_encoded_bytes()));
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
@@ -29,10 +30,24 @@ pub(crate) fn path_error(path: &Path, policy: &str, operation: &str, reason: &st
         if let Ok(m) = std::fs::symlink_metadata(path) {
             value["uid"] = serde_json::json!(m.uid()); value["gid"] = serde_json::json!(m.gid());
             value["mode"] = serde_json::json!(format!("{:04o}",m.mode() & 0o7777));
+            value["component_kind"] = serde_json::json!(if m.file_type().is_symlink(){"SYMLINK"}else if m.is_dir(){"DIRECTORY"}else if m.is_file(){"FILE"}else{"OTHER"});
+        }
+        if reason.contains("OWNER_MISMATCH") {
+            if reason.starts_with("ANCESTOR_"){value["expected_uids"]=serde_json::json!([0,unsafe{libc::geteuid()}]);}
+            else{value["expected_uid"]=serde_json::json!(unsafe{libc::geteuid()});}
+        }
+        if reason.contains("PERMISSIONS") || reason=="ANCESTOR_WRITABLE" {
+            value["permission_requirement"]=serde_json::json!(if matches!(policy,"PRIVATE_STATE"|"LOCAL_ENDPOINT"){"OWNER_ONLY_FOR_PRIVATE_COMPONENTS"}else{"NO_GROUP_OR_OTHER_WRITE"});
         }
     }
-    DIAGNOSTIC.with(|d| *d.borrow_mut() = Some(value));
-    let mut e = error(); e.recovery = "VERIFY_ORIGINAL_LOCAL_BINDING_AND_REPAIR_NAMED_COMPONENT".into(); e
+    DIAGNOSTIC.with(|d| *d.borrow_mut() = Some(value.clone()));
+    let mut safe=value.clone();safe.as_object_mut().unwrap().remove("component");
+    let mut e = error();
+    e.details=Some(serde_json::json!({"local_diagnostic":safe}));
+    e.local_diagnostic=Some(value);
+    e.recovery = if matches!(reason,"OWNER_MISMATCH"|"ANCESTOR_OWNER_MISMATCH"|"PERMISSION_DENIED"|"ANCESTOR_UNREADABLE") {
+        "ORIGINAL_LOCAL_OWNER_REPAIR_REQUIRED"
+    }else{"VERIFY_ORIGINAL_LOCAL_BINDING_AND_REPAIR_NAMED_COMPONENT"}.into(); e
 }
 fn error() -> ParticipantError {
     ParticipantError::local("ONBOARDING_PATH_UNSAFE", "LOCAL_CONFIGURATION")

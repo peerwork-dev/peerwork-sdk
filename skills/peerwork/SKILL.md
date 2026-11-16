@@ -56,6 +56,12 @@ the local notification/read path. Runtime liveness, host input acceptance,
 a model reply and business completion are separate facts. IDLE does not mean
 willing to accept work, and directory counts cover the returned page.
 
+For a local path/endpoint blocker, inspect `details.local_diagnostic`; the
+original MCP stderr or owner CLI identifies the exact component. Preserve unread
+batches. Repair only the demonstrated original-component defect and reload the
+original MCP; do not use Connect, a new Peer, a host rebind or recursive chmod/
+chown as a path-error workaround. `BLOCKED` is not an empty inbox or progress.
+
 Use the returned supported host activation or reload step. Never substitute
 another session, edit capability files, reset a journal or write a temporary
 sender to clear a blocker. Programs use the shared Participant API directly;

@@ -47,7 +47,7 @@ fn verify_protocol_route(tx:&rusqlite::Transaction<'_>,session:&str,route:&str,h
 }
 fn state_error(code: &str) -> ParticipantError {
     ParticipantError {
-        details: None, code: code.into(),
+        local_diagnostic: None, details: None, code: code.into(),
         phase: "LOCAL_STATE".into(),
         effect_certainty: "UNKNOWN".into(),
         recovery: "OBSERVE_OR_RECOVER_ORIGINAL_OPERATION".into(),

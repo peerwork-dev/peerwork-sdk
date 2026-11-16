@@ -1,6 +1,40 @@
 use super::*;
 use crate::kernel_identity::KernelIdentity;
 
+#[cfg(unix)]
+#[test]
+fn endpoint_failures_distinguish_components_without_exposing_credentials() {
+    use std::os::unix::fs::PermissionsExt;
+    let temp=crate::test_support::protected_test_dir();
+    let directory=temp.path().join("endpoint");std::fs::create_dir(&directory).unwrap();
+    std::fs::set_permissions(&directory,std::fs::Permissions::from_mode(0o700)).unwrap();
+    let path=directory.join("client.json");
+    let put=|bytes:&[u8]|{std::fs::write(&path,bytes).unwrap();std::fs::set_permissions(&path,std::fs::Permissions::from_mode(0o600)).unwrap();};
+    let check=|code:&str,reason:&str,component:&Path| {
+        let error=endpoint_json(&path).unwrap_err();
+        assert_eq!(error.code,code);assert_eq!(error.effect_certainty,"NOT_SUBMITTED");
+        assert_eq!(error.details.as_ref().unwrap()["local_diagnostic"]["reason"],reason);
+        assert_eq!(error.local_diagnostic.as_ref().unwrap()["component"],component.to_str().unwrap());
+        let wire=serde_json::to_string(&error).unwrap();
+        assert!(!wire.contains(temp.path().to_str().unwrap()));
+        assert!(!wire.contains("private-endpoint-token"));
+    };
+    check("ENDPOINT_NOT_FOUND","NOT_FOUND",&path);
+    put(b"{invalid private-endpoint-token");
+    check("ENDPOINT_JSON_INVALID","INVALID_JSON",&path);
+    put(br#"{"token":"private-endpoint-token"}"#);
+    std::fs::set_permissions(&path,std::fs::Permissions::from_mode(0o644)).unwrap();
+    check("ENDPOINT_NOT_PRIVATE","FILE_PERMISSIONS",&path);
+    std::fs::set_permissions(&path,std::fs::Permissions::from_mode(0o600)).unwrap();
+    std::fs::set_permissions(&directory,std::fs::Permissions::from_mode(0o775)).unwrap();
+    check("ENDPOINT_NOT_PRIVATE","DIRECTORY_PERMISSIONS",&directory);
+    std::fs::set_permissions(&directory,std::fs::Permissions::from_mode(0o700)).unwrap();
+    put(&vec![b'x';4097]);
+    check("ENDPOINT_TOO_LARGE","FILE_TOO_LARGE",&path);
+    put(br#"{"restored":true}"#);
+    assert_eq!(endpoint_json(&path).unwrap()["restored"],true);
+}
+
 #[tokio::test(flavor="multi_thread",worker_threads=3)]
 #[ignore="requires synthetic loopback IPC"]
 async fn compact_notice_control_ingress_survives_full_ordinary_connection_pool(){
