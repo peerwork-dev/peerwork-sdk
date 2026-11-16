@@ -88,9 +88,15 @@ impl Connect {
         };
         let directory = &runtime.config.state_directory;
         // A dead legacy runtime has no durable stop intent. Do not guess it.
-        if crate::runtime_startup::read(directory)?.is_none() && !runtime.running()? {
+        let policy=crate::runtime_startup::read(directory)?;
+        if policy.is_none() && !runtime.running()? {
             return Ok(json!({"state":"POLICY_REQUIRED","code":"RUNTIME_STARTUP_POLICY_REQUIRED",
                 "next_action":"RESTORE_ORIGINAL_INSTALLATION_ONCE"}));
+        }
+        if policy.is_none() && !runtime.has_startup_launcher() {
+            // An older live runtime cannot persist later user stops. Leave its
+            // lifecycle untouched until the original updater commits support.
+            return Ok(json!({"state":"VERIFYING_RUNTIME_SUPPORT","code":"RUNTIME_STARTUP_SUPPORT_UNCONFIRMED_UPDATE_ORIGINAL_RUNTIME","next_action":"UPDATE_ORIGINAL_STACK"}));
         }
         let policy = crate::runtime_startup::enroll(directory)?;
         Ok(json!({"state":if !policy.automatic {"DISABLED"} else if policy.launcher.is_some() {"AUTOMATIC"} else {"VERIFYING_RUNTIME_SUPPORT"},"revision":policy.revision}))

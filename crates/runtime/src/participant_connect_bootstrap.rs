@@ -513,6 +513,7 @@ pub(crate) struct OwnedRuntime {
     config_path: Option<PathBuf>,
 }
 impl OwnedRuntime {
+    pub(crate) fn has_startup_launcher(&self)->bool {self.launch.as_ref().is_some_and(|launch|launch.launcher.is_some())}
     pub fn path(&self) -> PathBuf { self.config_path.clone().unwrap_or_else(||self.config.state_directory.join("config.json")) }
     fn load(&self) -> Result<RuntimeConfig> {
         serde_json::from_value(crate::communication_store::private_json(&self.path(),65536)

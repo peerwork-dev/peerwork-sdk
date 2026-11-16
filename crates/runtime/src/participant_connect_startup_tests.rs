@@ -38,6 +38,9 @@ impl Fixture {
         Self::at("http://127.0.0.1:1").await
     }
     async fn at(origin: &str) -> Self {
+        Self::initial(origin,None).await
+    }
+    async fn initial(origin:&str,previous:Option<&Path>)->Self {
         let candidate = PathBuf::from(std::env::var_os("PEERWORK_UPDATE_TEST_BINARY").expect("set exact candidate CLI"));
         let root = crate::test_support::protected_test_dir();
         let binary = root.path().join("peerwork"); std::fs::copy(&candidate, &binary).unwrap();
@@ -54,12 +57,13 @@ impl Fixture {
                 allow_loopback_http:true, transport:Default::default(), max_inflight:1, max_pending:2, max_stored_bytes:1024*1024 }],
             clients:vec![ClientConfig { name:"bootstrap".into(), engine:"original".into(), capability:Capability::owner() }] };
         let bytes = serde_json::to_vec(&config).unwrap(); write_private(&runtime.join("config.json"), &bytes).unwrap();
-        let first = OriginalChild(Command::new(&binary).args(["runtime", "run"]).arg(runtime.join("config.json"))
+        let first = OriginalChild(Command::new(previous.unwrap_or(&binary)).args(["runtime", "run"]).arg(runtime.join("config.json"))
             .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap());
         let store = SecureStateStore::open(&runtime.join("bootstrap.state")).unwrap();
-        store.write_exact(&serde_json::to_vec(&json!({"config_digest":sha256_hex(&bytes),"pid":first.0.id(),
-            "process_token":crate::communication_store::process_token(first.0.id()),
-            "launcher":crate::runtime_startup::Launcher::capture(binary.clone()).unwrap()})).unwrap()).unwrap(); drop(store);
+        let mut launch=json!({"config_digest":sha256_hex(&bytes),"pid":first.0.id(),
+            "process_token":crate::communication_store::process_token(first.0.id())});
+        if previous.is_none(){launch["launcher"]=serde_json::to_value(crate::runtime_startup::Launcher::capture(binary.clone()).unwrap()).unwrap();}
+        store.write_exact(&serde_json::to_vec(&launch).unwrap()).unwrap(); drop(store);
         let registration = Registration { origin:config.engines[0].origin.clone(), actor_id:identity.actor_id().into(), endpoint_path:runtime.join("client-bootstrap.json") };
         for _ in 0..200 {
             if RuntimeClient::connect(registration.endpoint_path.clone(), &registration.origin, &registration.actor_id).await.is_ok() { break; }
@@ -72,9 +76,9 @@ impl Fixture {
         connect.registry.setups.insert("original".into(), setup); connect.save().unwrap();
         let project = root.path().join("project"); create_private_state_directory(&project).unwrap();
         let installed = connect.install("peer", &"W".repeat(43), Installation { host:"codex".into(), project, executable:binary.clone() }).unwrap();
-        assert_eq!(installed["automatic_startup"]["state"], "AUTOMATIC"); drop(connect);
-        // Installation itself must persist qualification; no timer grace period.
-        assert!(crate::runtime_startup::read(&runtime).unwrap().unwrap().launcher.is_some());
+        assert_eq!(installed["automatic_startup"]["state"],if previous.is_some(){"VERIFYING_RUNTIME_SUPPORT"}else{"AUTOMATIC"}); drop(connect);
+        if previous.is_some(){assert!(crate::runtime_startup::read(&runtime).unwrap().is_none());}
+        else{assert!(crate::runtime_startup::read(&runtime).unwrap().unwrap().launcher.is_some());}
         Self { root, binary, first, directory, config, registration, binding }
     }
     fn launch(&self) -> Value { serde_json::from_slice(&SecureStateStore::read_snapshot(&self.config.state_directory.join("bootstrap.state"),65536).unwrap()).unwrap() }
@@ -237,6 +241,29 @@ async fn every_recovery_entry_resumes_the_recorded_update_before_starting() {
         }}).await.expect("original update did not commit after runtime readiness");
         assert_eq!(crate::runtime_startup::read(&fixture.config.state_directory).unwrap().unwrap().launcher.unwrap().executable,target);
     }
+}
+
+#[tokio::test(flavor="multi_thread",worker_threads=2)]
+#[ignore="requires exact candidate/previous CLI artifacts and synthetic process/loopback IPC"]
+async fn unsupported_legacy_stop_is_not_converted_to_automatic_start_on_update() {
+    let previous=PathBuf::from(std::env::var_os("PEERWORK_UPDATE_PREVIOUS_BINARY").expect("set previous CLI"));
+    let fixture=Fixture::initial("http://127.0.0.1:1",Some(&previous)).await;
+    let pid=fixture.launch()["pid"].as_u64().unwrap();
+    let result=Command::new(&previous).args(["runtime","admin"]).arg(fixture.config.state_directory.join("admin.json"))
+        .arg("stop").output().unwrap();
+    assert_eq!(serde_json::from_slice::<Value>(&result.stdout).unwrap()["ok"],true);
+    tokio::time::timeout(Duration::from_secs(10),async {loop {
+        if SecureStateStore::open(&fixture.config.state_directory.join("runtime.state")).is_ok(){break;}
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }}).await.unwrap();
+    assert!(crate::runtime_startup::read(&fixture.config.state_directory).unwrap().is_none());
+    let result=Command::new(&fixture.binary).args(["connect","--local"]).arg(&fixture.directory)
+        .args(["--participant","peer","--update","apply"]).output().unwrap();
+    let result:Value=serde_json::from_slice(&result.stdout).unwrap();assert_eq!(result["runtime"],"STOPPED_PRESERVED","{result}");
+    let _mcp=Mcp::new(&fixture.binary,&fixture.directory);tokio::time::sleep(Duration::from_secs(4)).await;
+    assert!(!crate::runtime_startup::read(&fixture.config.state_directory).unwrap().unwrap().automatic);
+    assert_eq!(fixture.launch()["pid"],pid);
+    assert!(RuntimeClient::connect(fixture.registration.endpoint_path.clone(),&fixture.registration.origin,&fixture.registration.actor_id).await.is_err());
 }
 
 #[tokio::test(flavor="multi_thread",worker_threads=3)]
