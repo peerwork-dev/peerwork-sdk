@@ -128,15 +128,29 @@ pub(super) fn deliver(host:&super::Host,message:&Value)->R<Value> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::{io::{Read,Write},net::TcpListener,sync::{Arc,Mutex,atomic::{AtomicBool,Ordering}},time::Duration};
     static SERIAL:Mutex<()>=Mutex::new(());
+    #[test]
+    fn selected_host_target_reports_session_and_project_without_credentials_or_caller_claim() {
+        let target=super::super::target_summary(&json!({"kind":"opencode","session_id":"ses_selected","directory":"/selected/project",
+            "service_file":"/private/service.json","password":"private","token_file":"/private/token"}));
+        assert_eq!(target,json!({"kind":"opencode","session_id":"ses_selected","directory":"/selected/project","caller_session_match":"NOT_ATTESTED"}));
+    }
     #[derive(Default)] struct State {posts:usize,items:Vec<Value>,approval:bool,wrong_session:bool,drop_reply:bool,version:String}
-    struct Server {url:String,state:Arc<Mutex<State>>,stop:Arc<AtomicBool>,task:Option<std::thread::JoinHandle<()>>}
+    pub(crate) struct Server {url:String,state:Arc<Mutex<State>>,stop:Arc<AtomicBool>,task:Option<std::thread::JoinHandle<()>>}
     impl Drop for Server {fn drop(&mut self){self.stop.store(true,Ordering::SeqCst);if let Some(task)=self.task.take(){task.join().unwrap();}}}
     impl Server {
         fn new()->Self {
+            Self::for_directory(Path::new("/project"))
+        }
+        pub(crate) fn for_directory(directory:&Path)->Self {
+            Self::for_session(directory,"ses_test")
+        }
+        pub(crate) fn for_session(directory:&Path,session:&str)->Self {
+            let directory=directory.to_str().unwrap().to_owned();
+            let session=session.to_owned();
             let listener=TcpListener::bind("127.0.0.1:0").unwrap();listener.set_nonblocking(true).unwrap();
             let url=format!("http://{}/",listener.local_addr().unwrap());let state=Arc::new(Mutex::new(State{version:"2.3.0".into(),..Default::default()}));
             let stop=Arc::new(AtomicBool::new(false));let observed=state.clone();let closed=stop.clone();
@@ -156,18 +170,19 @@ mod tests {
                 let mut s=observed.lock().unwrap();let mut status=200;
                 let value=if !header.to_ascii_lowercase().contains("authorization: basic b3blbmNvzgu6c2vjcmv0".to_ascii_lowercase().as_str()) {status=401;json!({})}
                 else if path=="/api/info" {json!({"pid":99,"version":s.version})}
-                else if path=="/api/session/ses_test/permission" {json!({"data":if s.approval{json!([{"id":"permission"}])}else{json!([])}})}
-                else if path=="/api/session/ses_test/inbox" {json!({"data":s.items})}
-                else if path=="/api/session/ses_test/prompt"&&method=="POST" {
+                else if path==format!("/api/session/{session}/permission") {json!({"data":if s.approval{json!([{"id":"permission"}])}else{json!([])}})}
+                else if path==format!("/api/session/{session}/inbox") {json!({"data":s.items})}
+                else if path==format!("/api/session/{session}/prompt")&&method=="POST" {
                     s.posts+=1;let payload:Value=serde_json::from_slice(&raw[header_end..header_end+length]).unwrap();
-                    let item=if let Some(old)=s.items.iter().find(|v|v["id"]==payload["id"]) {old.clone()}else{let v=json!({"id":payload["id"],"sessionID":"ses_test","type":"user","delivery":payload["delivery"],"payload":{"text":payload["text"]}});s.items.push(v.clone());v};
+                    let item=if let Some(old)=s.items.iter().find(|v|v["id"]==payload["id"]) {old.clone()}else{let v=json!({"id":payload["id"],"sessionID":session,"type":"user","delivery":payload["delivery"],"payload":{"text":payload["text"]}});s.items.push(v.clone());v};
                     if s.drop_reply {s.drop_reply=false;continue}json!({"data":item})
-                }else if path=="/api/session/ses_test" {json!({"data":{"id":if s.wrong_session{"ses_wrong"}else{"ses_test"},"location":{"directory":"/project"},"time":{"busy":2,"idle":1}}})}
+                }else if path==format!("/api/session/{session}") {json!({"data":{"id":if s.wrong_session{"ses_wrong"}else{&session},"location":{"directory":directory},"time":{"busy":2,"idle":1}}})}
+                else if path.starts_with("/api/session?") {json!({"data":[{"id":session,"title":"Original conversation","location":{"directory":directory},"time":{}}],"cursor":{"next":null}})}
                 else {status=404;json!({})};
                 let body=value.to_string();let response=format!("HTTP/1.1 {status} Test\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len());let _=socket.write_all(response.as_bytes());
             });Self{url,state,stop,task:Some(task)}
         }
-        fn registration(&self,path:&Path,password:&str) {crate::onboarding_files::replace(path,json!({"url":self.url,"pid":99,"password":password,"version":"2.3.0"}).to_string().as_bytes()).unwrap();}
+        pub(crate) fn registration(&self,path:&Path,password:&str) {crate::onboarding_files::replace(path,json!({"url":self.url,"pid":99,"password":password,"version":"2.3.0"}).to_string().as_bytes()).unwrap();}
     }
     fn config(file:&Path)->Value {json!({"kind":"opencode","service_file":file,"session_id":"ses_test","directory":"/project"})}
     fn frame(attempt:u64)->Value {json!({"format":"peerwork.notification-frame.v1","batch":"B".repeat(43),"message_id":format!("attempt-{attempt}"),"incoming":{"text":"PRIVATE_BODY_MUST_NOT_ENTER_CONTEXT"}})}

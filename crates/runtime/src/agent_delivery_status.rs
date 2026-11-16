@@ -54,7 +54,7 @@ fn refresh_at(context: &mut Value, now: i64) {
             let state=current["state"].clone();
             scopes.insert(alias.clone(), json!({"binding":expected,"state":state,"transport":transport,
                 "observed_at_ms":observation.map(|v|&v["observed_at_ms"]),
-                "receiver":receiver,"channel":channel,"host":host,
+                "receiver":receiver,"channel":channel,"target":host["target"],"host":host,
                 "next_action":current["next_action"],"code":current["code"],"current_delivery":current,
                 "delivery_control":notification.get("control_state").unwrap_or(&notification["state"]),
                 "automatic_receiving":current["automatic_receiving"],
@@ -170,8 +170,11 @@ mod tests {
         refresh_at(&mut value,1001);
         assert_eq!(value["delivery_status"]["scopes"]["space"]["host"]["state"],"UNKNOWN");
         value["host_status"]["hosts"][0]["source_bindings"][0]["client_generation"]=json!(2);
+        value["host_status"]["hosts"][0]["target"]=json!({"kind":"opencode","session_id":"ses_selected","directory":"/original/project","caller_session_match":"NOT_ATTESTED"});
         refresh_at(&mut value,1001);
         assert_eq!(value["delivery_status"]["scopes"]["space"]["host"]["selection_id"],"selected-session");
+        assert_eq!(value["delivery_status"]["scopes"]["space"]["target"]["session_id"],"ses_selected");
+        assert_eq!(value["delivery_status"]["scopes"]["space"]["target"]["caller_session_match"],"NOT_ATTESTED");
         value["host_status"]["hosts"][0]["source_bindings"][0]["watch"]["host_destination"]=json!("other-host");
         refresh_at(&mut value,1001);
         assert_eq!(value["delivery_status"]["scopes"]["space"]["host"]["state"],"UNKNOWN");

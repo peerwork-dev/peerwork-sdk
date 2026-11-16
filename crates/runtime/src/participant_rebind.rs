@@ -189,6 +189,17 @@ fn result(job: &Job) -> Value {
         "original_host_calls":"RETAINED_AT_ORIGINAL_BINDINGS","model_response":"NOT_ATTESTED",
         "readiness":if job.aborted{"ORIGINAL_CONFIGURATION_RETAINED_START_RUNTIME_TO_OBSERVE_CURRENT_READINESS"}else{"CONFIGURATION_COMMITTED_START_RUNTIME_TO_OBSERVE_CURRENT_READINESS"}})
 }
+fn repair_completed_launch(config_path: &Path, job: &Job) -> Result<()> {
+    if !job.ready { return Ok(()); }
+    let current: RuntimeConfig = serde_json::from_value(private_json(config_path,65536)
+        .map_err(|_|error("RUNTIME_CONFIG_NOT_PRIVATE"))?).map_err(|_|error("RUNTIME_CONFIG_INVALID"))?;
+    // A later operation may have selected another host. Only the exact sealed
+    // result authorizes repairing its legacy launch record, without remote IO.
+    if serde_json::to_value(current).ok()==serde_json::to_value(&job.target).ok() {
+        if let Some(launch)=crate::runtime_startup::RebindLaunch::prepare(&job.original,&job.target)? {launch.commit()?;}
+    }
+    Ok(())
+}
 /// Stop the owning runtime/embedded client first. One call completes all selected
 /// subscriptions. After interruption repeat the exact request and operation ID;
 /// never create a new operation to resolve an unknown replacement claim.
@@ -304,9 +315,11 @@ fn rebind_action(
         {
             return Err(error("HOST_REBIND_ORIGINAL_SELECTION_REQUIRED"));
         }
-        // Observational completed retry before engine ownership or host IO.
+        // Completed retry needs no engine ownership or host IO. It can repair
+        // an older release's missing launch projection from this sealed job.
         validate_decision(job, recovery.as_ref())?;
         if job.ready || job.aborted {
+            repair_completed_launch(config_path,job)?;
             return Ok(result(job));
         }
         if participant_owner::completed_snapshot(
@@ -323,6 +336,7 @@ fn rebind_action(
                 return Err(error("HOST_REBIND_STATE_INVALID"));
             }
             save(&job_store, &identity, &aad, &job)?;
+            repair_completed_launch(config_path,&job)?;
             return Ok(result(&job));
         }
     } else if recovery.is_some() {
@@ -497,6 +511,8 @@ fn rebind_action(
     }
     // User edits are never overwritten, including after a partial remote move.
     check_config(config_path, &job)?;
+    // Fail before new remote claims if the owned launch record is unrelated.
+    drop(crate::runtime_startup::RebindLaunch::prepare(&job.original, &job.target)?);
     if job.aborting.is_some()
         || recovery
             .as_ref()
@@ -609,12 +625,15 @@ fn rebind_action(
             .write_exact(&host_pin)
             .map_err(|_| error("HOST_REBIND_HOST_STATE_FAILED"))?;
         boundary("HOST_PIN_COMMITTED")?;
+        let launch = crate::runtime_startup::RebindLaunch::prepare(&job.original, &job.target)?;
         crate::communication_bridge::replace_descriptor(
             config_path,
             &serde_json::to_value(&job.target).map_err(|_| error("RUNTIME_CONFIG_INVALID"))?,
         )
         .map_err(error)?;
         boundary("CONFIG_COMMITTED")?;
+        if let Some(launch) = launch { launch.commit()?; }
+        boundary("STARTUP_COMMITTED")?;
         participant_owner::complete(&owner, &logical, &job.pin)?;
         boundary("OWNER_COMPLETED")?;
         job.ready = true;

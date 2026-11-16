@@ -3,6 +3,18 @@
 use super::*;
 use crate::onboarding_files as files;
 const SKILL: &str = include_str!("../../../skills/peerwork/SKILL.md");
+
+pub(super) fn persistent_executable(executable: &Path) -> Result<PathBuf> {
+    let path=std::fs::canonicalize(executable).map_err(|_|local("HOST_INSTALLATION_SELECTION_INVALID"))?;
+    let temporary=std::env::temp_dir();
+    if path.starts_with(&temporary) || cfg!(unix) && (path.starts_with("/tmp") || path.starts_with("/var/tmp")) {
+        let mut error=local("TEMPORARY_EXECUTABLE_REQUIRES_PERSISTENT_INSTALL");
+        error.details=Some(json!({"field":"executable","next_action":"INSTALL_VERIFIED_BINARY_AT_PERSISTENT_PATH_THEN_REPEAT_CONNECT",
+            "existing_installation_preserved":true}));
+        return Err(error);
+    }
+    Ok(path)
+}
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Installation {
@@ -14,6 +26,19 @@ pub struct Installation {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn temporary_executable_is_rejected_before_installation_state_changes() {
+        let root=crate::test_support::protected_test_dir();
+        let project=root.path().join("project");files::directory(&project,false).unwrap();
+        let mut connect=Connect::open(&root.path().join("local")).unwrap();registration(&mut connect);
+        let executable=root.path().join("extracted-peerwork");std::fs::write(&executable,b"synthetic executable").unwrap();
+        let before=std::fs::read(connect.directory.join("connect.state")).unwrap();
+        let error=connect.install("worker",&"W".repeat(43),Installation{host:"opencode".into(),project:project.clone(),executable}).unwrap_err();
+        assert_eq!(error.code,"TEMPORARY_EXECUTABLE_REQUIRES_PERSISTENT_INSTALL");
+        assert_eq!(error.details.unwrap()["field"],"executable");
+        assert_eq!(std::fs::read(connect.directory.join("connect.state")).unwrap(),before);
+        assert!(!project.join(".opencode").exists());
+    }
     fn registration(connect: &mut Connect) {
         connect.registry.participants.insert(
             "worker".into(),
@@ -633,7 +658,7 @@ impl Connect {
         &mut self,
         participant: &str,
         workspace: &str,
-        spec: Installation,
+        mut spec: Installation,
     ) -> Result<Value> {
         self.require_writer()?;
         if !self.registry.participants.contains_key(participant)
@@ -644,6 +669,7 @@ impl Connect {
         {
             return Err(local("HOST_INSTALLATION_SELECTION_INVALID"));
         }
+        spec.executable=persistent_executable(&spec.executable)?;
         let project_root = crate::onboarding_project::Directory::open(&spec.project)?;
         let project_identity = project_root.identity()?;
         let key = id(participant, workspace, &spec);

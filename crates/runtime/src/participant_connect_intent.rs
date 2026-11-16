@@ -73,7 +73,7 @@ impl Connect {
         if !token(&workspace){return Err(local("CONNECT_ARGUMENT_INVALID"));}
         if let Some(request)=self.saved_codex_intent(&participant,&workspace) {
             if intent.matches(&request){return Ok((request,true));}
-            if self.codex_attachment_pending(&participant,&workspace){return Err(local("CODEX_ATTACHMENT_PENDING_RESUME_ORIGINAL_CHAT"));}
+            if self.codex_attachment_pending(&participant,&workspace){return Err(local("HOST_ATTACHMENT_PENDING_RESUME_ORIGINAL_SELECTION"));}
         }
         let active=self.registry.active_by_scope.get(&format!("{participant}:{workspace}")).and_then(|id|self.registry.setups.get(id));
         let matching_scope=|s:&&Setup|s.desired.participant==participant&&s.desired.workspace_id==workspace;

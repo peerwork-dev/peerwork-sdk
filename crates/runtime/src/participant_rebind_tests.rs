@@ -192,10 +192,15 @@ async fn public_job_resumes_each_commit_boundary_and_preserves_original_unknown_
         "LOCAL_COMMITTED_BEFORE_SAVE",
         "HOST_PIN_COMMITTED",
         "CONFIG_COMMITTED",
+        "STARTUP_COMMITTED",
         "OWNER_COMPLETED",
     ] {
         let root = crate::test_support::protected_test_dir();
         let (cfg, path, request, watches) = setup(root.path(), &service).await;
+        let launch=json!({"config_digest":sha256_hex(&serde_json::to_vec(&cfg).unwrap()),"pid":0,
+            "process_token":null,"launcher":{"executable":"/original/peerwork","sha256":"a".repeat(64)}});
+        let store=SecureStateStore::open(&cfg.state_directory.join("bootstrap.state")).unwrap();
+        store.write_exact(&serde_json::to_vec(&launch).unwrap()).unwrap();drop(store);
         let before_identity = std::fs::read(&cfg.engines[0].identity_path).unwrap();
         let p = path.clone();
         let r = request.clone();
@@ -226,6 +231,21 @@ async fn public_job_resumes_each_commit_boundary_and_preserves_original_unknown_
         let ready = rebind_host(&path, request.clone()).await.unwrap();
         assert_eq!(ready["state"], "HOST_REBIND_READY", "{fault}");
         assert_eq!(ready["scopes"], 2);
+        let committed:RuntimeConfig=serde_json::from_value(private_json(&path,65536).unwrap()).unwrap();
+        let updated:Value=serde_json::from_slice(&SecureStateStore::read_snapshot(&cfg.state_directory.join("bootstrap.state"),65536).unwrap()).unwrap();
+        assert_eq!(updated["config_digest"],sha256_hex(&serde_json::to_vec(&committed).unwrap()),"{fault}");
+        assert_eq!(updated["launcher"],launch["launcher"],"{fault}");
+        if fault=="CONFIG_COMMITTED" {
+            // Model a completed 0.3.37 rebind whose launch record stayed old.
+            let store=SecureStateStore::open(&cfg.state_directory.join("bootstrap.state")).unwrap();
+            store.write_exact(&serde_json::to_vec(&launch).unwrap()).unwrap();drop(store);
+            let commands=service.counts().await["claim_commands"].clone();
+            assert_eq!(rebind_host(&path,request.clone()).await.unwrap()["state"],"HOST_REBIND_READY");
+            let repaired:Value=serde_json::from_slice(&SecureStateStore::read_snapshot(&cfg.state_directory.join("bootstrap.state"),65536).unwrap()).unwrap();
+            assert_eq!(repaired["config_digest"],updated["config_digest"]);
+            assert_eq!(repaired["launcher"],launch["launcher"]);
+            assert_eq!(service.counts().await["claim_commands"],commands,"completed recovery must not submit another claim");
+        }
         assert_eq!(
             std::fs::read(&cfg.engines[0].identity_path).unwrap(),
             before_identity

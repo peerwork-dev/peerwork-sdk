@@ -46,6 +46,17 @@ pub(crate) fn random_token() -> R<String> {
     Ok(peerwork_core::crypto::base64url(&bytes))
 }
 
+/// Display the selected physical target without credentials or an assertion
+/// that a generic MCP caller is running in that conversation.
+pub(crate) fn target_summary(adapter: &Value) -> Value {
+    let mut target=json!({"kind":adapter["kind"],"caller_session_match":"NOT_ATTESTED"});
+    let selected=if adapter["kind"]=="bridge" {&adapter["destination"]}else{adapter};
+    for field in ["host","thread_id","session_id","expected_session_id","conversation_id","directory"] {
+        if selected[field].is_string() {target[field]=selected[field].clone();}
+    }
+    target
+}
+
 enum Socket {
     Proxy(WebSocket<codex_proxy::Proxy>),
     #[cfg(unix)]

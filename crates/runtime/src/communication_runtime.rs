@@ -382,6 +382,7 @@ impl Runtime {
         });
         let current=crate::delivery_health::evaluate(&observation["receiver"],&observation["notification"],transport,&health);
         observation["transport"]=json!(transport);observation["transport_health"]=health;
+        observation["target"]=host.as_ref().map(|host|host["target"].clone()).unwrap_or(Value::Null);
         observation["host"]=host.unwrap_or_else(||json!({"state":"UNKNOWN"}));
         observation["current_delivery"]=current.clone();
         observation["receiving_binding"]=json!({"client_name":session.name,"client_generation":session.generation,"namespace":client.local_namespace(),"engine_digest":self.engine_bindings.get(client.state_binding()),"state_binding":client.state_binding()});
@@ -555,7 +556,7 @@ impl Runtime {
                     for mut value in hosts.statuses(){
                         let selected=value["source_bindings"].as_array().map(|bindings|bindings.iter().filter(|b|b["client"]==session.name&&b.get("client_generation").and_then(Value::as_u64)==session.generation).cloned().collect::<Vec<_>>()).unwrap_or_default();
                         if selected.is_empty(){continue;}
-                        if let Some(fields)=value.as_object_mut(){fields.retain(|key,_|["state","code","diagnostic","host_observation","delivery_obligations","dispatcher_running","restart_attempt","retry_after_ms","model_response","selection_id","destination_digest"].contains(&key.as_str()));}
+                        if let Some(fields)=value.as_object_mut(){fields.retain(|key,_|["state","code","diagnostic","host_observation","delivery_obligations","dispatcher_running","restart_attempt","retry_after_ms","model_response","selection_id","destination_digest","target"].contains(&key.as_str()));}
                         let obligations=value["delivery_obligations"].as_array().map(|items|items.iter().filter(|item|selected.iter().any(|source|source["watch"]["workspace_id"]==item["workspace_id"]&&source["watch"]["mailbox_id"]==item["mailbox_id"])).cloned().collect::<Vec<_>>()).unwrap_or_default();
                         value["source_bindings"]=json!(selected);value["delivery_obligations"]=json!(obligations);values.push(value);
                     }

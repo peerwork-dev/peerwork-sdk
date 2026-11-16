@@ -1,5 +1,5 @@
-//! Local-owner existing-Codex attachment. Low-level subscription selections and
-//! stopped-runtime maintenance are internal to one durable job.
+//! Shared selected-host attachment, with Codex-specific discovery entry points.
+//! Low-level subscription selections and maintenance stay in one durable job.
 use super::*;
 use crate::{
     communication_runtime::RuntimeConfig, participant_dispatch::HostSubscription,
@@ -54,9 +54,10 @@ fn desired_setup(
     requested: &ConnectRequest,
     host: &str,
     seed: &str,
+    kind: &str,
 ) -> Result<ConnectRequest> {
     let mut desired = source.clone();
-    desired.setup_id = format!("codex-{}", &sha256_hex(seed.as_bytes())[..32]);
+    desired.setup_id = format!("{kind}-{}", &sha256_hex(seed.as_bytes())[..32]);
     desired.send |= requested.send;
     desired.require_body_keys |= requested.require_body_keys;
     desired.request_membership |= requested.request_membership;
@@ -181,7 +182,7 @@ impl Connect {
         };
         let mut adapter = select_session(&sessions, chat)?;
         adapter["codex_executable"] = json!(executable);
-        self.attach_selected_codex(request, adapter, chat, selection).await
+        self.attach_selected_host(request, adapter, chat, selection).await
     }
     /// Reuse a host-owner registered native/bridge destination without opening
     /// that user's control socket or copying signer credentials across users.
@@ -218,17 +219,29 @@ impl Connect {
         {
             return Err(local("REGISTERED_CODEX_HOST_REQUIRED"));
         }
-        self.attach_selected_codex(request, host.adapter.clone(), name, selection)
+        self.attach_selected_host(request, host.adapter.clone(), name, selection)
             .await
     }
-    async fn attach_selected_codex(
+    pub(super) async fn attach_selected_host(
         &mut self,
         request: ConnectRequest,
         adapter: Value,
         chat: &str,
         selection: Option<RuntimeSelection>,
     ) -> Result<Value> {
+        let target=crate::communication_host::target_summary(&adapter);
         let key = format!("{}:{}", request.participant, request.workspace_id);
+        if let Some(job) = self.registry.codex_attachments.get(&key).cloned() {
+            if !job.aborted && job.request.adapter == adapter && job.invocation == request {
+                let mut result=self.resume_codex(&key, job).await?;
+                result["host_selection"]=target;
+                return Ok(result);
+            }
+            if !job.finished {
+                return Err(local("HOST_ATTACHMENT_PENDING_RESUME_ORIGINAL_SELECTION"));
+            }
+        }
+        let host_kind = if adapter["kind"] == "opencode" { "opencode" } else { "codex" };
         self.original_client(&request.participant).await?;
         let setup = self
             .registry
@@ -246,7 +259,7 @@ impl Connect {
             // No existing receiver to transfer. Reuse normal permission and
             // profile setup; rights already held need no Owner exchange.
             let name = format!(
-                "codex-{}",
+                "{host_kind}-{}",
                 &sha256_hex(adapter.to_string().as_bytes())[..24]
             );
             let admin=self.runtime_admin(&request.participant,selection.as_ref()).await?;
@@ -268,7 +281,9 @@ impl Connect {
             request.receive = true;
             request.receive_mode = Some(ReceiveMode::Push);
             request.host = Some(name);
-            return self.run_agent(request).await;
+            let mut result=self.run_agent(request).await?;
+            result["host_selection"]=target;
+            return Ok(result);
         };
         if setup
             .effective_host
@@ -289,7 +304,9 @@ impl Connect {
                     .iter()
                     .any(|c| !setup.desired.contacts.contains(c));
             if !changed {
-                return self.run_agent(setup.desired).await;
+                let mut result=self.run_agent(setup.desired).await?;
+                result["host_selection"]=target;
+                return Ok(result);
             }
             let host = setup.effective_host.as_deref().unwrap();
             let desired = desired_setup(
@@ -297,8 +314,11 @@ impl Connect {
                 &request,
                 host,
                 &json!([setup.desired, request, adapter]).to_string(),
+                host_kind,
             )?;
-            return self.run_agent(desired).await;
+            let mut result=self.run_agent(desired).await?;
+            result["host_selection"]=target;
+            return Ok(result);
         }
         let admin=self.runtime_admin(&request.participant,selection.as_ref()).await?;
         let runtime_status=crate::communication_runtime::call(&admin,json!({"method":"status"})).await?;
@@ -369,12 +389,12 @@ impl Connect {
                 if matches.len()!=1||matches[0]["source_bindings"].as_array().is_none_or(|sources|sources.len()!=1){return Err(local("HOST_GROUP_SELECTION_REQUIRED"));}
                 matches[0]["source_name"].as_str().ok_or_else(||local("HOST_GROUP_SELECTION_REQUIRED"))?.to_owned()
             }
-        }else{format!("codex-{}",&sha256_hex(key.as_bytes())[..24])};
+        }else{format!("{host_kind}-{}",&sha256_hex(key.as_bytes())[..24])};
         let operation_id = format!(
             "attach-{}",
             &sha256_hex(json!([key, binding, adapter, watch]).to_string().as_bytes())[..40]
         );
-        let desired = desired_setup(&setup.desired, &request, &host, &operation_id)?;
+        let desired = desired_setup(&setup.desired, &request, &host, &operation_id, host_kind)?;
         let invocation = request.clone();
         let job = Attachment {
             setup_id: setup.desired.setup_id.clone(),
@@ -451,7 +471,7 @@ impl Connect {
             }
             if value["state"]!="HOST_REBIND_READY" {
                 let decision_required=value["blocker"]["recovery"]=="EXPLICIT_HOST_REBIND_RECOVERY_DECISION_REQUIRED";
-                return Ok(json!({"state":"PENDING","operation_id":job.request.operation_id,"effect_certainty":value["blocker"].get("effect_certainty").cloned().unwrap_or(json!("UNKNOWN")),"recovery":"RESUME_SAME_ATTACHMENT","blocker":{"stage":"HOST_BINDING","code":value["blocker"].get("code").cloned().unwrap_or(json!("HOST_REBIND_IN_PROGRESS")),"next_actor":if decision_required{"LOCAL_RUNTIME_OWNER"}else{"RUNTIME"},"next_action":if decision_required{"REPEAT_ORIGINAL_CONNECT_WITH_BINDING_RECOVERY_AND_STABLE_DECISION_ID"}else{"RESUME_SAME_CODEX_ATTACHMENT"}},"runtime_restarted":false,"tools_available":true,"existing_state_preserved":true,"binding_operation":value}));
+                return Ok(json!({"state":"PENDING","operation_id":job.request.operation_id,"effect_certainty":value["blocker"].get("effect_certainty").cloned().unwrap_or(json!("UNKNOWN")),"recovery":"RESUME_SAME_ATTACHMENT","blocker":{"stage":"HOST_BINDING","code":value["blocker"].get("code").cloned().unwrap_or(json!("HOST_REBIND_IN_PROGRESS")),"next_actor":if decision_required{"LOCAL_RUNTIME_OWNER"}else{"RUNTIME"},"next_action":if decision_required{"REPEAT_ORIGINAL_CONNECT_WITH_BINDING_RECOVERY_AND_STABLE_DECISION_ID"}else{"REPEAT_ORIGINAL_CONNECT"}},"runtime_restarted":false,"tools_available":true,"existing_state_preserved":true,"binding_operation":value}));
             }
         }else{
             if recovery.is_some(){return Err(local("RESIDENT_ATTACHMENT_RECOVERY_REQUIRED_USE_ORIGINAL_OFFLINE_RECOVERY"));}
@@ -506,7 +526,7 @@ impl Connect {
                 }
                 Err(error) => {
                     return Ok(
-                        json!({"state":"PENDING","operation_id":job.request.operation_id,"effect_certainty":"UNKNOWN","recovery":"RESUME_SAME_ATTACHMENT","blocker":{"stage":"HOST_BINDING","code":error.code,"next_action":"RESUME_SAME_CODEX_ATTACHMENT"},"error":error,"existing_state_preserved":true}),
+                        json!({"state":"PENDING","operation_id":job.request.operation_id,"effect_certainty":"UNKNOWN","recovery":"RESUME_SAME_ATTACHMENT","blocker":{"stage":"HOST_BINDING","code":error.code,"next_action":"REPEAT_ORIGINAL_CONNECT"},"error":error,"existing_state_preserved":true}),
                     )
                 }
             }
@@ -514,7 +534,7 @@ impl Connect {
         let launch_before=SecureStateStore::read_snapshot(&owned.config.state_directory.join("bootstrap.state"),65536).ok();
         if let Err(error) = owned.restart(job.committed.as_ref().unwrap()).await {
             return Ok(
-                json!({"state":"PENDING","operation_id":job.request.operation_id,"effect_certainty":"UNKNOWN","recovery":"RESUME_SAME_ATTACHMENT","blocker":{"stage":"RUNTIME_RESTART","code":error.code,"next_action":"RESUME_SAME_CODEX_ATTACHMENT"},"error":error,"existing_state_preserved":true}),
+                json!({"state":"PENDING","operation_id":job.request.operation_id,"effect_certainty":"UNKNOWN","recovery":"RESUME_SAME_ATTACHMENT","blocker":{"stage":"RUNTIME_RESTART","code":error.code,"next_action":"REPEAT_ORIGINAL_CONNECT"},"error":error,"existing_state_preserved":true}),
             );
         }
         runtime_restarted=launch_before!=SecureStateStore::read_snapshot(&owned.config.state_directory.join("bootstrap.state"),65536).ok();
@@ -571,7 +591,9 @@ impl Connect {
         self.save()?;
         let mut result = self.run_agent(job.desired.clone()).await?;
         result["operation_id"] = json!(job.request.operation_id);
-        result["host_selection"] = json!({"basis":"EXPLICIT_LOCAL_SELECTION","thread_id":job.request.adapter.get("thread_id").unwrap_or(&job.request.adapter["destination"]["conversation_id"]),"session_id":job.request.adapter.get("expected_session_id").unwrap_or(&job.request.adapter["destination"]["session_id"])});
+        let mut target=crate::communication_host::target_summary(&job.request.adapter);
+        target["basis"]=json!("EXPLICIT_LOCAL_SELECTION");
+        result["host_selection"]=target;
         result["model_response"] = json!("NOT_ATTESTED");
         result["runtime_restarted"]=json!(runtime_restarted);
         result["binding_mode"]=json!(if job.resident_admin.is_some(){"RESIDENT"}else{"OFFLINE"});

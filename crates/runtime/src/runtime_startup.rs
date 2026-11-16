@@ -32,6 +32,55 @@ pub(crate) struct Policy {
     pub launcher: Option<Launcher>,
 }
 fn error(code: &str) -> ParticipantError { ParticipantError::local(code, "STARTUP") }
+
+/// Hold the existing launch record across the sealed rebind's configuration
+/// commit. Never enroll an external runtime or discard its pinned executable.
+pub(crate) struct RebindLaunch {
+    store: SecureStateStore,
+    launch: serde_json::Value,
+    target: String,
+}
+impl RebindLaunch {
+    pub(crate) fn prepare(
+        original: &crate::communication_runtime::RuntimeConfig,
+        target: &crate::communication_runtime::RuntimeConfig,
+    ) -> Result<Option<Self>> {
+        if original.state_directory != target.state_directory {
+            return Err(error("ORIGINAL_RUNTIME_CONFIG_CHANGED"));
+        }
+        let path = original.state_directory.join("bootstrap.state");
+        match std::fs::symlink_metadata(&path) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(_) => return Err(error("RUNTIME_LAUNCH_RECOVERY_REQUIRED")),
+            Ok(_) => (),
+        }
+        let store = SecureStateStore::open(&path)
+            .map_err(|_| error("RUNTIME_LAUNCH_ALREADY_OWNED_OR_UNSAFE"))?;
+        let bytes = store.read_exact().map_err(|_| error("RUNTIME_LAUNCH_RECOVERY_REQUIRED"))?
+            .ok_or_else(|| error("RUNTIME_LAUNCH_RECOVERY_REQUIRED"))?;
+        let launch: serde_json::Value = serde_json::from_slice(&bytes)
+            .map_err(|_| error("RUNTIME_LAUNCH_RECOVERY_REQUIRED"))?;
+        let digest = |config: &crate::communication_runtime::RuntimeConfig| {
+            serde_json::to_vec(config).map(|wire| peerwork_core::crypto::sha256_hex(&wire))
+                .map_err(|_| error("RUNTIME_CONFIG_INVALID"))
+        };
+        let target = digest(target)?;
+        if launch["config_digest"] != digest(original)? && launch["config_digest"] != target {
+            let mut problem = error("RUNTIME_LAUNCH_CONFIG_CONFLICT");
+            problem.details = Some(serde_json::json!({"field":"bootstrap.state.config_digest",
+                "next_action":"RESUME_ORIGINAL_REBIND_OR_INSPECT_ORIGINAL_INSTALLATION"}));
+            return Err(problem);
+        }
+        Ok(Some(Self { store, launch, target }))
+    }
+    pub(crate) fn commit(mut self) -> Result<()> {
+        if self.launch["config_digest"] == self.target { return Ok(()); }
+        self.launch["config_digest"] = serde_json::json!(self.target);
+        self.store.write_exact(&serde_json::to_vec(&self.launch)
+            .map_err(|_| error("RUNTIME_LAUNCH_RECOVERY_REQUIRED"))?)
+            .map_err(|_| error("RUNTIME_LAUNCH_RECOVERY_REQUIRED"))
+    }
+}
 fn decode(bytes: &[u8]) -> Result<Policy> {
     let policy: Policy = serde_json::from_slice(bytes).map_err(|_| error("RUNTIME_STARTUP_POLICY_INVALID"))?;
     if policy.format != "peerwork.runtime-startup.v1" || policy.revision == 0 {
@@ -136,6 +185,47 @@ pub(crate) fn recovery_fence(directory: &Path) -> Result<SecureStateStore> {
 
 #[cfg(test)] mod tests {
     use super::*;
+    use crate::communication_runtime::RuntimeConfig;
+    use serde_json::json;
+    fn rebind_configs(directory: &Path) -> (RuntimeConfig, RuntimeConfig) {
+        let original=RuntimeConfig{format:"peerwork.participant-runtime.v1".into(),state_directory:directory.into(),
+            engines:vec![],clients:vec![],hosts:vec![]};
+        let mut target=original.clone();
+        target.hosts.push(crate::participant_dispatch::HostConfig{name:"selected".into(),
+            adapter:json!({"kind":"opencode","session_id":"ses_original"}),subscriptions:vec![]});
+        (original,target)
+    }
+    #[test]
+    fn sealed_rebind_updates_launch_digest_and_preserves_artifact_and_stop_intent() {
+        let root=crate::test_support::protected_test_dir();let (original,target)=rebind_configs(root.path());
+        let launch=json!({"config_digest":peerwork_core::crypto::sha256_hex(&serde_json::to_vec(&original).unwrap()),
+            "pid":123,"process_token":"original-token","launcher":{"executable":"/original/peerwork","sha256":"a".repeat(64)}});
+        let store=SecureStateStore::open(&root.path().join("bootstrap.state")).unwrap();
+        store.write_exact(&serde_json::to_vec(&launch).unwrap()).unwrap();drop(store);
+        change(root.path(),Some(false)).unwrap();let policy=read(root.path()).unwrap();
+        // Dropping before commit models interruption before configuration commit.
+        drop(RebindLaunch::prepare(&original,&target).unwrap());
+        assert_eq!(serde_json::from_slice::<serde_json::Value>(&SecureStateStore::read_snapshot(&root.path().join("bootstrap.state"),65536).unwrap()).unwrap(),launch);
+        RebindLaunch::prepare(&original,&target).unwrap().unwrap().commit().unwrap();
+        let observed:serde_json::Value=serde_json::from_slice(&SecureStateStore::read_snapshot(&root.path().join("bootstrap.state"),65536).unwrap()).unwrap();
+        assert_eq!(observed["config_digest"],peerwork_core::crypto::sha256_hex(&serde_json::to_vec(&target).unwrap()));
+        for field in ["pid","process_token","launcher"]{assert_eq!(observed[field],launch[field]);}
+        let bytes=SecureStateStore::read_snapshot(&root.path().join("bootstrap.state"),65536).unwrap();
+        RebindLaunch::prepare(&original,&target).unwrap().unwrap().commit().unwrap();
+        assert_eq!(SecureStateStore::read_snapshot(&root.path().join("bootstrap.state"),65536).unwrap(),bytes);
+        assert_eq!(read(root.path()).unwrap(),policy);
+    }
+    #[test]
+    fn sealed_rebind_rejects_unrelated_launch_and_does_not_enroll_external_runtime() {
+        let root=crate::test_support::protected_test_dir();let (original,target)=rebind_configs(root.path());
+        assert!(RebindLaunch::prepare(&original,&target).unwrap().is_none());
+        assert!(!root.path().join("bootstrap.state").exists());assert!(read(root.path()).unwrap().is_none());
+        let marker=root.path().join("bootstrap.state");let store=SecureStateStore::open(&marker).unwrap();
+        let bytes=serde_json::to_vec(&json!({"config_digest":"unrelated"})).unwrap();store.write_exact(&bytes).unwrap();drop(store);
+        let error=RebindLaunch::prepare(&original,&target).err().unwrap();
+        assert_eq!(error.code,"RUNTIME_LAUNCH_CONFIG_CONFLICT");assert_eq!(error.details.unwrap()["field"],"bootstrap.state.config_digest");
+        assert_eq!(SecureStateStore::read_snapshot(&marker,65536).unwrap(),bytes);
+    }
     #[test] fn enrollment_is_idempotent_and_preserves_explicit_stop() {
         let root = crate::test_support::protected_test_dir();
         assert!(read(root.path()).unwrap().is_none());

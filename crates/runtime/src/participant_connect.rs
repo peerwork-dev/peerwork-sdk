@@ -215,6 +215,7 @@ struct Registry {
     profile_sources:BTreeMap<String,source::ProfileSource>,
     #[serde(default)]
     profile_upgrades:BTreeMap<String,bootstrap::OwnedRuntime>,
+    // Retain the persisted field name; Codex and OpenCode share this job engine.
     #[serde(default)]
     codex_attachments: BTreeMap<String, codex::Attachment>,
     participants: BTreeMap<String, Registration>,
@@ -1736,6 +1737,9 @@ pub fn cli(args: &[String]) -> Value {
             return Err(local("NEW_PEER_USES_CREATION_INTENT_ONLY"));
         }
         let normal=prepare_cli_intent(&mut values);
+        let install_executable=if values.contains_key("--install") && !values.contains_key("--uninstall") {
+            Some(install::persistent_executable(&std::env::current_exe().map_err(|_|local("EXECUTABLE_UNAVAILABLE"))?)?)
+        }else{None};
         // Reject mixed intents before context/profile/discovery early returns.
         if let Some(mode)=values.get("--update") {
             if !matches!(mode.as_str(),"status"|"apply") || values.keys().any(|key|!["--local","--participant","--project","--update"].contains(&key.as_str())) {
@@ -1765,9 +1769,11 @@ pub fn cli(args: &[String]) -> Value {
         }
         if values.contains_key("--issuer")||values.contains_key("--adopt-policy"){return Err(local("PROFILE_SOURCE_REQUIRED"));}
         let selected_adapter=host::adapter(&values)?;
+        let selected_host=values.contains_key("--codex") || values.get("--install").is_some_and(|host|host=="opencode")
+            || values.contains_key("--opencode-session") || values.contains_key("--opencode-service");
         let binding_recovery=match (values.get("--binding-recovery"),values.get("--decision-id")) {
             (None,None)=>None,
-            (Some(action),Some(decision_id)) if values.contains_key("--codex")&&identifier(decision_id)=>{
+            (Some(action),Some(decision_id)) if selected_host&&identifier(decision_id)=>{
                 let action=match action.as_str(){
                     "RETRY_REJECTED"=>crate::participant_rebind::HostRebindRecoveryAction::RetryRejected,
                     "ABORT"=>crate::participant_rebind::HostRebindRecoveryAction::Abort,
@@ -1775,9 +1781,9 @@ pub fn cli(args: &[String]) -> Value {
                 };
                 Some(crate::participant_rebind::HostRebindRecoveryRequest{format:"peerwork.host-rebind-recovery.v1".into(),decision_id:decision_id.clone(),action})
             },
-            _=>return Err(local("BINDING_RECOVERY_REQUIRES_CODEX_AND_STABLE_DECISION_ID")),
+            _=>return Err(local("BINDING_RECOVERY_REQUIRES_SELECTED_HOST_AND_STABLE_DECISION_ID")),
         };
-        if values.contains_key("--runtime-config")&&!values.contains_key("--codex"){return Err(local("RUNTIME_CONFIG_REQUIRES_CODEX_ATTACHMENT"));}
+        if values.contains_key("--runtime-config")&&!selected_host{return Err(local("RUNTIME_CONFIG_REQUIRES_HOST_ATTACHMENT"));}
         if values.contains_key("--runtime-config")&&values.contains_key("--engine-config"){return Err(local("SELECT_ORIGINAL_RUNTIME_OR_ENGINE_NOT_BOTH"));}
         if (values.contains_key("--codex-chat")||values.contains_key("--codex-host"))&&!values.contains_key("--codex"){return Err(local("CODEX_CHAT_REQUIRES_CODEX"));}
         if values.contains_key("--codex") {
@@ -1839,7 +1845,7 @@ pub fn cli(args: &[String]) -> Value {
             let (saved,_)=connect.resolve_input(ConnectInput::Resume(ResumeSetup{resume_setup_id:id.clone()}))?;
             let runtime=tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().map_err(|_|local("EXECUTOR_FAILED"))?;
             let mut result=runtime.block_on(connect.resume_selected(id,values.get("--participant").map(String::as_str),None))?;
-            if let Some(host)=values.get("--install"){result["integration"]=connect.install(&saved.participant,&saved.workspace_id,Installation{host:host.clone(),project,executable:std::env::current_exe().map_err(|_|local("EXECUTABLE_UNAVAILABLE"))?})?;}
+            if let Some(host)=values.get("--install"){result["integration"]=connect.install(&saved.participant,&saved.workspace_id,Installation{host:host.clone(),project,executable:install_executable.clone().ok_or_else(||local("EXECUTABLE_UNAVAILABLE"))?})?;}
             return Ok(result);
         }
         bootstrap::runtime_inputs(&connect,&mut values)?;
@@ -1870,10 +1876,11 @@ pub fn cli(args: &[String]) -> Value {
             },
         };
         let installation = if let Some(host) = values.get("--install") {
+            let executable=match &install_executable {Some(path)=>path.clone(),None=>std::env::current_exe().map_err(|_|local("EXECUTABLE_UNAVAILABLE"))?};
             Some(Installation {
                 host: host.clone(),
                 project: project.clone(),
-                executable: std::env::current_exe().map_err(|_| local("EXECUTABLE_UNAVAILABLE"))?,
+                executable,
             })
         } else {
             None
@@ -1951,7 +1958,7 @@ pub fn cli(args: &[String]) -> Value {
         if selected_adapter.is_some() && !request.receive {
             return Err(local("HOST_SELECTION_REQUIRES_RECEIVE"));
         }
-        if selected_adapter.is_none() && values.contains_key("--admin") && !values.contains_key("--codex") {
+        if selected_adapter.is_none() && values.contains_key("--admin") && !selected_host {
             return Err(local("HOST_SELECTION_REQUIRED"));
         }
         let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -2005,6 +2012,21 @@ pub fn cli(args: &[String]) -> Value {
                     if let Some(spec)=installation{result["integration"]=connect.install(&handle,&request.workspace_id,spec)?;}
                     return Ok(result);
                 }
+            }
+            if selected_adapter.as_ref().is_some_and(|adapter|adapter["kind"]=="opencode") {
+                let adapter=selected_adapter.take().unwrap();
+                let session=adapter["session_id"].as_str().ok_or_else(||local("OPENCODE_SESSION_SELECTION_REQUIRED"))?.to_owned();
+                let config_path=values.get("--runtime-config").map(std::path::absolute).transpose().map_err(|_|local("LOCAL_SELECTION_INVALID"))?;
+                let admin=values.get("--admin").map(std::path::absolute).transpose().map_err(|_|local("HOST_SELECTION_INVALID"))?
+                    .or_else(||config_path.as_ref().and_then(|p|crate::communication_store::private_json(p,65536).ok())
+                        .and_then(|v|v["state_directory"].as_str().map(|d|PathBuf::from(d).join("admin.json"))));
+                let selection=admin.map(|admin_endpoint|RuntimeSelection{admin_endpoint,config_path});
+                if normal && resume {request=connect.codex_original_invocation(&handle,&request.workspace_id).unwrap_or(request);}
+                let workspace=request.workspace_id.clone();
+                let mut result=if let Some(decision)=binding_recovery {connect.recover_codex_attachment(request,Some(&session),decision).await?}
+                    else {connect.attach_selected_host(request,adapter,&session,selection).await?};
+                if let Some(spec)=installation {result["integration"]=connect.install(&handle,&workspace,spec)?;}
+                return Ok(result);
             }
             if values.contains_key("--codex") && (!normal || request.receive && (request.receive_mode!=Some(ReceiveMode::Inbox) || values.contains_key("--codex-chat") || values.contains_key("--codex-host"))) {
                 if normal && resume {request=connect.codex_original_invocation(&handle,&request.workspace_id).unwrap_or(request);}

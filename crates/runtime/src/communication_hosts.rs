@@ -222,6 +222,7 @@ impl Hosts {
                 if let Some(config)=self.configs.iter().find(|c|c.key().ok().as_ref()==Some(key)) {
                     value["source_bindings"]=json!(config.subscriptions);
                     value["source_name"]=json!(config.name);
+                    value["target"]=crate::communication_host::target_summary(&config.adapter);
                 }
                 value
             })

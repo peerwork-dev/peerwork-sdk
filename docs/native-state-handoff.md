@@ -86,6 +86,12 @@ not attest model output or business completion. After interruption or an unknown
 remote outcome, repeat the **same configuration/request/operation ID**. Do not
 switch host selection or invent another operation to escape uncertainty.
 
+For an existing managed installation, the sealed rebind also maintains its launch
+configuration digest, retaining the original executable pin and startup intent.
+An interruption between configuration and launch-record writes resumes under
+the same operation. Do not calculate or edit `bootstrap.state` yourself. External
+runtimes without a launch record remain externally managed.
+
 ### Recover a definite rejection
 
 An explicit no-effect rejection can be retried using a protected decision file:

@@ -3,13 +3,14 @@ use super::*;
 
 pub(super) async fn select(connect:&Connect,participant:&str,workspace:&str,project:&Path,values:&BTreeMap<String,String>)->Result<Option<Value>> {
     let explicit=values.contains_key("--opencode-session")||values.contains_key("--opencode-service");
+    let select_host=explicit||values.get("--receive-mode").is_some_and(|mode|mode=="push");
     if explicit && (values.contains_key("--tools-only") || values.contains_key("--no-receive") || values.contains_key("--program")
         || values.contains_key("--host") || values.get("--receive-mode").is_some_and(|m|m!="push")) {return Err(local("SELECT_ONE_HOST_ADAPTER"))}
     if !explicit && (values.contains_key("--host") || values.contains_key("--tools-only") || values.contains_key("--no-receive")
         || values.contains_key("--program") || values.get("--receive-mode").is_some_and(|m|m=="inbox")) {return Ok(None)}
     let original=connect.registry.active_by_scope.get(&format!("{participant}:{workspace}")).and_then(|id|connect.registry.setups.get(id));
-    if !explicit && original.is_some() {return Ok(None)}
-    if !explicit && connect.registry.setups.values().any(|s|s.desired.participant==participant
+    if !select_host && original.is_some() {return Ok(None)}
+    if !select_host && connect.registry.setups.values().any(|s|s.desired.participant==participant
         && s.desired.workspace_id==workspace && s.result["state"]=="PENDING" && s.desired.host.is_some()) {return Ok(None)}
     let file=match values.get("--opencode-service") {
         Some(path)=>std::path::absolute(path).map_err(|_|local("OPENCODE_SERVICE_SELECTION_REQUIRED"))?,
@@ -48,6 +49,99 @@ pub(super) async fn select(connect:&Connect,participant:&str,workspace:&str,proj
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test(flavor="multi_thread",worker_threads=2)]
+    #[ignore="requires explicit synthetic PostgreSQL, real HTTP service and candidate CLI"]
+    async fn opencode_existing_inbox_attaches_through_shared_job_and_survives_runtime_restart() {
+        use crate::{communication_runtime as ipc,communication_host::opencode::tests::Server,
+            participant::http_tests::{Service,configuration,mutate,selected,install_synthetic_key},
+            participant::{ParticipantClient,Scope}};
+        let service=Service::start();let root=crate::test_support::protected_test_dir();
+        let options=configuration(root.path(),&service.origin);let owner=ParticipantClient::open(options.clone()).await.unwrap();
+        let workspace=mutate(&owner,"create","structure.workspace.create",&Scope::default(),json!({"name":"Synthetic OpenCode attachment"})).await["workspace_id"].as_str().unwrap().to_owned();
+        let scope=Scope{workspace_id:Some(workspace.clone()),..Default::default()};
+        let meta=selected(&owner,"structure.workspace.get",&scope,json!({})).await;
+        mutate(&owner,"grant","structure.communication.grant.set",&scope,json!({"actor_id":owner.actor_id(),"membership_id":meta["membership"]["membership_id"],"expected_revision":null,"send":true,"receive":true})).await;
+        let key=install_synthetic_key(&options,&workspace,&[59;32],None);
+        mutate(&owner,"key","structure.content-key.set",&scope,json!({"key_id":key,"expected_epoch":0,"expected_head_revision":null})).await;
+        owner.close().await.unwrap();
+        let identity=std::fs::read(&options.identity_path).unwrap();
+        let engine=ipc::EngineConfig{name:"original".into(),origin:options.origin.clone(),expected_actor:options.expected_actor.clone(),
+            identity_path:options.identity_path.clone(),state_directory:options.state_directory.clone(),journal_path:Some(options.journal_path.clone()),
+            authority:options.authority.clone(),allow_loopback_http:true,transport:options.transport.clone(),max_inflight:4,max_pending:16,max_stored_bytes:8*1024*1024,migration_sources:vec![]};
+        let runtime=ipc::RuntimeConfig{format:"peerwork.participant-runtime.v1".into(),state_directory:root.path().join("runtime"),
+            engines:vec![engine],clients:vec![ipc::ClientConfig{name:"original".into(),engine:"original".into(),capability:Capability::owner()}],hosts:vec![]};
+        let cancel=crate::KernelCancellationToken::new();let(tx,rx)=tokio::sync::oneshot::channel();
+        let serving=tokio::spawn(ipc::serve(runtime.clone(),cancel.clone(),tx));let ready=rx.await.unwrap().unwrap();
+        let mut connect=Connect::open(&root.path().join("connect")).unwrap();
+        connect.register("peer",Registration{origin:options.origin.clone(),actor_id:options.expected_actor.clone(),endpoint_path:ready.client_endpoints["original"].clone()}).await.unwrap();
+        let inbox=ConnectRequest{setup_id:"original-inbox".into(),participant:"peer".into(),workspace_id:workspace.clone(),
+            alias:default_alias(),receive:true,send:true,receive_mode:Some(ReceiveMode::Inbox),require_body_keys:false,
+            request_membership:false,protocols:vec![],management:vec![],contacts:vec![],host:None};
+        let configured=connect.run_agent(inbox.clone()).await.unwrap();assert_eq!(configured["state"],"LOCAL_CONFIGURED","{configured}");
+        let profile=connect.profile().unwrap().unwrap();let receiver_path=profile.receive_endpoint_path.clone().unwrap();
+        let receiver=RuntimeClient::connect(receiver_path.clone(),&options.origin,&options.expected_actor).await.unwrap();
+        let binding=receiver.call(json!({"method":"binding"})).await.unwrap();
+        let original_watches=receiver.call(json!({"method":"bindings"})).await.unwrap();
+        let host=Server::for_directory(root.path());let file=root.path().join("service.json");host.registration(&file,"secret");
+        let values=BTreeMap::from([("--install".into(),"opencode".into()),("--opencode-service".into(),file.to_str().unwrap().into()),("--opencode-session".into(),"ses_test".into())]);
+        let adapter=select(&connect,"peer",&workspace,root.path(),&values).await.unwrap().unwrap();
+        assert_eq!(adapter["session_id"],"ses_test");
+        drop(connect);
+        let executable=std::env::var("PEERWORK_PARTICIPANT_CLI").expect("explicit candidate CLI");
+        let argv=vec!["connect".to_owned(),"--local".into(),root.path().join("connect").to_str().unwrap().into(),
+            "--participant".into(),"peer".into(),"--workspace".into(),workspace.clone(),"--project".into(),root.path().to_str().unwrap().into(),
+            "--install".into(),"opencode".into(),"--opencode-service".into(),file.to_str().unwrap().into(),"--opencode-session".into(),"ses_test".into(),
+            "--admin".into(),ready.admin_endpoint.to_str().unwrap().into()];
+        async fn run(executable:&str,argv:&[String])->Value {
+            let output=tokio::process::Command::new(executable).args(argv).kill_on_drop(true).output().await.unwrap();
+            let result:Value=serde_json::from_slice(&output.stdout).unwrap_or_else(|_|panic!("{}",String::from_utf8_lossy(&output.stderr)));
+            result
+        }
+        let result=tokio::time::timeout(std::time::Duration::from_secs(30),async {
+            loop {
+                let result=run(&executable,&argv).await;
+                if result["state"]!="PENDING" {break result;}
+                assert!(result.get("operation_id").is_some(),"{result}");
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+        }).await.unwrap();
+        assert_eq!(result["state"],"LOCAL_CONFIGURED","{result}");assert_eq!(result["receive_mode"],"PUSH");
+        assert_eq!(result["host_selection"]["session_id"],"ses_test");assert_eq!(result["runtime_restarted"],false);
+        assert_eq!(result["host_selection"]["directory"],root.path().to_str().unwrap());
+        assert_eq!(result["host_selection"]["caller_session_match"],"NOT_ATTESTED");
+        assert_eq!(receiver.call(json!({"method":"binding"})).await.unwrap(),binding);
+        let mut watches=receiver.call(json!({"method":"bindings"})).await.unwrap();
+        assert_eq!(watches[0]["mailbox_id"],original_watches[0]["mailbox_id"]);assert!(watches[0]["host_destination"].is_string());
+        let claims=service.counts().await["claim_commands"].clone();
+        let repeated=run(&executable,&argv).await;
+        assert_eq!(repeated["state"],"LOCAL_CONFIGURED","{repeated}");assert_eq!(service.counts().await["claim_commands"],claims);
+        let project=root.path().join("repo");crate::onboarding_files::directory(&project,false).unwrap();
+        let mut changed=argv.clone();let index=changed.iter().position(|v|v=="--project").unwrap();changed[index+1]=project.to_str().unwrap().into();
+        let mismatch=run(&executable,&changed).await;
+        assert_eq!(mismatch["error"]["code"],"HOST_BINDING_MISMATCH","{mismatch}");
+        assert_eq!(service.counts().await["claim_commands"],claims,"wrong-project selection must have no remote effect");
+        let second=Server::for_session(&project,"ses_repo");second.registration(&file,"secret");
+        let index=changed.iter().position(|v|v=="--opencode-session").unwrap();changed[index+1]="ses_repo".into();
+        let rebound=tokio::time::timeout(std::time::Duration::from_secs(30),async {
+            loop {let result=run(&executable,&changed).await;if result["state"]!="PENDING"{break result;}
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;}
+        }).await.unwrap();
+        assert_eq!(rebound["state"],"LOCAL_CONFIGURED","{rebound}");
+        assert_eq!(rebound["host_selection"]["session_id"],"ses_repo");
+        assert_eq!(rebound["host_selection"]["directory"],project.to_str().unwrap());
+        assert_eq!(receiver.call(json!({"method":"binding"})).await.unwrap(),binding);
+        watches=receiver.call(json!({"method":"bindings"})).await.unwrap();
+        assert_eq!(std::fs::read(&options.identity_path).unwrap(),identity);
+        cancel.cancel();serving.await.unwrap().unwrap();
+        let cancel=crate::KernelCancellationToken::new();let(tx,rx)=tokio::sync::oneshot::channel();
+        let serving=tokio::spawn(ipc::serve(runtime,cancel.clone(),tx));rx.await.unwrap().unwrap();
+        let restored=RuntimeClient::connect(receiver_path,&options.origin,&options.expected_actor).await.unwrap();
+        assert_eq!(restored.call(json!({"method":"binding"})).await.unwrap(),binding);
+        assert_eq!(restored.call(json!({"method":"bindings"})).await.unwrap(),watches);
+        cancel.cancel();serving.await.unwrap().unwrap();
+        assert_eq!(service.counts().await["actions"]["structure.communication.grant.set"],1);
+        assert_eq!(service.counts().await["journal_reads"],0);
+    }
     #[tokio::test]
     async fn opencode_saved_pending_host_and_explicit_manual_intent_do_not_rediscover_or_replace_the_host() {
         let root=crate::test_support::protected_test_dir();

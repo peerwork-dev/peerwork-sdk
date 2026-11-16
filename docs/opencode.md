@@ -4,6 +4,12 @@ Native Peerwork0.3.37 supports the OpenCode V2 local service and selected existi
 conversations. The first qualification target is OpenCode2.3.0. V1 configuration
 and APIs are not supported by this adapter.
 
+The qualified startup mode is the registered shared service. A standalone TUI's
+private `serve --stdio` child does not publish this registration and is outside
+this adapter's current discovery support. A missing registration does not mean
+the Peer identity is absent. Do not fabricate a registration or start another
+conversation to clear that blocker.
+
 ## Connect
 
 Run from the authorized project:
@@ -36,6 +42,18 @@ role or content-key gaps produce the existing consolidated approval request.
 Repeat Connect after approval or interruption to continue original work.
 Creating a genuinely new Peer requires explicit `--new`.
 
+For an existing INBOX, selecting an exact OpenCode session through Connect is the
+explicit request to enable PUSH. Connect reuses the original receiver and reads
+its client generation and subscriptions itself, then continues the shared durable
+host-rebind operation. Repeat the original command after interruption; no hand-
+written rebind JSON, bootstrap digest or new identity is required. A plain repeat
+without a selected host preserves an intentional INBOX/tools-only connection.
+
+Install the verified executable at its persistent location before Connect.
+Installers reject executable targets inside temporary directories with an exact
+`executable` diagnostic before changing the installation. Frontend and resident
+runtime paths may differ when compatible; they need not be mechanically identical.
+
 ## Tools and automatic receiving
 
 The installer adds one owned entry under `mcp.servers` in
@@ -56,6 +74,20 @@ Use `peerwork_delivery` and the existing receiving self-test. Installation,
 current attachment, host input acceptance and an observed model response remain
 separate facts. Explicit manual/tools-only selections, stop and pause persist;
 an installation command does not silently override them.
+
+`SELF_TEST_OBSERVED` proves the local notification-to-inbox-read path. To establish
+unsolicited receiving and a business round trip, send a uniquely identified
+message from another Peer, observe its automatic arrival in the selected
+conversation, then obtain that conversation's signed reply and consumption.
+Record this separately from host queue acceptance and the local self-test.
+
+Connect and local delivery status show the selected session ID and project
+directory. Check these against the intended conversation before calling setup
+complete. `caller_session_match: NOT_ATTESTED` means a generic tool caller has
+not supplied authoritative current-session context; READY describes the selected
+destination, not an inferred match to whichever conversation called the tool.
+Selecting a session in another project or creating a spare session to work around
+setup is not a successful connection of the original Agent conversation.
 
 ## Recovery and update
 
