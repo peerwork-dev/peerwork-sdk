@@ -72,7 +72,7 @@ impl Fixture {
         let installed = connect.install("peer", &"W".repeat(43), Installation { host:"codex".into(), project, executable:binary.clone() }).unwrap();
         assert_eq!(installed["automatic_startup"]["state"], "AUTOMATIC"); drop(connect);
         // Installation itself must persist qualification; no timer grace period.
-        assert!(crate::runtime_startup::read(&runtime).unwrap().unwrap().qualified);
+        assert!(crate::runtime_startup::read(&runtime).unwrap().unwrap().launcher.is_some());
         Self { root, binary, first, directory, config, registration, binding }
     }
     fn launch(&self) -> Value { serde_json::from_slice(&SecureStateStore::read_snapshot(&self.config.state_directory.join("bootstrap.state"),65536).unwrap()).unwrap() }
@@ -98,6 +98,11 @@ impl Fixture {
     fn stop(&self) {
         let output = Command::new(&self.binary).args(["runtime", "admin"]).arg(self.config.state_directory.join("admin.json")).arg("stop").output().unwrap();
         let value: Value = serde_json::from_slice(&output.stdout).unwrap(); assert_eq!(value["ok"], true, "{value}");
+        for _ in 0..100 {
+            if SecureStateStore::open(&self.config.state_directory.join("runtime.state")).is_ok(){return;}
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        panic!("original runtime did not release its writer after stop");
     }
 }
 impl Drop for Fixture { fn drop(&mut self) {
@@ -194,22 +199,34 @@ async fn explicit_resume_and_adopt_preserve_the_committed_launcher() {
 
 #[tokio::test(flavor="multi_thread",worker_threads=2)]
 #[ignore="requires exact candidate CLI and synthetic process/loopback IPC"]
-async fn fast_child_waits_for_the_parent_intent_record() {
-    let fixture=Fixture::new().await;fixture.stop();
-    crate::runtime_startup::enable(&fixture.config.state_directory).unwrap();
-    let intent=crate::runtime_startup::launch_guard(&fixture.config.state_directory).unwrap();
-    let mut child=OriginalChild(Command::new(&fixture.binary).args(["runtime","run"])
-        .arg(fixture.config.state_directory.join("config.json"))
-        .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap());
-    tokio::time::sleep(Duration::from_millis(800)).await;
-    assert!(child.0.try_wait().unwrap().is_none(),"short intent lock must not kill a fast child");
-    drop(intent);
-    tokio::time::timeout(Duration::from_secs(10),async {loop {
-        if RuntimeClient::connect(fixture.registration.endpoint_path.clone(),&fixture.registration.origin,&fixture.registration.actor_id).await.is_ok(){break;}
-        assert!(child.0.try_wait().unwrap().is_none());
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }}).await.unwrap();
-    fixture.stop();
+async fn every_recovery_entry_resumes_the_recorded_update_before_starting() {
+    for (trigger,was_running) in [("automatic",false),("resume",false),("adopt",false),("automatic",true)] {
+        let mut fixture=Fixture::new().await;
+        let target=fixture.root.path().join("updated-peerwork");std::fs::copy(&fixture.binary,&target).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&target,std::fs::Permissions::from_mode(0o700)).unwrap();
+        let previous=fixture.launch()["pid"].as_u64().unwrap();
+        if trigger=="resume" {fixture.stop();}else{fixture.crash();}
+        let original=bootstrap::owned_runtime(&Connect::inspect(&fixture.directory).unwrap(),"peer").unwrap();
+        let update=json!({"format":"peerwork.owned-update.v1","participant":"peer","registration":fixture.registration,
+            "executable":target,"executable_digest":crate::runtime_startup::Launcher::capture(target.clone()).unwrap().sha256,
+            "required_features":["host-observation-upload-deadline-v1","current-host-delivery-health-v1","automatic-runtime-startup-v1"],
+            "original":original,"was_running":was_running,"phase":"RUNTIME_READY"});
+        let path=fixture.directory.join("update-peer.state");let store=SecureStateStore::open(&path).unwrap();
+        store.write_exact(&serde_json::to_vec(&update).unwrap()).unwrap();drop(store);
+        let _mcp=match trigger {
+            "automatic"=>Some(Mcp::new(&fixture.binary,&fixture.directory)),
+            "resume"=>{let _=Command::new(&fixture.binary).args(["agent","--local"]).arg(&fixture.directory)
+                .args(["--participant","peer","delivery","resume"]).output().unwrap();None},
+            "adopt"=>{let mut connect=Connect::open(&fixture.directory).unwrap();connect.adopt("peer").await.unwrap();None},
+            _=>unreachable!(),
+        };
+        let restored=fixture.restored(previous).await;
+        assert_eq!(std::fs::read_link(format!("/proc/{}/exe",restored["pid"])).unwrap(),target,"{trigger}");
+        let completed:Value=serde_json::from_slice(&SecureStateStore::read_snapshot(&path,2*1024*1024).unwrap()).unwrap();
+        assert_eq!(completed["phase"],"COMPLETE","{trigger}");
+        assert_eq!(crate::runtime_startup::read(&fixture.config.state_directory).unwrap().unwrap().launcher.unwrap().executable,target);
+    }
 }
 
 #[tokio::test(flavor="multi_thread",worker_threads=3)]

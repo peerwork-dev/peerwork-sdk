@@ -911,20 +911,6 @@ pub async fn serve(
     if crate::runtime_startup::read(&config.state_directory)?.is_some_and(|p| !p.automatic) {
         return Err(local("RUNTIME_AUTOMATIC_START_DISABLED"));
     }
-    // The parent records PID/launcher while holding the short intent fence.
-    // A fast child waits for that record instead of treating Busy as failure.
-    for attempt in 0..=50 {
-        match crate::runtime_startup::qualify(&config.state_directory) {
-            Ok(()) => break,
-            Err(error) if error.code == "RUNTIME_STARTUP_POLICY_BUSY" && attempt < 50 => {
-                tokio::time::sleep(Duration::from_millis(100)).await;
-            },
-            Err(error) => return Err(error),
-        }
-    }
-    if crate::runtime_startup::read(&config.state_directory)?.is_some_and(|p| !p.automatic) {
-        return Err(local("RUNTIME_AUTOMATIC_START_DISABLED"));
-    }
     let mut owners = BTreeMap::new();
     let mut sessions = Vec::new();
     let mut names = BTreeSet::new();
@@ -1076,7 +1062,6 @@ pub async fn serve(
             _=intent_check.tick()=>{
                 match crate::runtime_startup::read(&runtime.directory) {
                     Ok(Some(policy)) if !policy.automatic => runtime.cancel.cancel(),
-                    Ok(Some(policy)) if !policy.qualified => { let _ = crate::runtime_startup::qualify(&runtime.directory); },
                     Err(_) => runtime.cancel.cancel(),
                     _ => {},
                 }
@@ -1240,7 +1225,28 @@ pub fn cli(args: &[String]) -> Value {
                 if method == "stop" && Path::new(path).file_name().is_some_and(|name| name == "admin.json") {
                     if let Some(directory) = Path::new(path).parent() { crate::runtime_startup::disable(directory)?; }
                 }
-                executor.block_on(call(Path::new(path), json!({"method":method})))
+                let result=executor.block_on(call(Path::new(path), json!({"method":method})));
+                if method=="stop" && result.is_err() && Path::new(path).file_name().is_some_and(|name|name=="admin.json") {
+                    if let Some(directory)=Path::new(path).parent() {
+                        // Persisting stop can let the runtime exit before its
+                        // authenticated IPC reply. Report completion only after
+                        // observing that the original writer fence is released.
+                        if crate::runtime_startup::read(directory)?.is_some_and(|p|!p.automatic) {
+                            for _ in 0..50 {
+                                if let Ok(_writer)=SecureStateStore::open(&directory.join("runtime.state")) {
+                                    if let Ok(_intent)=SecureStateStore::open(&directory.join("startup.state")) {
+                                        if crate::runtime_startup::read(directory)?.is_some_and(|p|!p.automatic) {
+                                            return Ok(json!({"ok":true,"value":{"state":"STOPPED","automatic_startup":"DISABLED","confirmation":"ORIGINAL_WRITER_RELEASED"}}));
+                                        }
+                                        return result;
+                                    }
+                                }
+                                std::thread::sleep(Duration::from_millis(100));
+                            }
+                        }
+                    }
+                }
+                result
             }
             _ => Err(local("RUNTIME_ARGUMENT_INVALID")),
         }

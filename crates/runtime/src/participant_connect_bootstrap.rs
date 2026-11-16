@@ -401,9 +401,12 @@ async fn launch_using(config: RuntimeConfig, selected: Registration, config_path
     // upgrade passes a replacement executable.
     let executable = match executable {
         Some(path) => path.to_path_buf(),
-        None => match crate::runtime_startup::read(&runtime_dir)?.and_then(|policy| policy.launcher).or(previous_launcher) {
+        None => match crate::runtime_startup::read(&runtime_dir)? {
+            Some(policy) => { let launcher=policy.launcher.ok_or_else(||local("RUNTIME_STARTUP_SUPPORT_UNCONFIRMED_UPDATE_ORIGINAL_RUNTIME"))?;launcher.verify()?;launcher.executable },
+            None => match previous_launcher {
             Some(launcher) => { launcher.verify()?; launcher.executable },
             None => std::env::current_exe().map_err(|_|local("EXECUTABLE_UNAVAILABLE"))?,
+            },
         },
     };
     let launcher = crate::runtime_startup::Launcher::capture(executable.clone())?;
@@ -560,21 +563,6 @@ impl OwnedRuntime {
     pub async fn upgrade_current(&self, committed:&RuntimeConfig)->Result<()> {
         let executable=std::env::current_exe().map_err(|_|local("EXECUTABLE_UNAVAILABLE"))?;
         self.restart_using(committed,Some(&executable)).await
-    }
-    pub fn commit_stopped_launcher(&self, launcher:crate::runtime_startup::Launcher)->Result<()> {
-        launcher.verify()?;
-        if self.running()? {return Err(local("UPDATE_RUNTIME_STATE_CHANGED"));}
-        let _writer=SecureStateStore::open(&self.config.state_directory.join("runtime.state"))
-            .map_err(|_|local("UPDATE_RUNTIME_STATE_CHANGED"))?;
-        let store=SecureStateStore::open(&self.config.state_directory.join("bootstrap.state"))
-            .map_err(|_|local("RUNTIME_LAUNCH_ALREADY_OWNED_OR_UNSAFE"))?;
-        let mut launch:Launch=serde_json::from_slice(&store.read_exact().map_err(|_|local("RUNTIME_LAUNCH_RECOVERY_REQUIRED"))?
-            .ok_or_else(||local("RUNTIME_LAUNCH_RECOVERY_REQUIRED"))?).map_err(|_|local("RUNTIME_LAUNCH_RECOVERY_REQUIRED"))?;
-        if launch.config_digest!=sha256_hex(&serde_json::to_vec(&self.config).unwrap()) {return Err(local("ORIGINAL_RUNTIME_CONFIG_CHANGED"));}
-        if alive(launch.pid.ok_or_else(||local("RUNTIME_LAUNCH_RECOVERY_REQUIRED"))?,launch.process_token.as_deref())? {return Err(local("UPDATE_RUNTIME_STATE_CHANGED"));}
-        crate::runtime_startup::select_launcher(&self.config.state_directory,launcher.clone())?;
-        launch.launcher=Some(launcher);
-        store.write_exact(&serde_json::to_vec(&launch).unwrap()).map_err(|_|local("RUNTIME_LAUNCH_RECOVERY_REQUIRED"))
     }
     pub async fn restart_pinned(&self, committed:&RuntimeConfig, launcher:&crate::runtime_startup::Launcher)->Result<()> {
         launcher.verify()?;

@@ -29,11 +29,7 @@ pub(crate) struct Policy {
     pub automatic: bool,
     pub revision: u64,
     #[serde(default)]
-    pub qualified: bool,
-    #[serde(default)]
     pub launcher: Option<Launcher>,
-    #[serde(default)]
-    qualified_pid: u32,
 }
 fn error(code: &str) -> ParticipantError { ParticipantError::local(code, "STARTUP") }
 fn decode(bytes: &[u8]) -> Result<Policy> {
@@ -55,7 +51,7 @@ pub(crate) fn read(directory: &Path) -> Result<Option<Policy>> {
 /// Enrollment is explicit installation work. Reinstallation never clears stop.
 pub(crate) fn enroll(directory: &Path) -> Result<Policy> {
     let mut policy = change(directory, None)?;
-    if policy.qualified { return Ok(policy); }
+    if policy.launcher.is_some() { return Ok(policy); }
     // New owned launch records pin the actual executable, before installation
     // returns. This closes the first-install crash window without a timer.
     let path = directory.join("bootstrap.state");
@@ -67,8 +63,8 @@ pub(crate) fn enroll(directory: &Path) -> Result<Policy> {
             launcher.verify()?;
             let store = SecureStateStore::open(&directory.join("startup.state")).map_err(|_|error("RUNTIME_STARTUP_POLICY_BUSY"))?;
             policy = decode(&store.read_exact().map_err(|_|error("RUNTIME_STARTUP_POLICY_UNAVAILABLE"))?.ok_or_else(||error("RUNTIME_STARTUP_POLICY_INVALID"))?)?;
-            policy.qualified=true; policy.launcher=Some(launcher);
-            policy.qualified_pid=launch["pid"].as_u64().unwrap_or(0) as u32;
+            if policy.launcher.is_some() { return Ok(policy); }
+            policy.launcher=Some(launcher);
             store.write_exact(&serde_json::to_vec(&policy).unwrap()).map_err(|_|error("RUNTIME_STARTUP_POLICY_WRITE_FAILED"))?;
         }
     }
@@ -81,10 +77,8 @@ fn change(directory: &Path, enabled: Option<bool>) -> Result<Policy> {
         .map(|bytes| decode(&bytes)).transpose()?;
     let automatic = enabled.unwrap_or_else(|| old.as_ref().is_none_or(|p| p.automatic));
     if let Some(old) = &old { if old.automatic == automatic { return Ok(old.clone()); } }
-    let qualified = old.as_ref().is_some_and(|p| p.qualified);
     let launcher = old.as_ref().and_then(|p|p.launcher.clone());
-    let qualified_pid = old.as_ref().map_or(0,|p|p.qualified_pid);
-    let policy = Policy { format: "peerwork.runtime-startup.v1".into(), automatic, qualified, launcher, qualified_pid,
+    let policy = Policy { format: "peerwork.runtime-startup.v1".into(), automatic, launcher,
         revision: old.map_or(Some(1), |p| p.revision.checked_add(1)).ok_or_else(|| error("RUNTIME_STARTUP_POLICY_INVALID"))? };
     store.write_exact(&serde_json::to_vec(&policy).map_err(|_| error("RUNTIME_STARTUP_POLICY_INVALID"))?)
         .map_err(|_| error("RUNTIME_STARTUP_POLICY_WRITE_FAILED"))?;
@@ -114,13 +108,14 @@ pub(crate) fn enable(directory: &Path) -> Result<()> {
 /// An explicit stopped-stack update commits the next artifact without enabling
 /// startup or claiming that a runtime/host is live.
 pub(crate) fn select_launcher(directory: &Path, launcher: Launcher) -> Result<()> {
-    if read(directory)?.is_none() { return Ok(()); }
     launcher.verify()?;
     let store=SecureStateStore::open(&directory.join("startup.state"))
         .map_err(|_|error("RUNTIME_STARTUP_POLICY_BUSY"))?;
-    let mut policy=decode(&store.read_exact().map_err(|_|error("RUNTIME_STARTUP_POLICY_UNAVAILABLE"))?
-        .ok_or_else(||error("RUNTIME_STARTUP_POLICY_INVALID"))?)?;
-    policy.launcher=Some(launcher); policy.qualified=true; policy.qualified_pid=0;
+    let mut policy=store.read_exact().map_err(|_|error("RUNTIME_STARTUP_POLICY_UNAVAILABLE"))?
+        .map(|bytes|decode(&bytes)).transpose()?.unwrap_or_else(||Policy {
+            format:"peerwork.runtime-startup.v1".into(),automatic:false,revision:1,launcher:None,
+        });
+    policy.launcher=Some(launcher);
     store.write_exact(&serde_json::to_vec(&policy).unwrap()).map_err(|_|error("RUNTIME_STARTUP_POLICY_WRITE_FAILED"))
 }
 /// Hold only across the synchronous spawn/record transition. User stop can
@@ -137,22 +132,6 @@ pub(crate) fn launch_guard(directory: &Path) -> Result<Option<SecureStateStore>>
 pub(crate) fn recovery_fence(directory: &Path) -> Result<SecureStateStore> {
     SecureStateStore::open(&directory.join("startup-recovery.state"))
         .map_err(|_| error("RUNTIME_RECOVERY_ALREADY_OWNED"))
-}
-/// Only a runtime implementing durable stop calls this acknowledgement. A new
-/// frontend must not silently arm an old runtime's unsupported stop semantics.
-pub(crate) fn qualify(directory: &Path) -> Result<()> {
-    let Some(policy) = read(directory)? else { return Ok(()); };
-    if policy.qualified && policy.qualified_pid==std::process::id() { return Ok(()); }
-    let launcher=Launcher::capture(std::env::current_exe().map_err(|_|error("RUNTIME_STARTUP_ARTIFACT_UNAVAILABLE"))?)?;
-    let store = SecureStateStore::open(&directory.join("startup.state"))
-        .map_err(|_| error("RUNTIME_STARTUP_POLICY_BUSY"))?;
-    let mut policy = decode(&store.read_exact().map_err(|_| error("RUNTIME_STARTUP_POLICY_UNAVAILABLE"))?
-        .ok_or_else(|| error("RUNTIME_STARTUP_POLICY_INVALID"))?)?;
-    policy.qualified = true;
-    policy.qualified_pid = std::process::id();
-    policy.launcher = Some(launcher);
-    store.write_exact(&serde_json::to_vec(&policy).map_err(|_| error("RUNTIME_STARTUP_POLICY_INVALID"))?)
-        .map_err(|_| error("RUNTIME_STARTUP_POLICY_WRITE_FAILED"))
 }
 
 #[cfg(test)] mod tests {
@@ -177,12 +156,13 @@ pub(crate) fn qualify(directory: &Path) -> Result<()> {
         drop(guard); disable(root.path()).unwrap();
         assert!(!read(root.path()).unwrap().unwrap().automatic);
     }
-    #[test] fn qualification_preserves_the_latest_user_intent() {
+    #[test] fn target_commit_preserves_the_latest_user_intent() {
         let root = crate::test_support::protected_test_dir();
-        let pending = enroll(root.path()).unwrap(); assert!(!pending.qualified);
-        disable(root.path()).unwrap(); qualify(root.path()).unwrap();
+        let pending = enroll(root.path()).unwrap(); assert!(pending.launcher.is_none());
+        let artifact=root.path().join("artifact"); std::fs::write(&artifact,b"synthetic target").unwrap();
+        disable(root.path()).unwrap(); select_launcher(root.path(),Launcher::capture(artifact).unwrap()).unwrap();
         let stopped = read(root.path()).unwrap().unwrap();
-        assert!(stopped.qualified); assert!(!stopped.automatic);
+        assert!(stopped.launcher.is_some()); assert!(!stopped.automatic);
         assert_eq!(stopped.revision, 2);
         assert!(!enroll(root.path()).unwrap().automatic);
     }

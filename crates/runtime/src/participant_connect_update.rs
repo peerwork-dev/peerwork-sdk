@@ -247,6 +247,11 @@ impl Connect {
             update.phase = Phase::Starting;
             save(&store, &update)?;
         }
+        if update.phase==Phase::RuntimeReady && update.was_running && !bootstrap::owned_runtime(self,&handle)?.running()? {
+            // RuntimeReady is a durable operation phase, not proof that the
+            // observed process survived an interruption before target commit.
+            update.phase=Phase::Starting;save(&store,&update)?;
+        }
         if update.phase == Phase::Starting {
             // Persisted STARTING resumes the same launch after a failed spawn,
             // interrupted start, or lost response. Existing launch fences prevent
@@ -271,11 +276,11 @@ impl Connect {
             }
         } else if bootstrap::owned_runtime(self, &handle)?.running()? {
             return Err(local("UPDATE_RUNTIME_STATE_CHANGED"));
-        } else {
-            bootstrap::owned_runtime(self,&handle)?.commit_stopped_launcher(crate::runtime_startup::Launcher {
-                executable:update.executable.clone(),sha256:update.executable_digest.clone()
-            })?;
         }
+        if update.was_running {crate::runtime_startup::enroll(&update.original.config.state_directory)?;}
+        crate::runtime_startup::select_launcher(&update.original.config.state_directory,crate::runtime_startup::Launcher {
+            executable:update.executable.clone(),sha256:update.executable_digest.clone()
+        })?;
         update.phase = Phase::Complete;
         save(&store, &update)?;
         Ok(

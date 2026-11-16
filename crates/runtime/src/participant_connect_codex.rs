@@ -410,7 +410,7 @@ impl Connect {
         let _maintenance = job.owned.as_ref().map(|owned|crate::runtime_startup::recovery_fence(&owned.config.state_directory)).transpose()?;
         let mut runtime_restarted=false;
         if let Some(admin)=&job.resident_admin {
-            self.adopt(&job.invocation.participant).await?;
+            self.adopt_original(&job.invocation.participant).await?;
             let mut call=json!({"method":"host_rebind","rebind":job.request});
             if let Some(recovery)=recovery {call["recovery"]=json!(recovery);}
             let outcome=crate::communication_runtime::call(admin,call).await?;

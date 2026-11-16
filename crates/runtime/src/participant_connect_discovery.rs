@@ -521,6 +521,18 @@ impl Connect {
     /// Activation is separate from read-only discovery. Original ownership
     /// fences remain the only path to opening a signer; state is never copied.
     pub(crate) async fn adopt(&mut self, handle: &str) -> Result<()> {
+        if bootstrap::owned_runtime(self,handle).is_ok() {
+            // The original update subprocess must own the registry itself. No
+            // local writer remains held across startup/endpoint waits.
+            let writer=self.store.take(); let writing=writer.is_some(); drop(writer);
+            let result=super::startup::recover(&self.directory,Some(handle),super::startup::Trigger::Adopt).await;
+            *self=if writing {Self::open(&self.directory)?}else{Self::inspect(&self.directory)?};
+            let value=result?;
+            if value["state"]=="DISABLED" {return Err(local("RUNTIME_AUTOMATIC_START_DISABLED"));}
+        }
+        self.adopt_original(handle).await
+    }
+    pub(super) async fn adopt_original(&mut self, handle: &str) -> Result<()> {
         if let Some(r) = self.registry.participants.get(handle).cloned() {
             if self.registry.verified_bindings.contains_key(handle) {
                 match self.original_client(handle).await {Ok(_)=>return Ok(()),Err(error) if matches!(error.code.as_str(),"ORIGINAL_RUNTIME_BINDING_CHANGED"|"ORIGINAL_RUNTIME_BINDING_INVALID"|"CLIENT_IDENTITY_OR_ORIGIN_MISMATCH"|"CLIENT_BINDING_INVALID")=>return Err(error),Err(_)=>()}
