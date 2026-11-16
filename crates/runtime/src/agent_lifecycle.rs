@@ -148,7 +148,26 @@ impl Lifecycle {
                 if selected!=&identity{return Err(ParticipantError::local("FRONTEND_IDENTITY_PIN_MISMATCH","CONNECT"));}
             }
             if let AgentRequest::Connect{request}=request {
-                let (request,resume)=connect.resolve_input_selected(request,handle_pin,workspace_pin)?;
+                let discover_identity=handle_pin.is_none() && matches!(&request,
+                    crate::participant_connect::ConnectInput::Intent(intent) if intent.participant.is_none() && !intent.new_peer);
+                let (request,resume)=match connect.resolve_input_selected(request,handle_pin,workspace_pin) {
+                    Err(error) if discover_identity && matches!(error.code.as_str(),"LOCAL_SELECTION_REQUIRED"|"MULTIPLE_IDENTITIES_SELECT_FRONTEND_PARTICIPANT"|"IDENTITY_SELECTION_REQUIRED")=>{
+                        // Ordinary intent resolves identity before it can form a
+                        // setup. Preserve the public discovery response without
+                        // masking explicit selections, scope pins or recovery errors.
+                        let discovery=connect.discovery_summary();
+                        if error.code=="LOCAL_SELECTION_REQUIRED" && discovery.candidates.is_empty() {
+                            let mut result=crate::participant_connect::Connect::selection_required("");
+                            result.as_object_mut().unwrap().remove("setup_id");
+                            result["discovery"]=serde_json::to_value(discovery).unwrap();return Ok(result);
+                        }
+                        if matches!(error.code.as_str(),"MULTIPLE_IDENTITIES_SELECT_FRONTEND_PARTICIPANT"|"IDENTITY_SELECTION_REQUIRED") && discovery.candidates.len()>1 {
+                            return Ok(json!({"state":"PENDING","discovery":discovery,"blocker":{"code":"IDENTITY_SELECTION_REQUIRED","next_actor":"LOCAL_RUNTIME_OWNER","next_action":"CHOOSE_ONE_PUBLIC_IDENTITY_HANDLE"}}));
+                        }
+                        return Err(error);
+                    },
+                    result=>result?,
+                };
                 // Selection-only observations remain available while another
                 // setup holds the writer. They cannot sign or create bindings.
                 if workspace_pin.is_some_and(|ws|ws!=request.workspace_id){return Err(ParticipantError::local("FRONTEND_WORKSPACE_PIN_MISMATCH","CONNECT"));}
@@ -239,3 +258,7 @@ impl Lifecycle {
         Ok(tools)
     }
 }
+
+#[cfg(test)]
+#[path="agent_lifecycle_selection_tests.rs"]
+mod selection_tests;

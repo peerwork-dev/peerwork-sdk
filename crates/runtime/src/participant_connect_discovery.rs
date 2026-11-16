@@ -1017,18 +1017,23 @@ mod tests {
         write(&project.join(".peerwork/engine.json"), &config);
         let mut c = Connect::open(&dir).unwrap();
         c.discover(project, true).unwrap();
-        let request: ConnectRequest =
-            serde_json::from_value(json!({"workspace_id":"W".repeat(43)})).unwrap();
-        let first = c.normalize_request(request.clone()).unwrap();
-        let second = c.normalize_request(request).unwrap();
+        let original=c.original_handle(None).unwrap().unwrap();
+        let before=std::fs::read(dir.join("connect.state")).unwrap();
+        let input=||serde_json::from_value::<ConnectInput>(json!({"workspace_id":"W".repeat(43)})).unwrap();
+        assert!(matches!(input(),ConnectInput::Intent(_)));
+        let (first,first_resume)=c.resolve_input(input()).unwrap();
+        let (second,second_resume)=c.resolve_input(input()).unwrap();
         assert!(first == second);
+        assert!(!first_resume && !second_resume);
         assert!(first.send);
         assert!(first.receive);
+        assert!(first.require_body_keys && first.request_membership);
         let public=crate::participant_connect::schema();
-        assert_eq!(public["properties"]["request"]["properties"]["send"]["default"],first.send);
-        assert_eq!(public["properties"]["request"]["properties"]["receive"]["default"],first.receive);
+        assert!(public["properties"]["request"]["properties"]["send"].get("default").is_none());
+        assert!(public["properties"]["request"]["properties"]["receive"].get("default").is_none());
         assert!(!first.setup_id.is_empty());
-        assert!(!first.participant.is_empty());
+        assert_eq!(first.participant,original);
+        assert_eq!(std::fs::read(dir.join("connect.state")).unwrap(),before);
     }
     #[test]
     fn existing_default_binding_wins_and_project_reference_cannot_fall_through() {
