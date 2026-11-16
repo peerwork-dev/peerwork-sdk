@@ -160,7 +160,16 @@ mod tests {
         let serving=tokio::spawn(ipc::serve(runtime,cancel.clone(),tx));rx.await.unwrap().unwrap();
         let restored=RuntimeClient::connect(receiver_path,&options.origin,&options.expected_actor).await.unwrap();
         assert_eq!(restored.call(json!({"method":"binding"})).await.unwrap(),binding);
-        assert_eq!(restored.call(json!({"method":"bindings"})).await.unwrap(),watches);
+        // LOCAL_READY publishes IPC before the restored dispatcher has resumed
+        // its watch. Wait for that asynchronous source restoration explicitly.
+        tokio::time::timeout(std::time::Duration::from_secs(10),async {
+            loop {
+                let current=restored.call(json!({"method":"bindings"})).await.unwrap();
+                if current==watches {break;}
+                assert_eq!(current,json!([]),"restart restored a different source");
+                tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+            }
+        }).await.expect("original source did not resume after runtime restart");
         cancel.cancel();serving.await.unwrap().unwrap();
         assert_eq!(service.counts().await["actions"]["structure.communication.grant.set"],1);
         assert_eq!(service.counts().await["journal_reads"],0);
