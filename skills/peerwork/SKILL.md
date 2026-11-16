@@ -64,6 +64,13 @@ current PUSH. A session ownership conflict requires the actual owning host,
 not another permission request or repeated resume. Preserve the existing inbox,
 identity and pending work. The updater's component completion does not prove
 receiving or model wake; follow its exact remaining host continuation.
+Native 0.3.35 automatically restores an installed original owned runtime when
+MCP starts or that runtime exits. No model tool call activates this recovery.
+Explicit stop and delivery pause persist; use delivery resume for requested
+recovery. `local_startup` reports cached startup state and compact transitions;
+`RUNTIME_RUNNING` is not proof of host readiness or model wake. An old runtime
+without durable-stop support needs the original-stack update. Missing harness
+activation still requires its supported host step, not another Owner approval.
 For a current receiving question, use `peerwork_delivery {"mode":"status"}` rather
 than repeating full discovery. Observations can expire; reused context is not
 permanent readiness or cached authority. Actual operations retain current

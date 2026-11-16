@@ -47,7 +47,8 @@ fn instructions() -> &'static str {
 fn success(id: Value, mut result: Value, modern: bool) -> Value {
     if modern {
         result["resultType"] = json!("complete");
-        result["_meta"] = json!({"io.modelcontextprotocol/serverInfo":info()});
+        if !result["_meta"].is_object() {result["_meta"]=json!({});}
+        result["_meta"]["io.modelcontextprotocol/serverInfo"] = info();
     }
     json!({"jsonrpc":"2.0","id":id,"result":result})
 }
@@ -109,7 +110,8 @@ where W:AsyncWrite+Unpin,F:std::future::Future<Output=Result<bool>> {
 }
 use crate::agent_lifecycle::Lifecycle as Tools;
 /// Supports per-request MCP 2026-07-28 and negotiated 2025-11-25 hosts.
-/// Discovery is available while the owner is offline; tools never create it.
+/// Discovery is available offline. Startup may restore an installed original
+/// owner; ordinary tools never create an identity or alternate namespace.
 pub async fn serve<R, W>(profile: AgentProfile, reader: R, writer: W) -> Result<()>
 where
     R: AsyncBufRead + Send + Unpin + 'static,
@@ -256,13 +258,13 @@ where R:AsyncBufRead+Send+Unpin+'static,W:AsyncWrite+Unpin {
                     if initializing||initialized||!params["protocolVersion"].is_string()||!params["capabilities"].is_object()||!params["clientInfo"].is_object(){write(&mut writer,error(id,-32602,"Invalid initialize")).await?;continue;}
                     let requested=params["protocolVersion"].as_str().unwrap();
                     let negotiated=if ["2025-03-26","2025-06-18",LEGACY].contains(&requested){requested}else{LEGACY};
-                    initializing=true;write(&mut writer,success(id,json!({"protocolVersion":negotiated,"capabilities":capabilities,"serverInfo":info(),"instructions":guidance}),false)).await?;continue;
+                    initializing=true;write(&mut writer,success(id,json!({"protocolVersion":negotiated,"capabilities":capabilities,"serverInfo":info(),"instructions":guidance,"_meta":{"peerwork/startup":tools.startup_observation()}}),false)).await?;continue;
                 }else if !initialized{
                     write(&mut writer,error(id,-32602,"Provide per-request protocol metadata or initialize first")).await?;continue;
                 }
                 match method{
                     "server/discover" if modern=>{
-                        write(&mut writer,success(id,json!({"supportedVersions":[MODERN,LEGACY],"capabilities":capabilities,"instructions":guidance}),true)).await?;
+                        write(&mut writer,success(id,json!({"supportedVersions":[MODERN,LEGACY],"capabilities":capabilities,"instructions":guidance,"_meta":{"peerwork/startup":tools.startup_observation()}}),true)).await?;
                     },
                     "ping"=>write(&mut writer,success(id,json!({}),modern)).await?,
                     "tools/list"=>{

@@ -51,6 +51,9 @@ pub(super) fn startup_update(connect: &Connect, participant: &str) -> Result<Opt
     let update: Update = serde_json::from_slice(&SecureStateStore::read_snapshot(&path, 2 * 1024 * 1024)
         .map_err(|_| local("UPDATE_STATE_UNAVAILABLE"))?).map_err(|_| local("UPDATE_STATE_INVALID"))?;
     if update.phase == Phase::Complete { return Ok(None); }
+    if !update.required_features.iter().any(|f| f == "automatic-runtime-startup-v1") {
+        return Err(local("UPDATE_RUNTIME_UPGRADE_REQUIRED"));
+    }
     if update.format != "peerwork.owned-update.v1" || update.participant != participant
         || connect.registry.participants.get(participant) != Some(&update.registration)
         || !update.executable.is_absolute() || executable_digest(&update.executable)? != update.executable_digest {

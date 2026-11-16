@@ -64,6 +64,14 @@ Codex shared-daemon path and scoped cross-user bridge are described in the
 
 ## Claude Code: native MCP and opt-in Channels
 
+For an installed receiving integration on native 0.3.35+, starting the normal
+host/MCP also restores its original owned runtime. An Agent does not need to
+remember a startup command or poll the inbox to activate recovery. Explicit
+runtime disable and delivery pause remain in effect. Check `local_startup` for
+startup blockers and current delivery health for host readiness; a running
+process alone is not proof of automatic model wake. External/embedded clients
+retain their owning application's lifecycle. See [startup recovery](host-bridge-recovery.md#installed-startup-recovery).
+
 Native0.3.26 and later support:
 
 ```sh

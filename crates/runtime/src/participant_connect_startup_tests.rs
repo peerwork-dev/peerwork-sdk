@@ -14,15 +14,18 @@ impl Mcp {
         let mut line = String::new();
         BufReader::new(child.stdout.take().unwrap()).read_line(&mut line).unwrap();
         assert_eq!(serde_json::from_str::<Value>(&line).unwrap()["id"], 1);
+        writeln!(child.stdin.as_mut().unwrap(), "{}", json!({"jsonrpc":"2.0","method":"notifications/initialized"})).unwrap();
         Self(child)
     }
 }
 impl Drop for Mcp { fn drop(&mut self) { let _ = self.0.kill(); let _ = self.0.wait(); } }
+struct OriginalChild(Child);
+impl Drop for OriginalChild { fn drop(&mut self) { let _ = self.0.kill(); let _ = self.0.wait(); } }
 
 struct Fixture {
     root: crate::test_support::ProtectedTestDir,
     binary: PathBuf,
-    first: Child,
+    first: OriginalChild,
     directory: PathBuf,
     config: RuntimeConfig,
     registration: Registration,
@@ -30,24 +33,30 @@ struct Fixture {
 }
 impl Fixture {
     async fn new() -> Self {
-        let binary = PathBuf::from(std::env::var_os("PEERWORK_UPDATE_TEST_BINARY").expect("set exact candidate CLI"));
+        Self::at("http://127.0.0.1:1").await
+    }
+    async fn at(origin: &str) -> Self {
+        let candidate = PathBuf::from(std::env::var_os("PEERWORK_UPDATE_TEST_BINARY").expect("set exact candidate CLI"));
         let root = crate::test_support::protected_test_dir();
+        let binary = root.path().join("peerwork"); std::fs::copy(&candidate, &binary).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
         let identity_path = root.path().join("identity");
         let identity = KernelIdentity::create(&identity_path).unwrap();
         let directory = root.path().join("registry");
         let mut connect = Connect::open(&directory).unwrap();
         let runtime = directory.join("runtime-peer"); create_private_state_directory(&runtime).unwrap();
         let config = RuntimeConfig { format:"peerwork.participant-runtime.v1".into(), state_directory:runtime.clone(), hosts:vec![],
-            engines:vec![EngineConfig { name:"original".into(), origin:"http://127.0.0.1:1".into(), expected_actor:identity.actor_id().into(),
+            engines:vec![EngineConfig { name:"original".into(), origin:origin.into(), expected_actor:identity.actor_id().into(),
                 identity_path, state_directory:root.path().join("engine"), journal_path:None, authority:None, migration_sources:vec![],
                 allow_loopback_http:true, transport:Default::default(), max_inflight:1, max_pending:2, max_stored_bytes:1024*1024 }],
             clients:vec![ClientConfig { name:"bootstrap".into(), engine:"original".into(), capability:Capability::owner() }] };
         let bytes = serde_json::to_vec(&config).unwrap(); write_private(&runtime.join("config.json"), &bytes).unwrap();
-        let first = Command::new(&binary).args(["runtime", "run"]).arg(runtime.join("config.json"))
-            .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+        let first = OriginalChild(Command::new(&binary).args(["runtime", "run"]).arg(runtime.join("config.json"))
+            .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap());
         let store = SecureStateStore::open(&runtime.join("bootstrap.state")).unwrap();
-        store.write_exact(&serde_json::to_vec(&json!({"config_digest":sha256_hex(&bytes),"pid":first.id(),
-            "process_token":crate::communication_store::process_token(first.id())})).unwrap()).unwrap(); drop(store);
+        store.write_exact(&serde_json::to_vec(&json!({"config_digest":sha256_hex(&bytes),"pid":first.0.id(),
+            "process_token":crate::communication_store::process_token(first.0.id())})).unwrap()).unwrap(); drop(store);
         let registration = Registration { origin:config.engines[0].origin.clone(), actor_id:identity.actor_id().into(), endpoint_path:runtime.join("client-bootstrap.json") };
         for _ in 0..200 {
             if RuntimeClient::connect(registration.endpoint_path.clone(), &registration.origin, &registration.actor_id).await.is_ok() { break; }
@@ -73,7 +82,7 @@ impl Fixture {
         let pid = self.launch()["pid"].as_u64().unwrap() as u32;
         assert!(crate::communication_store::process_token(pid).is_some());
         unsafe { assert_eq!(libc::kill(pid as i32, libc::SIGKILL), 0); }
-        if pid == self.first.id() { let _ = self.first.wait(); }
+        if pid == self.first.0.id() { let _ = self.first.0.wait(); }
     }
     async fn restored(&self, previous: u64) -> Value {
         tokio::time::timeout(Duration::from_secs(30), async { loop {
@@ -95,7 +104,7 @@ impl Fixture {
 }
 impl Drop for Fixture { fn drop(&mut self) {
     let _ = Command::new(&self.binary).args(["runtime","admin"]).arg(self.config.state_directory.join("admin.json")).arg("stop").output();
-    let _ = self.first.wait();
+    let _ = self.first.0.kill(); let _ = self.first.0.wait();
     let _ = &self.root;
 } }
 
@@ -103,9 +112,16 @@ impl Drop for Fixture { fn drop(&mut self) {
 #[ignore="requires exact candidate CLI and synthetic process/loopback IPC"]
 async fn mcp_startup_and_runtime_crash_restore_without_any_tool_call() {
     let mut fixture = Fixture::new().await;
+    let client = RuntimeClient::connect_bound(fixture.registration.endpoint_path.clone(),&fixture.registration.origin,&fixture.registration.actor_id,fixture.binding.clone()).await.unwrap();
+    let pending = client.call(json!({"method":"invoke","wait_ms":100,"request":crate::participant::Invoke::new(
+        "original-pending","structure.workspace.create",Scope::default(),json!({"name":"Offline pending intent"}))})).await.unwrap();
+    assert_eq!(pending["operation_id"],"original-pending");
     let first = fixture.launch()["pid"].as_u64().unwrap(); fixture.crash();
     let mcp = Mcp::new(&fixture.binary, &fixture.directory);
     let restored = fixture.restored(first).await;
+    let retained = client.call(json!({"method":"operation","operation_id":"original-pending"})).await.unwrap();
+    assert_eq!(retained["operation_id"],pending["operation_id"]);
+    assert_eq!(retained["command_id"],pending["command_id"]);
     fixture.crash(); fixture.restored(restored["pid"].as_u64().unwrap()).await;
     fixture.stop();
     tokio::time::sleep(Duration::from_secs(4)).await;
@@ -132,4 +148,71 @@ async fn concurrent_frontends_wait_for_maintenance_then_restore_one_original_wri
     let restored = fixture.restored(first).await;
     tokio::time::sleep(Duration::from_secs(4)).await;
     assert_eq!(fixture.launch(), restored, "frontends must share one original runtime");
+}
+
+#[tokio::test(flavor="multi_thread",worker_threads=3)]
+#[ignore="requires exact candidate CLI and selected local TEST PostgreSQL/product fixture"]
+async fn restarted_installation_automatically_notifies_a_fresh_encrypted_message() {
+    use crate::{participant::{ParticipantClient, Invoke, Scope}, agent_tools::{AgentProfile, AgentTools, AgentRequest},
+        participant::http_tests::{Service, configuration, mutate, selected, install_synthetic_key, structure}, communication_host::tests::CodexFixture};
+    let service = Service::start();
+    let root = crate::test_support::protected_test_dir();
+    let owner_config = configuration(root.path(), &service.origin);
+    let owner = ParticipantClient::open(owner_config.clone()).await.unwrap();
+    let mut fixture = Fixture::at(&service.origin).await;
+    let workspace = mutate(&owner,"startup-space","structure.workspace.create",&Scope::default(),json!({"name":"Startup qualification"})).await["workspace_id"].as_str().unwrap().to_owned();
+    let scope = Scope { workspace_id:Some(workspace.clone()), ..Default::default() };
+    let meta = selected(&owner,"structure.workspace.get",&scope,json!({})).await;
+    let mut join = Invoke::new("startup-join","structure.member.set",scope.clone(),json!({"actor_id":fixture.registration.actor_id,"state":"ACTIVE","expected_membership_id":null}));
+    join.expected_workspace_revision = meta["workspace_revision"].as_u64(); structure(&owner.invoke(join,Duration::from_secs(5)).await.unwrap());
+    let key = install_synthetic_key(&owner_config,&workspace,&[73;32],None);
+    install_synthetic_key(&fixture.config.engines[0].participant_config(),&workspace,&[73;32],None);
+    mutate(&owner,"startup-key","structure.content-key.set",&scope,json!({"key_id":key,"expected_epoch":0,"expected_head_revision":null})).await;
+    let client = RuntimeClient::connect_bound(fixture.registration.endpoint_path.clone(),&fixture.registration.origin,&fixture.registration.actor_id,fixture.binding.clone()).await.unwrap();
+    let mailbox = client.call(json!({"method":"request","request":Invoke::new("startup-mailbox","structure.mailboxes.read",scope.clone(),json!({"limit":8}))})).await.unwrap()["result"]["structure"]["mailboxes"][0].clone();
+    assert!(mailbox["mailbox_id"].is_string());
+    let host = CodexFixture::start();
+    let watch = json!({"workspace_id":workspace,"mailbox_id":mailbox["mailbox_id"],"membership_id":mailbox["membership_id"],"consumer_id":"startup-notify","host_destination":null});
+    // Configure the synthetic original host while stopped, before MCP exists.
+    let original = bootstrap::owned_runtime(&Connect::inspect(&fixture.directory).unwrap(),"peer").unwrap();
+    original.stop().await.unwrap();
+    fixture.config.hosts = vec![serde_json::from_value(json!({"name":"original-host","adapter":host.config(),"subscriptions":[{"client":"bootstrap","watch":watch}]})).unwrap()];
+    let bytes = serde_json::to_vec(&fixture.config).unwrap();
+    crate::onboarding_files::replace(&fixture.config.state_directory.join("config.json"),&bytes).unwrap();
+    let launch = SecureStateStore::open(&fixture.config.state_directory.join("bootstrap.state")).unwrap();
+    launch.write_exact(&serde_json::to_vec(&json!({"config_digest":sha256_hex(&bytes),"pid":0,"process_token":null})).unwrap()).unwrap(); drop(launch);
+    service.config(json!({"resident_worker":true})).await;
+    let _mcp = Mcp::new(&fixture.binary,&fixture.directory);
+    fixture.restored(0).await;
+    let profile: AgentProfile = serde_json::from_value(json!({"format":"peerwork.agent-profile.v1","endpoint_path":fixture.registration.endpoint_path,
+        "expected_origin":fixture.registration.origin,"expected_actor":fixture.registration.actor_id,
+        "workspaces":{"team":workspace},"scopes":{"team":{"workspace_id":workspace,"mailbox_id":mailbox["mailbox_id"],"membership_id":mailbox["membership_id"]}}})).unwrap();
+    let tools = AgentTools::open(profile).await.unwrap();
+    fn batches(host: &CodexFixture) -> Vec<String> {
+        host.calls().iter().filter(|v|matches!(v["method"].as_str(),Some("turn/start"|"turn/steer"))).filter_map(|v| {
+            let text=v["params"]["input"][0]["text"].as_str()?;let start=text.find("{\"batch\"")?;
+            let end=text[start..].find('}')?+start;
+            serde_json::from_str::<Value>(&text[start..=end]).ok()?["batch"].as_str().map(str::to_owned)
+        }).collect()
+    }
+    // No tool call or model action preceded the first automatic host input.
+    let first = tokio::time::timeout(Duration::from_secs(25),async {loop{
+        if let Some(batch)=batches(&host).first(){break batch.clone();}
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }}).await.expect("MCP startup did not produce automatic host notification");
+    tools.call(AgentRequest::parse("inbox",json!({"batch":first})).unwrap()).await.unwrap();
+    let before = fixture.launch()["pid"].as_u64().unwrap(); fixture.crash(); fixture.restored(before).await;
+    let before = batches(&host).len();
+    let room = peerwork_core::communication::space_conversation_id(&workspace).unwrap();
+    let mut post=Invoke::new("startup-fresh-message","structure.conversation.post",scope.clone(),json!({"conversation_id":room,"audience":"SPACE_MEMBERS","thread_root":null,"reply_to":null,"context":null,"mentions":[fixture.registration.actor_id],"content":{"mode":"WORKSPACE_E2EE"}}));
+    post.plaintext_message=Some("AUTOMATIC-RESTART-RECEIVED".into()); structure(&owner.invoke(post,Duration::from_secs(5)).await.unwrap());
+    tokio::time::timeout(Duration::from_secs(30),async {let mut seen=before;loop{
+        for batch in batches(&host).into_iter().skip(seen) {
+            seen+=1;
+            let page=tools.call(AgentRequest::parse("inbox",json!({"batch":batch})).unwrap()).await.unwrap();
+            if page["items"].as_array().into_iter().flatten().any(|v|v["message"]["text"]=="AUTOMATIC-RESTART-RECEIVED") {return;}
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }}).await.expect("fresh encrypted message was not automatically notified after runtime-only crash");
+    owner.close().await.unwrap();
 }

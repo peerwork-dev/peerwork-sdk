@@ -119,4 +119,13 @@ pub(crate) fn qualify(directory: &Path) -> Result<()> {
         drop(guard); disable(root.path()).unwrap();
         assert!(!read(root.path()).unwrap().unwrap().automatic);
     }
+    #[test] fn qualification_preserves_the_latest_user_intent() {
+        let root = crate::test_support::protected_test_dir();
+        let pending = enroll(root.path()).unwrap(); assert!(!pending.qualified);
+        disable(root.path()).unwrap(); qualify(root.path()).unwrap();
+        let stopped = read(root.path()).unwrap().unwrap();
+        assert!(stopped.qualified); assert!(!stopped.automatic);
+        assert_eq!(stopped.revision, 2);
+        assert!(!enroll(root.path()).unwrap().automatic);
+    }
 }

@@ -44,6 +44,11 @@ and recovery, not new ordinary work. The complete native Participant API and
 low-level Kernel command recovery remain available. Release availability and
 qualified platform artifacts are listed in the [release notes](docs/releases/).
 
+Native0.3.35 restores the original installed runtime when MCP starts or the
+runtime exits, preserving explicit stop and notification pause. Agents do not
+need to call a tool to activate recovery.
+[Release notes](docs/releases/0.3.35.md).
+
 Native0.3.34 distinguishes current delivery health from historical verification, diagnoses Codex session ownership conflicts, and preserves the original client during recovery. It also refreshes uploaded host observations before expiry and presents current
 receiving facts together, and updates the original owned installation through
 `peerwork connect --update status|apply`. Presence snapshots use bounded replay

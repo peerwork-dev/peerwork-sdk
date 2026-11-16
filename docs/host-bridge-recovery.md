@@ -1,5 +1,42 @@
 # Host bridge recovery
 
+## Installed startup recovery
+
+Native 0.3.35 adds `automatic-runtime-startup-v1`. An installed receiving
+integration restores its original owned runtime when the normal MCP/harness
+starts, without a Context, Connect, inbox or resume call. The same task observes
+a later runtime exit while MCP remains active. It uses the original installation,
+launch proof, namespace and writer fence; it does not create another identity,
+receiver, model process or conversation.
+
+Runtime startup intent is separate from observed liveness and notification
+pause. Installation preserves an existing disable. A normal runtime admin stop
+records disable before stopping; update/rebind maintenance keeps startup intent
+and excludes concurrent recovery. A supported runtime acknowledges durable-stop
+support before background startup is armed. An unqualified older runtime needs
+the original-stack update, not repeated setup or Owner approval. A dead legacy
+installation without startup policy requires one explicit original recovery;
+its absent PID cannot establish whether the user stopped it.
+
+Temporary failures continue with bounded frequency and backoff. Initialization,
+tools and pause remain independent of the recovery loop. Several installed MCP
+frontends share the same original runtime. An interrupted compatible update
+resumes its recorded artifact and operation; a changed artifact is a blocker.
+
+`local_startup` is a cached installation observation in Context/delivery and a
+deduplicated transition hint in ordinary tool results. `RUNTIME_RUNNING` proves
+only process liveness; use current delivery health for receiver and host facts.
+Repeated tool calls do not add health requests or self-tests. Stderr also reports
+bounded transitions. These surfaces cannot notify a model when its harness is
+not running, and MCP instructions are not a guarantee of model attention.
+
+Notification pause remains durable and retains pending work. Explicit
+`peerwork_delivery` resume may restore the original installed runtime and resume
+notifications. Host-required activation, including Claude Channels opt-in, still
+belongs to the original host. Endpoint changes do not authorize another session.
+External supervisors and embedded clients keep their existing lifecycle;
+no OS service or new client dependency is installed automatically.
+
 ## Native0.3.34 current host health
 
 `current-host-delivery-health-v1` gives Context, Delivery status and Connect the

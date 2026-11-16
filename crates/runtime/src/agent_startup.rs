@@ -47,6 +47,10 @@ impl Lifecycle {
     }
     /// Embedded clients retain their application's lifecycle ownership.
     pub(crate) async fn recover_startup(self: Arc<Self>) {
+        if self.local.is_none() && self.startup_runtime().is_ok_and(|runtime| runtime.is_none()) {
+            self.startup.set("NOT_MANAGED", "EXTERNAL_OR_MANUAL_LIFECYCLE");
+            return;
+        }
         let mut leader: Option<(PathBuf, SecureStateStore)> = None;
         let mut attempt = 0u32;
         loop {
@@ -115,6 +119,7 @@ impl Lifecycle {
                     "ORIGINAL_RUNTIME_BINDING_CHANGED" | "RUNTIME_STARTUP_POLICY_INVALID" |
                     "RUNTIME_CONFIG_INVALID" | "RUNTIME_CONFIG_NOT_PRIVATE" |
                     "UPDATE_RESUME_ORIGINAL_ARTIFACT_AND_SELECTION" | "UPDATE_STATE_INVALID" |
+                    "UPDATE_RUNTIME_UPGRADE_REQUIRED" |
                     "ORIGINAL_PROFILE_SOURCE_CHANGED" | "CLIENT_IDENTITY_OR_ORIGIN_MISMATCH");
                 self.startup.set(if blocked { "BLOCKED" } else { "RECOVERING" }, &error.code);
                 delay = if blocked { Duration::from_secs(60) } else {
@@ -126,10 +131,28 @@ impl Lifecycle {
     }
     pub(super) async fn resume_startup(&self) -> Result<()> {
         if let Some(runtime) = self.startup_runtime()? {
+            let _maintenance = crate::runtime_startup::recovery_fence(&runtime.config.state_directory)?;
             crate::runtime_startup::enroll(&runtime.config.state_directory)?;
             crate::runtime_startup::enable(&runtime.config.state_directory)?;
             if !runtime.running()? { runtime.restart(&runtime.config).await?; }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)] mod tests {
+    use super::*;
+    #[test] fn persistent_failure_has_one_notice_without_repeated_probes_or_context_growth() {
+        let state = State::default();
+        state.set("BLOCKED", "RUNTIME_STARTUP_POLICY_REQUIRED");
+        assert!(state.snapshot(false).is_some());
+        for _ in 0..100 {
+            state.set("BLOCKED", "RUNTIME_STARTUP_POLICY_REQUIRED");
+            assert!(state.snapshot(false).is_none());
+        }
+        assert_eq!(state.snapshot(true).unwrap()["state"], "BLOCKED");
+        state.set("RUNTIME_RUNNING", "CHECK_CURRENT_DELIVERY_FOR_HOST_READINESS");
+        assert_eq!(state.snapshot(false).unwrap()["model_wake"], "NOT_ATTESTED");
+        assert!(state.snapshot(false).is_none());
     }
 }
