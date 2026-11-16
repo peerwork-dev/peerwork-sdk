@@ -12,9 +12,10 @@ receiver, model process or conversation.
 Runtime startup intent is separate from observed liveness and notification
 pause. Installation preserves an existing disable. A normal runtime admin stop
 records disable before stopping; update/rebind maintenance keeps startup intent
-and excludes concurrent recovery. A supported runtime acknowledges durable-stop
-support before background startup is armed. An unqualified older runtime needs
-the original-stack update, not repeated setup or Owner approval. A dead legacy
+and excludes concurrent recovery. The installation or explicit updater commits
+one verified startup artifact; the runtime never rewrites that target. An older
+installation without a supported artifact needs the original-stack update,
+not repeated setup or Owner approval. A dead legacy
 installation without startup policy requires one explicit original recovery;
 its absent PID cannot establish whether the user stopped it.
 
