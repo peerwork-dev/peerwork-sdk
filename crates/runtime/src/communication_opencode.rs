@@ -142,6 +142,12 @@ pub(crate) mod tests {
     pub(crate) struct Server {url:String,state:Arc<Mutex<State>>,stop:Arc<AtomicBool>,task:Option<std::thread::JoinHandle<()>>}
     impl Drop for Server {fn drop(&mut self){self.stop.store(true,Ordering::SeqCst);if let Some(task)=self.task.take(){task.join().unwrap();}}}
     impl Server {
+        pub(crate) fn pending_batch(&self)->Option<String> {
+            let state=self.state.lock().unwrap();
+            let text=state.items.last()?["payload"]["text"].as_str()?;
+            let start=text.find("{\"batch\":")?;let end=text[start..].find('}')?+start+1;
+            serde_json::from_str::<Value>(&text[start..end]).ok()?["batch"].as_str().map(str::to_owned)
+        }
         fn new()->Self {
             Self::for_directory(Path::new("/project"))
         }

@@ -97,14 +97,33 @@ mod tests {
             let result:Value=serde_json::from_slice(&output.stdout).unwrap_or_else(|_|panic!("{}",String::from_utf8_lossy(&output.stderr)));
             result
         }
+        async fn observe_host_hint(local:&Path,host:&Server,started:&mut bool) {
+            let profile=Connect::inspect(local).unwrap().profile().unwrap().unwrap();
+            let tools=crate::agent_tools::AgentTools::open(profile).await.unwrap();
+            if !*started {
+                tools.call(crate::agent_tools::AgentRequest::Delivery{mode:"self_test".into(),scope:None}).await.unwrap();
+                *started=true;
+            }
+            // Simulate the selected host's model following its compact hint.
+            // Do not mark notification state or consumption directly.
+            if let Some(batch)=host.pending_batch() {
+                tools.call(crate::agent_tools::AgentRequest::parse("inbox",json!({"batch":batch})).unwrap()).await.unwrap();
+            }
+        }
+        let mut self_test_started=false;
+        let mut last=Value::Null;
         let result=tokio::time::timeout(std::time::Duration::from_secs(30),async {
             loop {
                 let result=run(&executable,&argv).await;
+                last=json!({"state":result["state"],"blocker":result["blocker"],"error":result["error"],"binding_operation":result["binding_operation"]});
                 if result["state"]!="PENDING" {break result;}
                 assert!(result.get("operation_id").is_some(),"{result}");
+                if result["blocker"]["code"]=="DELIVERY_SELF_TEST_PENDING" {
+                    observe_host_hint(&root.path().join("connect"),&host,&mut self_test_started).await;
+                }
                 tokio::time::sleep(std::time::Duration::from_millis(50)).await;
             }
-        }).await.unwrap();
+        }).await.unwrap_or_else(|_|panic!("OpenCode attachment remained pending: {last}"));
         assert_eq!(result["state"],"LOCAL_CONFIGURED","{result}");assert_eq!(result["receive_mode"],"PUSH");
         assert_eq!(result["host_selection"]["session_id"],"ses_test");assert_eq!(result["runtime_restarted"],false);
         assert_eq!(result["host_selection"]["directory"],root.path().to_str().unwrap());
@@ -122,8 +141,12 @@ mod tests {
         assert_eq!(service.counts().await["claim_commands"],claims,"wrong-project selection must have no remote effect");
         let second=Server::for_session(&project,"ses_repo");second.registration(&file,"secret");
         let index=changed.iter().position(|v|v=="--opencode-session").unwrap();changed[index+1]="ses_repo".into();
+        let mut self_test_started=false;
         let rebound=tokio::time::timeout(std::time::Duration::from_secs(30),async {
             loop {let result=run(&executable,&changed).await;if result["state"]!="PENDING"{break result;}
+                if result["blocker"]["code"]=="DELIVERY_SELF_TEST_PENDING" {
+                    observe_host_hint(&root.path().join("connect"),&second,&mut self_test_started).await;
+                }
                 tokio::time::sleep(std::time::Duration::from_millis(50)).await;}
         }).await.unwrap();
         assert_eq!(rebound["state"],"LOCAL_CONFIGURED","{rebound}");

@@ -33,6 +33,11 @@ without an Agent host, MCP or Skill.
    [availability](docs/member-availability.md) and [protocol tools](docs/protocol-session.md)
    through the same original client.
 
+Native0.3.38 lets [OpenCode V2](docs/opencode.md) reuse its existing inbox and
+switch selected conversations through Connect, preserves launch state across
+rebind recovery, and exposes the actual selected session/project. See the
+[release notes](docs/releases/0.3.38.md).
+
 Native0.3.37 adds [OpenCode V2](docs/opencode.md) through the same core, native
 MCP/Skill and a Rust adapter for durable selected-session input. See the
 [release notes](docs/releases/0.3.37.md).
