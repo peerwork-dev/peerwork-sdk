@@ -1,6 +1,14 @@
 //! Exact native entry point qualification against a disposable synthetic Space.
 use super::*;
 
+struct NativeRuntimeCleanup { executable:PathBuf, admin:PathBuf }
+impl Drop for NativeRuntimeCleanup {
+    fn drop(&mut self) {
+        let _=std::process::Command::new(&self.executable).args(["runtime","admin"])
+            .arg(&self.admin).arg("stop").output();
+    }
+}
+
 #[cfg(unix)]
 #[tokio::test(flavor="multi_thread",worker_threads=2)]
 #[ignore="requires local TEST PostgreSQL, HTTP service and freshly built native CLI"]
@@ -39,6 +47,10 @@ async fn native_new_peer_approval_and_plain_repeat_preserve_original_installatio
     }
     let mut first_args=vec!["connect".into(),"--local".into(),local.display().to_string(),"--project".into(),project.display().to_string(),
         "--new".into(),"--workspace".into(),workspace.clone(),"--origin".into(),service.origin.clone(),"--allow-loopback-http".into(),"--program".into()];
+    // This test owns the explicit fresh local directory and default "peer"
+    // handle. Install cleanup before launching its exact managed runtime so a
+    // failed assertion or malformed CLI result cannot leave the child running.
+    let cleanup=NativeRuntimeCleanup{executable:executable.clone(),admin:local.join("runtime-peer/admin.json")};
     let pending=run(&executable,&first_args).await;
     assert_eq!(pending["blocker"]["code"],"ADMISSION_APPROVAL_REQUIRED","{pending}");
     let authorization=AuthorizationRequest::from_input(pending["details"]["authorization_code"].clone()).unwrap();
@@ -46,7 +58,9 @@ async fn native_new_peer_approval_and_plain_repeat_preserve_original_installatio
         let selected=Connect::inspect(&local).unwrap();
         let (request,resume)=selected.resolve_input(serde_json::from_value(json!({})).unwrap()).unwrap();
         assert!(resume);assert!(request.send&&request.receive&&request.require_body_keys&&request.request_membership);
-        assert!(request.receive_mode==Some(ReceiveMode::Inbox));
+        let setup=&selected.registry.setups[&request.setup_id];
+        assert!(!setup.agent_host_required);
+        assert!(!request.needs_host(setup.agent_host_required));
         let engine=bootstrap::owned_runtime(&selected,"peer").unwrap().config.engines[0].clone();
         (request,selected.registry.participants["peer"].actor_id.clone(),std::fs::read(&engine.identity_path).unwrap(),engine)
     };
@@ -65,11 +79,12 @@ async fn native_new_peer_approval_and_plain_repeat_preserve_original_installatio
     let selected=Connect::inspect(&local).unwrap();
     let (same,resume)=selected.resolve_input(serde_json::from_value(json!({})).unwrap()).unwrap();
     assert!(resume);assert!(same==original_request);assert_eq!(selected.registry.setups.len(),1);
+    assert!(!selected.registry.setups[&same.setup_id].agent_host_required);
     assert_eq!(selected.registry.participants["peer"].actor_id,original_actor);
     let owned=bootstrap::owned_runtime(&selected,"peer").unwrap();let engine=&owned.config.engines[0];
     assert_eq!(engine.identity_path,original_engine.identity_path);assert_eq!(engine.state_directory,original_engine.state_directory);assert_eq!(engine.journal_path,original_engine.journal_path);
     assert_eq!(std::fs::read(&engine.identity_path).unwrap(),identity);
     assert!(!std::fs::read_dir(&local).unwrap().any(|entry|entry.unwrap().file_name().to_string_lossy().starts_with("profile-")));
     assert_eq!(service.counts().await["actions"]["structure.member.set"],1);
-    owned.stop().await.unwrap();cancel.cancel();running.await.unwrap().unwrap();
+    owned.stop().await.unwrap();drop(cleanup);cancel.cancel();running.await.unwrap().unwrap();
 }
