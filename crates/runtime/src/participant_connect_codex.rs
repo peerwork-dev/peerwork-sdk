@@ -1075,7 +1075,10 @@ mod tests {
                         connect=Connect::open(&root.path().join("connect")).unwrap();
                     }
                     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                    result=connect.attach_codex_host_with_runtime(request.clone(),"selected",selection.clone()).await.unwrap();
+                    result=match connect.attach_codex_host_with_runtime(request.clone(),"selected",selection.clone()).await {
+                        Ok(value)=>value,
+                        Err(error)=>panic!("first attachment: {error:?}; runtime: {}",ipc::call(&ready.admin_endpoint,json!({"method":"status"})).await.unwrap()),
+                    };
                 }
                 assert_eq!(result["state"],"LOCAL_CONFIGURED","{result}");assert_eq!(result["receive_mode"],"PUSH");
             }

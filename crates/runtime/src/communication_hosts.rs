@@ -42,14 +42,18 @@ fn merge(configs: &mut Vec<HostConfig>, incoming: HostConfig) -> Result<()> {
                 return Err(local("HOST_SELECTION_CONFLICT"));
             }
             for mut source in incoming.subscriptions {
-                // An omitted destination selects this already verified host;
-                // it is not a request to erase its explicit binding. Keep one
-                // canonical subscription when connect repeats after rebind.
-                if source.watch.host_destination.is_none() {
-                    if let Some(existing)=old.subscriptions.iter().find(|e| {
-                        let mut same=e.watch.clone();same.host_destination=None;
-                        e.client==source.client&&same==source.watch
-                    }) {source.watch=existing.watch.clone();}
+                // First attachment learns the destination asynchronously. A
+                // repeated ensure may supply that pin or omit a known one;
+                // both describe one subscription on this same physical host.
+                if let Some(existing)=old.subscriptions.iter_mut().find(|e| {
+                    let mut left=e.watch.clone();left.host_destination=None;
+                    let mut right=source.watch.clone();right.host_destination=None;
+                    e.client==source.client && left==right
+                        && (e.watch.host_destination.is_none() || source.watch.host_destination.is_none())
+                }) {
+                    if source.watch.host_destination.is_none(){source.watch=existing.watch.clone();}
+                    *existing=source;
+                    continue;
                 }
                 if let Some(existing) = old
                     .subscriptions
@@ -460,6 +464,20 @@ pub(super) fn initial_host_available(directory:&Path,base:&[HostConfig],target:&
 #[cfg(test)]
 mod initial_selection_tests {
     use super::*;
+    #[test]
+    fn repeated_first_attachment_keeps_one_source_when_the_destination_pin_arrives() {
+        let watch=WatchOptions{workspace_id:"w".repeat(43),mailbox_id:"m".repeat(43),membership_id:"g".repeat(43),consumer_id:"inbox".into(),host_destination:None};
+        let original=HostConfig{name:"canonical".into(),adapter:json!({"kind":"codex","endpoint":"ws://127.0.0.1:1","thread_id":"selected","expected_session_id":"session"}),subscriptions:vec![HostSubscription{client:"peer".into(),client_generation:Some(7),watch}]};
+        let mut pinned=original.clone();pinned.subscriptions[0].watch.host_destination=Some("a".repeat(64));
+        for (before,after) in [(original.clone(),pinned.clone()),(pinned.clone(),original)] {
+            let mut configs=vec![before];merge(&mut configs,after).unwrap();
+            assert_eq!(configs.len(),1);assert_eq!(configs[0].subscriptions.len(),1);
+            assert_eq!(configs[0].subscriptions[0].watch,pinned.subscriptions[0].watch);
+        }
+        let mut changed=pinned.clone();changed.subscriptions[0].watch.host_destination=Some("b".repeat(64));
+        let mut configs=vec![pinned];merge(&mut configs,changed).unwrap();
+        assert_eq!(configs[0].subscriptions.len(),2,"different explicit destinations must remain conflicting, not overwrite each other");
+    }
     #[test]
     fn changing_control_socket_cannot_create_an_alias_dispatcher() {
         let watch=WatchOptions{workspace_id:"w".repeat(43),mailbox_id:"m".repeat(43),membership_id:"g".repeat(43),consumer_id:"inbox".into(),host_destination:None};
