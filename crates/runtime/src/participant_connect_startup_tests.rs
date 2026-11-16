@@ -6,9 +6,11 @@ use std::{process::{Child, Command, Stdio}, io::{BufRead, BufReader, Write}, tim
 struct Mcp(Child);
 impl Mcp {
     fn new(binary: &Path, registry: &Path) -> Self {
+        use std::os::unix::fs::OpenOptionsExt;
+        let log=std::fs::OpenOptions::new().create(true).append(true).mode(0o600).open(registry.join("mcp-startup-test.log")).unwrap();
         let mut child = Command::new(binary).args(["agent", "--local"]).arg(registry)
             .args(["--participant", "peer", "mcp"]).stdin(Stdio::piped()).stdout(Stdio::piped())
-            .stderr(Stdio::null()).spawn().unwrap();
+            .stderr(log).spawn().unwrap();
         writeln!(child.stdin.as_mut().unwrap(), "{}", json!({"jsonrpc":"2.0","id":1,"method":"initialize",
             "params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"startup-test","version":"1"}}})).unwrap();
         let mut line = String::new();
@@ -93,7 +95,9 @@ impl Fixture {
                 }
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
-        }}).await.expect("normal MCP startup did not restore original runtime")
+        }}).await.unwrap_or_else(|error|panic!("original runtime did not recover: {error}; MCP={}; runtime={}",
+            std::fs::read_to_string(self.directory.join("mcp-startup-test.log")).unwrap_or_default(),
+            std::fs::read_to_string(self.config.state_directory.join("runtime.log")).unwrap_or_default()))
     }
     fn stop(&self) {
         let output = Command::new(&self.binary).args(["runtime", "admin"]).arg(self.config.state_directory.join("admin.json")).arg("stop").output().unwrap();
@@ -201,6 +205,7 @@ async fn explicit_resume_and_adopt_preserve_the_committed_launcher() {
 #[ignore="requires exact candidate CLI and synthetic process/loopback IPC"]
 async fn every_recovery_entry_resumes_the_recorded_update_before_starting() {
     for (trigger,was_running) in [("automatic",false),("resume",false),("adopt",false),("automatic",true)] {
+        eprintln!("interrupted update case: {trigger}, was_running={was_running}");
         let mut fixture=Fixture::new().await;
         let target=fixture.root.path().join("updated-peerwork");std::fs::copy(&fixture.binary,&target).unwrap();
         use std::os::unix::fs::PermissionsExt;
@@ -208,7 +213,7 @@ async fn every_recovery_entry_resumes_the_recorded_update_before_starting() {
         let previous=fixture.launch()["pid"].as_u64().unwrap();
         if trigger=="resume" {fixture.stop();}else{fixture.crash();}
         let original=bootstrap::owned_runtime(&Connect::inspect(&fixture.directory).unwrap(),"peer").unwrap();
-        let update=json!({"format":"peerwork.owned-update.v1","participant":"peer","registration":fixture.registration,
+        let update=json!({"format":"peerwork.owned-update.v1","participant":"peer","registration":original.registration,
             "executable":target,"executable_digest":crate::runtime_startup::Launcher::capture(target.clone()).unwrap().sha256,
             "required_features":["host-observation-upload-deadline-v1","current-host-delivery-health-v1","automatic-runtime-startup-v1"],
             "original":original,"was_running":was_running,"phase":"RUNTIME_READY"});
@@ -223,8 +228,13 @@ async fn every_recovery_entry_resumes_the_recorded_update_before_starting() {
         };
         let restored=fixture.restored(previous).await;
         assert_eq!(std::fs::read_link(format!("/proc/{}/exe",restored["pid"])).unwrap(),target,"{trigger}");
-        let completed:Value=serde_json::from_slice(&SecureStateStore::read_snapshot(&path,2*1024*1024).unwrap()).unwrap();
-        assert_eq!(completed["phase"],"COMPLETE","{trigger}");
+        // A child becoming live precedes the updater's target/installation
+        // commit. Observe the operation itself rather than conflating them.
+        tokio::time::timeout(Duration::from_secs(30),async {loop {
+            let completed:Value=serde_json::from_slice(&SecureStateStore::read_snapshot(&path,2*1024*1024).unwrap()).unwrap();
+            if completed["phase"]=="COMPLETE"{break;}
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }}).await.expect("original update did not commit after runtime readiness");
         assert_eq!(crate::runtime_startup::read(&fixture.config.state_directory).unwrap().unwrap().launcher.unwrap().executable,target);
     }
 }

@@ -291,9 +291,21 @@ impl SecureStateStore {
     /// Protected observation without acquiring the writer's ownership lock.
     /// Exact-state writes are atomic replacements; this never grants mutation.
     pub(crate) fn read_snapshot(path:&Path,limit:usize)->Result<Vec<u8>,SecureStateError>{
-        let bytes=read_private_file_bounded(path,limit.checked_add(MAGIC.len()).ok_or(SecureStateError::TooLarge)?)?;
-        let wire=bytes.strip_prefix(MAGIC).filter(|b|!b.is_empty()).ok_or(SecureStateError::Corrupt)?;
-        Ok(wire.to_vec())
+        let max=limit.checked_add(MAGIC.len()).ok_or(SecureStateError::TooLarge)?;
+        for attempt in 0..8 {
+            match read_private_file_bounded(path,max) {
+                Ok(bytes)=>{
+                    let wire=bytes.strip_prefix(MAGIC).filter(|b|!b.is_empty()).ok_or(SecureStateError::Corrupt)?;
+                    return Ok(wire.to_vec());
+                },
+                // A legitimate atomic replacement can change the named inode
+                // between open and validation. Retry the complete protected
+                // read; every attempt retains all path/owner/mode checks.
+                Err(SecureStateError::Protection) if attempt<7=>continue,
+                Err(error)=>return Err(error),
+            }
+        }
+        unreachable!()
     }
     /// Exact on-disk envelope for the anchored project-ownership adapter. This
     /// is local bookkeeping; exposing it does not grant state or signer access.
@@ -650,6 +662,27 @@ mod tests {
         }
         let reopened = SecureStateStore::open(&path).unwrap();
         assert_eq!(reopened.read_exact().unwrap(), Some(second.to_vec()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn protected_snapshots_survive_concurrent_atomic_writes_and_reject_unsafe_files() {
+        use std::{os::unix::fs::PermissionsExt,sync::{Arc,Barrier}};
+        let root=crate::test_support::protected_test_dir();let path=root.path().join("state");
+        let store=SecureStateStore::open(&path).unwrap();store.write_exact(b"snapshot-a").unwrap();
+        let barrier=Arc::new(Barrier::new(2));let writer_barrier=barrier.clone();
+        let writer=std::thread::spawn(move||{
+            writer_barrier.wait();
+            for index in 0..32 {store.write_exact(if index%2==0{b"snapshot-b"}else{b"snapshot-a"}).unwrap();}
+        });
+        barrier.wait();
+        for _ in 0..128 {
+            let snapshot=SecureStateStore::read_snapshot(&path,64).unwrap();
+            assert!(snapshot==b"snapshot-a"||snapshot==b"snapshot-b");
+        }
+        writer.join().unwrap();
+        std::fs::set_permissions(&path,std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(matches!(SecureStateStore::read_snapshot(&path,64),Err(SecureStateError::Protection)));
     }
 
     #[cfg(unix)]
