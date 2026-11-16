@@ -24,6 +24,7 @@ use crate::{
     KernelCancellationToken,
 };
 pub use client::RuntimeClient;
+pub(crate) use hosts::configuration_snapshot as host_configuration_snapshot;
 pub(crate) use client::{canonical_binding,validate_binding};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -457,7 +458,8 @@ impl Runtime {
                     let (clients,generations)=self.client_snapshot()?;
                     let mut receivers=Vec::new();
                     for (name,client) in clients {let bindings=client.watch_bindings().await?;if !bindings.is_empty(){receivers.push(json!({"client":name,"client_generation":generations.get(&name),"actor_id":client.actor_id(),"origin":client.origin(),"state_binding":client.state_binding(),"engine_digest":self.engine_bindings.get(client.state_binding()),"bindings":bindings}));}}
-                    Ok(json!({"state":"LOCAL_READY","sdk_version":env!("CARGO_PKG_VERSION"),"optional_features":["resident-scope-rebind-v1","source-client-adoption-v1","host-observation-upload-deadline-v1","current-delivery-observation-v1","current-host-delivery-health-v1","automatic-runtime-startup-v1"],"engines":engines,"receivers":receivers,"hosts":self.hosts.lock().await.statuses(),"pending_client_revocations":self.pending_revocation_status()?,"network_or_host_readiness":"NOT_ATTESTED"}))
+                    let (hosts, host_configurations) = { let hosts = self.hosts.lock().await; (hosts.statuses(), hosts.configurations()) };
+                    Ok(json!({"state":"LOCAL_READY","sdk_version":env!("CARGO_PKG_VERSION"),"optional_features":["resident-scope-rebind-v1","source-client-adoption-v1","host-observation-upload-deadline-v1","current-delivery-observation-v1","current-host-delivery-health-v1","automatic-runtime-startup-v1"],"engines":engines,"receivers":receivers,"hosts":hosts,"host_configurations":host_configurations,"pending_client_revocations":self.pending_revocation_status()?,"network_or_host_readiness":"NOT_ATTESTED"}))
                 },
                 Ok(request)if request.method=="host_ensure"&&request.config.is_some()&&request.rebind.is_none()&&request.recovery.is_none()=>{
                     let (clients,generations)=self.client_snapshot()?;

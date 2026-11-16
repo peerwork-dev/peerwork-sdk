@@ -17,7 +17,7 @@ impl AgentTools {
             let mut bindings=std::collections::BTreeSet::new();
             for (alias, _) in &existing {
                 let client=self.protocol_client(alias)?;
-                let binding=if let Some(binding)=client.attached_namespace_binding(){binding}else{crate::communication_runtime::canonical_binding(&client.call(json!({"method":"binding"})).await?).to_string()};
+                let binding=self.observed_binding(client).await?;
                 bindings.insert(binding);
             }
             if bindings.len()>1 {return Err(invalid("SELECT_PROTOCOL_ALIAS_FOR_CONFIGURED_INSTANCE"));}

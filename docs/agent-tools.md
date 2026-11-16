@@ -9,9 +9,9 @@ Use the matching
 [release](https://github.com/peerwork-dev/peerwork-sdk/releases/latest)
 and [connection guide](participant-connect.md).
 
-Agents normally use the loaded MCP tools. Use `peerwork_context` once for the
-selected identity/workspaces and reuse that selection and the loaded schemas
-across ordinary wakes. A compact notification goes directly to its inbox batch;
+Agents normally use the loaded MCP tools directly. Inspect `peerwork_context`
+when identity or Workspace selection is missing, ambiguous or needs inspection;
+it is not a mandatory first call. Reuse the selected tools across ordinary wakes. A compact notification goes directly to its inbox batch;
 it requires no discovery or status preflight. Software owns
 signing, body encryption, verification and original-operation recovery. Do not
 write a temporary SDK sender, search source for an action or create another

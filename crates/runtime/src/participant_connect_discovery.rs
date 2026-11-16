@@ -468,6 +468,10 @@ impl Connect {
             }
             return Err(local("LOCAL_SELECTION_REQUIRED"));
         }
+        if let Some(selected)=&self.registry.selected_source {
+            if summary.candidates.iter().any(|v|v["handle"]==*selected){return Ok(Some(selected.clone()));}
+            return Err(local("CONNECT_RECOVERY_REQUIRED"));
+        }
         match summary.candidates.as_slice() {
             [] => Ok(None),
             [only] => Ok(only["handle"].as_str().map(str::to_owned)),
@@ -1485,10 +1489,7 @@ mod tests {
         assert_eq!(restored["state"], "LOCAL_CONFIGURED", "{restored}");
         assert!(connect.registry.setups[&request.setup_id].channel_receive);
         assert_eq!(connect.registry.setups[&request.setup_id].digest, digest);
-        assert!(!restored["profile_path"]
-            .as_str()
-            .unwrap()
-            .ends_with("-tools.json"));
+        assert!(restored.get("profile_path").is_none());
         connect
             .profile_for_scope(Some("worker"), Some(&extra_spaces[0]))
             .unwrap()

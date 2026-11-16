@@ -31,9 +31,9 @@ impl AgentTools {
         clients.extend(self.recovery_clients.iter().filter(|(_,v)|workspace.is_none_or(|ws|ws==v.0)).map(|(id,(_,client))|(client,Some(id.as_str()))));
         let mut seen=std::collections::BTreeSet::new();let mut found=None;
         for(client,view)in clients {
-            let binding=if let Some(binding)=client.attached_namespace_binding(){binding}else{crate::communication_runtime::canonical_binding(&client.call(json!({"method":"binding"})).await?).to_string()};
-            if !seen.insert(binding){continue;}
-            let value=match client.call(json!({"method":"operation","operation_id":id})).await {Ok(value)=>value,Err(e)if e.code=="OPERATION_NOT_FOUND"=>continue,Err(e)=>return Err(e)};
+            let binding=self.observed_binding(client).await?;
+            if !seen.insert(binding.clone()){continue;}
+            let value=match self.observed_operation(client,&binding,id).await {Ok(value)=>value,Err(e)if e.code=="OPERATION_NOT_FOUND"=>continue,Err(e)=>return Err(e)};
             let original:Scope=serde_json::from_value(value["scope"].clone()).map_err(|_|invalid("ORIGINAL_OPERATION_SCOPE_INVALID"))?;
             if workspace.is_some_and(|ws|original.workspace_id.as_deref()!=Some(ws))||scope.is_some_and(|s|s.workspace_id!=original.workspace_id||s.instance_id!=original.instance_id){continue;}
             if found.is_some(){let mut e=invalid("OPERATION_SCOPE_AMBIGUOUS_USE_RECOVERY_VIEW");e.details=Some(json!({"operation_id":id,"next_action":"SELECT_ORIGINAL_RECOVERY_VIEW"}));return Err(e);}

@@ -136,6 +136,67 @@ pub(super) fn engine(values: &BTreeMap<String, String>) -> Result<Option<EngineC
         migration_sources: Vec::new(),
     }))
 }
+
+/// An explicit new-Peer intent owns one protected native identity. Persist the
+/// creation selection before generating it so an interrupted invocation opens
+/// the same identity; missing discovery never enters this path.
+pub(super) fn new_peer(connect:&Connect,values:&BTreeMap<String,String>)->Result<(String,EngineConfig)> {
+    connect.require_writer()?;
+    if ["--identity","--engine-state","--journal","--engine-config","--runtime-config","--client","--actor","--profile","--attach","--resume","--id"].iter().any(|key|values.contains_key(*key)) {
+        return Err(local("NEW_PEER_USES_MANAGED_NATIVE_STATE"));
+    }
+    let handle=values.get("--participant").cloned().unwrap_or_else(||"peer".into());
+    if !identifier(&handle){return Err(local("LOCAL_SELECTION_INVALID"));}
+    if values.get("--workspace").is_none_or(|workspace|!token(workspace)){return Err(local("WORKSPACE_SELECTION_REQUIRED"));}
+    let name=format!("new-peer-{handle}.json");
+    let directory=connect.directory.join(format!("new-peer-{handle}"));
+    let previous=connect.private_directory.read(&name,65536,true)?.map(|bytes|peerwork_core::strict_json::parse_strict_json(&bytes).map_err(|_|local("NEW_PEER_STATE_INVALID"))).transpose()?;
+    let selected_origin=connect.selected_handle(None)?.and_then(|h|connect.registry.participants.get(&h).map(|p|p.origin.clone()));
+    let raw=values.get("--origin").cloned().or(selected_origin.clone()).or_else(||previous.as_ref().and_then(|v|v["origin"].as_str().map(str::to_owned))).unwrap_or_else(||"https://api.peerwork.dev".into());
+    let allow_loopback_http=values.contains_key("--allow-loopback-http")||previous.as_ref().is_some_and(|v|v["allow_loopback_http"]==true);
+    let origin=crate::transport::canonical_lifecycle_origin(&raw,allow_loopback_http).map_err(|_|local("LOCAL_SELECTION_INVALID"))?;
+    if selected_origin.as_ref().is_some_and(|selected|selected!=&origin){return Err(local("NEW_PEER_SERVICE_SELECTION_CONFLICT"));}
+    let mut transport:crate::transport::TransportOptions=previous.as_ref().map(|v|serde_json::from_value(v["transport"].clone()).map_err(|_|local("NEW_PEER_STATE_INVALID"))).transpose()?.unwrap_or_default();
+    if let Some(value)=values.get("--request-timeout-ms"){transport.request_timeout_ms=value.parse().map_err(|_|local("TRANSPORT_SELECTION_INVALID"))?;}
+    if let Some(value)=values.get("--ca-root"){transport.additional_root_pem_files=vec![std::path::absolute(value).map_err(|_|local("TRANSPORT_SELECTION_INVALID"))?];}
+    transport.validate().map_err(|_|local("TRANSPORT_SELECTION_INVALID"))?;
+    let authority=values.get("--authority").cloned().or_else(||previous.as_ref().and_then(|v|v["authority"].as_str().map(str::to_owned)));
+    if authority.as_ref().is_some_and(|value|!crate::participant_migration::digest(value)){return Err(local("AUTHORITY_INVALID"));}
+    let mut selection=json!({"format":"peerwork.new-peer.v1","participant":handle,"origin":origin,"authority":authority,"transport":transport,"allow_loopback_http":allow_loopback_http});
+    match &previous {
+        Some(saved)=>{
+            let mut original=saved.clone();original.as_object_mut().ok_or_else(||local("NEW_PEER_STATE_INVALID"))?.remove("actor_id");
+            if original!=selection{return Err(local("NEW_PEER_SELECTION_CHANGED_RESUME_ORIGINAL"));}
+        },
+        None=>{
+            if connect.registry.participants.contains_key(&handle)||connect.registry.sources.contains_key(&handle)||directory.exists(){return Err(local("NEW_PEER_HANDLE_EXISTS_CHOOSE_NEW_NAME"));}
+            if connect.registry.participants.len()>=8{return Err(local("LOCAL_PARTICIPANT_LIMIT"));}
+            connect.private_directory.replace_private(&name,None,selection.to_string().as_bytes())?;
+        },
+    }
+    create_private_state_directory(&directory).map_err(|_|local("NEW_PEER_STATE_UNAVAILABLE"))?;
+    let identity_path=directory.join("identity.state");
+    let identity=match crate::kernel_identity::KernelIdentity::open(&identity_path) {
+        Ok(identity)=>identity,
+        Err(crate::kernel_identity::KernelIdentityError::NotFound)=>{
+            if previous.as_ref().is_some_and(|v|v["actor_id"].is_string())||connect.registry.participants.contains_key(&handle)||directory.join("engine").exists(){return Err(local("IDENTITY_RECOVERY_REQUIRED"));}
+            crate::kernel_identity::KernelIdentity::create(&identity_path).map_err(|_|local("IDENTITY_CREATION_FAILED"))?
+        },
+        Err(_)=>return Err(local("IDENTITY_RECOVERY_REQUIRED")),
+    };
+    if previous.as_ref().and_then(|v|v["actor_id"].as_str()).is_some_and(|actor|actor!=identity.actor_id()){return Err(local("LOCAL_IDENTITY_MISMATCH"));}
+    selection["actor_id"]=json!(identity.actor_id());
+    if previous.as_ref()!=Some(&selection){
+        let saved=connect.private_directory.read(&name,65536,true)?.ok_or_else(||local("NEW_PEER_STATE_INVALID"))?;
+        connect.private_directory.replace_private(&name,Some(&saved),selection.to_string().as_bytes())?;
+    }
+    let engine=EngineConfig{name:"selected".into(),origin,expected_actor:identity.actor_id().into(),identity_path,
+        state_directory:directory.join("engine"),journal_path:Some(directory.join("journal.state")),
+        authority,allow_loopback_http,transport,max_inflight:4,max_pending:64,max_stored_bytes:32*1024*1024,migration_sources:vec![]};
+    if connect.registry.participants.get(&handle).is_some_and(|p|p.actor_id!=engine.expected_actor||p.origin!=engine.origin){return Err(local("LOCAL_BINDING_CONFLICT"));}
+    Ok((handle,engine))
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Launch {

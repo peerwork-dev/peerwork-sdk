@@ -41,6 +41,9 @@ mod discovery;
 #[path="participant_connect_source.rs"]
 mod source;
 pub use discovery::Discovery;
+#[path="participant_connect_intent.rs"]
+mod intent;
+pub use intent::ConnectIntent;
 
 fn local(code: &str) -> ParticipantError {
     ParticipantError::local(code, "CONNECT")
@@ -113,7 +116,7 @@ pub struct ConnectRequest {
 pub struct ResumeSetup {pub resume_setup_id:String}
 #[derive(Clone,Serialize,Deserialize)]
 #[serde(untagged)]
-pub enum ConnectInput {Resume(ResumeSetup),Configure(ConnectRequest)}
+pub enum ConnectInput {Resume(ResumeSetup),Intent(ConnectIntent),Configure(ConnectRequest)}
 #[derive(Clone,Copy,Serialize,Deserialize,PartialEq,Eq)]
 #[serde(rename_all="SCREAMING_SNAKE_CASE")]
 pub enum ReceiveMode { Push, Inbox }
@@ -401,7 +404,10 @@ impl Connect {
         }
         if let Some(items) = value["setups"].as_array_mut() {
             items.retain(|s| {
-                participant.is_none_or(|h| s["participant"] == h)
+                let key=format!("{}:{}",s["participant"].as_str().unwrap_or_default(),s["workspace_id"].as_str().unwrap_or_default());
+                let selected=self.registry.active_by_scope.get(&key).map(|id|s["setup_id"]==*id)
+                    .unwrap_or_else(||self.registry.setups.values().filter(|candidate|candidate.desired.participant==s["participant"] && candidate.desired.workspace_id==s["workspace_id"]).count()==1);
+                selected && participant.is_none_or(|h| s["participant"] == h)
                     && workspace.is_none_or(|ws| s["workspace_id"] == ws)
             });
         }
@@ -479,7 +485,7 @@ impl Connect {
         let Some(profile) = &setup.profile else {
             return Ok(None);
         };
-        self.ensure_profile(id, profile)?;
+        profile.validate()?;
         Ok(Some(profile.clone()))
     }
     fn ensure_profile(&self, id: &str, profile: &AgentProfile) -> Result<PathBuf> {
@@ -544,8 +550,8 @@ impl Connect {
         details: Value,
     ) -> Result<Value> {
         let setup = self.registry.setups.get(&r.setup_id).ok_or_else(||local("CONNECT_STATE_INVALID"))?;
-        let profile_path = setup.profile.as_ref().map(|profile|self.ensure_profile(&r.setup_id,profile)).transpose()?;
-        self.record(r, json!({"state":"PENDING","setup_id":r.setup_id,"tools_available":profile_path.is_some(),"profile_path":profile_path,
+        let tools_available = setup.profile.is_some();
+        self.record(r, json!({"state":"PENDING","setup_id":r.setup_id,"tools_available":tools_available,
             "blocker":{"stage":stage,"code":code,"affected_scope":{"workspace_id":r.workspace_id},"next_actor":actor,"next_action":action},
             "details":details,"existing_configuration_preserved":true}), None)
     }
@@ -585,7 +591,6 @@ impl Connect {
         if !self.registry.setups.contains_key(&setup_id){self.begin_setup(&request,selected,false,None)?;}
         let result=json!({"state":"LOCAL_ATTACHED","setup_id":setup_id,"remote_permissions":"CHECKED_PER_TOOL_CALL", "identity_and_operation_namespace":"ORIGINAL", "receiver":"NOT_REQUESTED", "host_tools":"CONFIGURATION_ONLY_REFRESH_HOST_THEN_CALL_CONTEXT"});
         self.record(&request,result.clone(),Some(profile.clone()))?;
-        self.ensure_profile(&setup_id,&profile)?;
         self.registry.active_by_scope.insert(key,setup_id.clone());self.registry.active=Some(setup_id);self.save()?;
         Ok(result)
     }
@@ -593,12 +598,17 @@ impl Connect {
         self.run_mode(request, false).await
     }
     pub fn resolve_input(&self,input:ConnectInput)->Result<(ConnectRequest,bool)>{
-        match input {ConnectInput::Configure(request)=>Ok((request,false)),ConnectInput::Resume(resume)=>{
+        match input {ConnectInput::Intent(intent)=>self.resolve_intent(intent,true),ConnectInput::Configure(request)=>Ok((request,false)),ConnectInput::Resume(resume)=>{
             if !identifier(&resume.resume_setup_id){return Err(local("CONNECT_ARGUMENT_INVALID"));}
-            Ok((self.registry.setups.get(&resume.resume_setup_id).ok_or_else(||local("SETUP_NOT_FOUND"))?.desired.clone(),true))
+            Ok((self.saved_codex_setup(&resume.resume_setup_id).or_else(||self.registry.setups.get(&resume.resume_setup_id).map(|s|s.desired.clone())).ok_or_else(||local("SETUP_NOT_FOUND"))?,true))
         }}
     }
     pub async fn resume_selected(&mut self,id:&str,participant:Option<&str>,workspace:Option<&str>)->Result<Value>{
+        if let Some(request)=self.saved_codex_setup(id) {
+            if participant.is_some_and(|p|p!=request.participant){return Err(local("FRONTEND_IDENTITY_PIN_MISMATCH"));}
+            if workspace.is_some_and(|w|w!=request.workspace_id){return Err(local("FRONTEND_WORKSPACE_PIN_MISMATCH"));}
+            return self.resume_saved_codex(id).await;
+        }
         let setup=self.registry.setups.get(id).ok_or_else(||local("SETUP_NOT_FOUND"))?;
         if participant.is_some_and(|p|p!=setup.desired.participant){return Err(local("FRONTEND_IDENTITY_PIN_MISMATCH"));}
         if workspace.is_some_and(|w|w!=setup.desired.workspace_id){return Err(local("FRONTEND_WORKSPACE_PIN_MISMATCH"));}
@@ -636,10 +646,9 @@ impl Connect {
             // Attachment is already a complete local operation. Installing a
             // host must not restart remote setup or require directory rights.
             if old.result["state"]=="LOCAL_ATTACHED" {
-                if let Some(profile)=&old.profile {
+                if old.profile.is_some() {
                     self.original_client(&request.participant).await?;
-                    let path=self.ensure_profile(&request.setup_id,profile)?;
-                    let mut result=old.result.clone();result["profile_path"]=json!(path);
+                    let mut result=old.result.clone();result.as_object_mut().unwrap().remove("profile_path");
                     result["observation"]=json!("CACHED_LOCAL_ATTACHMENT_ORIGINAL_CLIENT_REUSED");return Ok(result);
                 }
             }
@@ -652,11 +661,10 @@ impl Connect {
             }
             if old.result["blocker"]["code"] == "HOST_CONTEXT_REQUIRED"
                 && old.effective_host.is_none() && request.host.is_none() {
-                if let Some(profile) = &old.profile {
+                if old.profile.is_some() {
                     self.original_client(&request.participant).await?;
-                    let path=self.ensure_profile(&request.setup_id, profile)?;
                     let mut result = old.result.clone();
-                    result["profile_path"]=json!(path);
+                    result.as_object_mut().unwrap().remove("profile_path");
                     result["observation"] = json!("CACHED_SETUP_RESULT_HOST_CONTEXT_STILL_REQUIRED");
                     return Ok(result);
                 }
@@ -679,7 +687,7 @@ impl Connect {
                 }
                 if let Some(profile) = &old.profile {
                     self.original_client(&request.participant).await?;
-                    let path=self.ensure_profile(&request.setup_id, profile)?;
+                    profile.validate()?;
                     let sender_ready = RuntimeClient::connect(
                         profile.endpoint_path.clone(),
                         &profile.expected_origin,
@@ -699,7 +707,7 @@ impl Connect {
                     };
                     if sender_ready && receiver_ready {
                         let mut result = old.result.clone();
-                        result["profile_path"]=json!(path);
+                        result.as_object_mut().unwrap().remove("profile_path");
                         if request.receive&&old.channel_receive {
                             if let Some(endpoint)=&profile.receive_endpoint_path {
                                 let receiver=RuntimeClient::connect(endpoint.clone(),&profile.expected_origin,&profile.expected_actor).await?;
@@ -1312,7 +1320,7 @@ impl Connect {
                 self.save()?;
             }
         }
-        let path = self.ensure_profile(&request.setup_id, &profile)?;
+        profile.validate()?;
         // Publish the already-authorized tool view before opening a managed
         // host: its MCP initialization reads this snapshot without the writer lock.
         if self
@@ -1392,7 +1400,7 @@ impl Connect {
                         break;
                     }
                     if receiver["state"]=="BLOCKED"||tokio::time::Instant::now()>=until {
-                        return self.record(&request,json!({"state":"PENDING","setup_id":request.setup_id,"tools_available":true,"profile_path":path,
+                        return self.record(&request,json!({"state":"PENDING","setup_id":request.setup_id,"tools_available":true,
                             "blocker":{"stage":"RECEIVING_SELF_TEST","code":receiving_self_test(&receiver,true)["code"],"next_actor":"RUNTIME","next_action":"INSPECT_RECEIVING_BLOCKER_OR_RESUME_SAME_SETUP"},
                             "receiver":receiver,"self_test":receiving_self_test(&receiver,true),"host":host_observation,"owner_exchange_required":false}),Some(profile));
                     }
@@ -1437,7 +1445,7 @@ impl Connect {
         }
         let self_test=if request.receive&&channel_receive{receiving_self_test(&receiver,effective_host.is_some())}else{json!({"state":"NOT_REQUESTED","model_response":"NOT_ATTESTED"})};
         if request.receive&&channel_receive&&self_test["state"]!="READY" {
-            return self.record(&request,json!({"state":"PENDING","setup_id":request.setup_id,"tools_available":true,"profile_path":path,
+            return self.record(&request,json!({"state":"PENDING","setup_id":request.setup_id,"tools_available":true,
                 "blocker":{"stage":"RECEIVING_SELF_TEST","code":self_test["code"],"next_actor":"RUNTIME","next_action":"INSPECT_RECEIVING_BLOCKER_OR_RESUME_SAME_SETUP"},
                 "receiver":receiver,"self_test":self_test,"host":host_observation,"owner_exchange_required":false}),Some(profile));
         }
@@ -1453,11 +1461,11 @@ impl Connect {
             return self.record(&request,json!({"state":"PENDING","setup_id":request.setup_id,
                 "actor_id":profile.expected_actor,"origin":profile.expected_origin,"workspace_id":request.workspace_id,
                 "blocker":{"stage":"HOST_BINDING","code":"HOST_CONTEXT_REQUIRED","next_actor":"HOST_USER","next_action":"ENABLE_SUPPORTED_CURRENT_SESSION_INTEGRATION_OR_SELECT_NAMED_DESTINATION"},
-                "tools_available":true,"profile_path":path,"receiver":{"state":"NOT_STARTED","receiver_link_verified":false},
+                "tools_available":true,"receiver":{"state":"NOT_STARTED","receiver_link_verified":false},
                 "host":{"state":"NOT_BOUND","current_session":"NOT_ATTESTED","supported_fallback":"TOOLS_ONLY"},
                 "keys":keys,"owner_exchange_required":false,"observed_at_ms":stamp()}),Some(profile));
         }
-        self.record(&request,json!({"state":"LOCAL_CONFIGURED","setup_id":request.setup_id,"profile_path":path,
+        self.record(&request,json!({"state":"LOCAL_CONFIGURED","setup_id":request.setup_id,
             "observed_at_ms":stamp(),
             "actor_id":profile.expected_actor,"origin":profile.expected_origin,"workspace_id":request.workspace_id,
             "membership_id":membership,"keys":keys,"receiver":receiver,"host":host_observation,"self_test":self_test,"mcp_current_session":"NOT_ATTESTED",
@@ -1547,20 +1555,19 @@ async fn read(client: &RuntimeClient, action: &str, scope: Scope, body: Value) -
 }
 
 pub fn schema() -> Value {
-    let mut schema = json!({"type":"object","additionalProperties":false,"required":["request"],"properties":{"request":{
-        "type":"object","additionalProperties":false,"required":["workspace_id"],
-        "properties":{"setup_id":{"type":"string"},"participant":{"type":"string"},"workspace_id":{"type":"string"},"alias":{"type":"string","default":"workspace"},"send":{"type":"boolean"},"receive":{"type":"boolean"},"require_body_keys":{"type":"boolean"},"protocols":{"type":"array","maxItems":8,"items":{"type":"object","additionalProperties":false,"required":["alias","instance_id","role"],"properties":{"alias":{"type":"string"},"instance_id":{"type":"string"},"role":{"type":"string"},"actions":{"type":"array","maxItems":64,"items":{"type":"string"}}}}}}}}});
-    schema["properties"]["request"]["properties"]["contacts"] = json!({"type":"array","maxItems":64,"items":{"type":"object","additionalProperties":false,"required":["alias","actor_id"],"properties":{"alias":{"type":"string"},"actor_id":{"type":"string"}}}});
-    schema["properties"]["request"]["properties"]["management"]=json!({"type":"array","maxItems":32,"uniqueItems":true,"items":{"type":"string","enum":crate::agent_tools::management::workspace_names()},"description":"Optional compatibility check of these existing workspace operations on the original client. Ordinary management needs no enable step. Does not change remote grants or explicit parent limits. Identity-scoped workspace.create/protocol.offline are not included."});
-    schema["properties"]["request"]["properties"]["send"]["default"] = json!(default_send());
-    schema["properties"]["request"]["properties"]["receive"]["default"] = json!(default_send());
-    schema["properties"]["request"]["properties"]["protocols"]["items"]["properties"]["actions"]["description"]=json!("Optional required remote actions for this role. Missing rights use one resumable approval request. This list creates no local action ceiling; original client restrictions are inherited.");
-    schema["properties"]["request"]["properties"]["request_membership"] = json!({"type":"boolean","default":false,"description":"Explicitly request admission if workspace access is not verified. Returns one public request covering membership and the requested rights; Owner approval is still required."});
-    schema["properties"]["request"]["properties"]["receive_mode"] = json!({"type":"string","enum":["PUSH","INBOX"],"description":"PUSH (Agent default) requires an actual supported host destination. INBOX explicitly receives for MCP inbox/wait without requiring host push; it never claims automatic model wake or replaces an existing host binding. Requires receive=true."});
-    schema["properties"]["request"]["properties"]["host"] = json!({"type":"string","description":"Existing host-user-approved named destination. Omission does not identify the current session; unknown Agent receive stays pending. No commands, sockets or session paths are accepted."});
-    schema["properties"]["request"].as_object_mut().unwrap().remove("required");
-    schema["properties"]["request"]["properties"]["resume_setup_id"]=json!({"type":"string","description":"Resume the saved original setup with this field alone; do not repeat defaults or scopes."});
-    schema
+    json!({"type":"object","additionalProperties":false,"required":["request"],"properties":{"request":{
+        "type":"object","additionalProperties":false,
+        "description":"Connect or continue the selected original Peer and Space. Omit known selections. Existing restrictions and pending operations are preserved; new ordinary participation includes sending, receiving, admission and required body keys.",
+        "properties":{
+            "workspace_id":{"type":"string","description":"Space to select, only when not already unambiguous."},
+            "participant":{"type":"string","description":"Original public identity handle, only when ambiguous."},
+            "new":{"type":"boolean","default":false,"description":"Explicit new Peer intent. Returns the native local-owner creation command; never replaces an existing identity."},
+            "host":{"type":"string","description":"Existing host-user-approved destination, only when selecting a host explicitly."},
+            "send":{"type":"boolean","description":"Explicit change of sending objective; omission preserves the saved choice."},
+            "receive":{"type":"boolean","description":"Explicit change of receiving objective; omission preserves the saved choice."},
+            "resume_setup_id":{"type":"string","description":"Use only an exact returned recovery continuation, alone."}
+        }
+    }}})
 }
 
 pub fn cli(args: &[String]) -> Value {
@@ -1572,6 +1579,7 @@ pub fn cli(args: &[String]) -> Value {
             let flag = &args[i];
             let boolean = [
                 "--send",
+                "--new",
                 "--join",
                 "--receive", "--tools-only", "--no-send", "--no-receive",
                 "--body-keys",
@@ -1600,6 +1608,7 @@ pub fn cli(args: &[String]) -> Value {
                 "--client",
                 "--actor",
                 "--send",
+                "--new",
                 "--join",
                 "--receive", "--tools-only", "--no-send", "--no-receive",
                 "--body-keys",
@@ -1662,21 +1671,17 @@ pub fn cli(args: &[String]) -> Value {
         }
         Ok(values)
     }
-    if args.is_empty() || args == ["--help"] {
+    if args == ["--help"] {
         return json!({"state":"HELP","usage":[
-            "peerwork connect --profile ORIGINAL_PROFILE --runtime-config ORIGINAL_RUNTIME_CONFIG --adopt-policy inherit-engine",
-            "peerwork connect --profile ORIGINAL_PROFILE --issuer ORIGINAL_ISSUER_ENDPOINT --adopt-policy inherit-issuer",
-            "peerwork connect --workspace WORKSPACE --codex --join --body-keys --install codex",
-            "peerwork connect --workspace WORKSPACE --codex --codex-chat EXACT_TITLE_OR_THREAD --join --body-keys --install codex",
+            "peerwork connect --workspace WORKSPACE --install codex",
+            "peerwork connect --workspace WORKSPACE --install claude",
             "peerwork connect --workspace WORKSPACE --host EXISTING_AGY_HOST --install agy",
-            "peerwork connect --workspace WORKSPACE --join --body-keys --install claude",
-            "peerwork connect --workspace WORKSPACE --receive --receive-mode inbox --join --body-keys --install agy",
-            "peerwork connect --workspace WORKSPACE --program --join --body-keys"],
-            "existing_client":"Start with peerwork_context. Reuse the selected client and loaded tools.",
-            "defaults":{"send":true,"receive":true,"agent_receive_mode":"PUSH"},
-            "resume":"Use --resume SETUP_ID or peerwork_connect request.resume_setup_id alone. The saved identity, scopes and pending IDs are reused; physical host ownership remains checked.",
-            "agy":"INBOX supports explicit inbox/wait. Existing interactive CLI PUSH is not established. Reuse an owned stdio binding for supported live input; MCP installation alone does not enable PUSH.",
-            "claude":"--install claude installs native stdio MCP and the Claude Skill. It uses the existing native inbox for opt-in Claude Channels; the returned start_argv requires interactive activation during the research preview. Notification writes do not prove model acceptance.",
+            "peerwork connect --new --workspace WORKSPACE --install HOST",
+            "peerwork connect --workspace WORKSPACE --program"],
+            "existing_client":"Use loaded tools directly. Connect automatically continues the selected original installation; repeat it without reconstructing setup IDs or flags.",
+            "defaults":"New ordinary participation requests sending, receiving, admission and required body keys. Existing deliberate restrictions and host destinations are preserved.",
+            "new_peer":"--new creates native-managed protected identity and state. --participant selects a new local name when needed; --origin selects a self-hosted service when no existing service is selected. The hosted default is https://api.peerwork.dev.",
+            "host_selection":"Use the exact returned conversation choice or host activation action. MCP installation does not identify a current conversation or prove automatic receiving.",
             "advanced_help_command":"peerwork connect --help-all"});
     }
     if args == ["--help-all"] {
@@ -1708,6 +1713,13 @@ pub fn cli(args: &[String]) -> Value {
     }
     let result = || -> Result<Value> {
         let mut values = parse(args)?;
+        if values.contains_key("--new") && ["--context","--uninstall","--update","--approve-request","--approve-code","--binding-recovery","--confirm-original"].iter().any(|key|values.contains_key(*key)) {
+            return Err(local("NEW_PEER_USES_CREATION_INTENT_ONLY"));
+        }
+        if values.contains_key("--codex-chat") || values.get("--install").is_some_and(|host|host=="codex")
+            && !["--host","--program","--receive-mode","--tools-only","--no-receive","--agy-managed","--codex-endpoint"].iter().any(|key|values.contains_key(*key)) {
+            values.insert("--codex".into(),"true".into());
+        }
         // Reject mixed intents before context/profile/discovery early returns.
         if let Some(mode)=values.get("--update") {
             if !matches!(mode.as_str(),"status"|"apply") || values.keys().any(|key|!["--local","--participant","--project","--update"].contains(&key.as_str())) {
@@ -1773,7 +1785,7 @@ pub fn cli(args: &[String]) -> Value {
         if !["--local","--engine-config","--identity","--client"].iter().any(|key|values.contains_key(*key)) {
             if let Some((directory,participant))=discovery::project_target(&project)? {
                 installed_directory=Some(directory);
-                if !participant.is_empty() && !values.contains_key("--participant") {values.insert("--participant".into(),participant);}
+                if !participant.is_empty() && !values.contains_key("--participant") && !values.contains_key("--new") {values.insert("--participant".into(),participant);}
             } else {
                 let choices=discovery::project_bindings(&project,values.get("--workspace").map(String::as_str))?;
                 let selected:Vec<_>=choices.iter().filter(|choice|values.get("--participant").is_none_or(|wanted|
@@ -1783,7 +1795,7 @@ pub fn cli(args: &[String]) -> Value {
                 if let Some(choice)=selected.first() {
                     discovery::remember_project(&project,choice)?;
                     installed_directory=Some(choice.directory.clone());
-                    values.insert("--participant".into(),choice.participant.clone());
+                    if !values.contains_key("--new"){values.insert("--participant".into(),choice.participant.clone());}
                 } else if values.contains_key("--participant") && !choices.is_empty() {return Err(local("LOCAL_SELECTION_REQUIRED"));}
             }
         }
@@ -1815,10 +1827,16 @@ pub fn cli(args: &[String]) -> Value {
             return Ok(result);
         }
         bootstrap::runtime_inputs(&connect,&mut values)?;
+        let created = if values.contains_key("--new"){Some(bootstrap::new_peer(&connect,&values)?)}else{None};
+        if let Some((handle,_))=&created{values.insert("--participant".into(),handle.clone());}
         let required = |key: &str| {
             values.get(key).cloned().ok_or_else(|| local("CONNECT_ARGUMENT_INVALID_SEE_HELP"))
         };
-        let explicit_engine = bootstrap::engine(&values)?;
+        let explicit_engine = match created {
+            Some((handle,engine)) if !connect.registry.participants.contains_key(&handle)=>Some(engine),
+            Some(_)=>None,
+            None=>bootstrap::engine(&values)?,
+        };
         if values.contains_key("--attach")&&explicit_engine.is_some(){return Err(local("ATTACH_REQUIRES_EXISTING_ENDPOINT"));}
         let discovery = if explicit_engine.is_none() && !values.contains_key("--client") {
             Some(connect.discover(&project, values.contains_key("--trust-project"))?)
@@ -1876,10 +1894,11 @@ pub fn cli(args: &[String]) -> Value {
                 .map_err(|_| local("EXECUTOR_FAILED"))?;
             return runtime.block_on(connect.approve(&handle, &required("--id")?, request));
         }
+        let normal = !["--id","--alias","--role","--management","--contact","--attach","--protocol"].iter().any(|key|values.contains_key(*key));
         let mut request = ConnectRequest {
             setup_id: values.get("--id").cloned().unwrap_or_default(),
             participant: handle.clone(),
-            workspace_id: required("--workspace")?,
+            workspace_id: if normal{values.get("--workspace").cloned().unwrap_or_default()}else{required("--workspace")?},
             alias: values.get("--alias").cloned().unwrap_or_else(default_alias),
             send: !values.contains_key("--tools-only")&&!values.contains_key("--no-send"),
             receive: !values.contains_key("--tools-only")&&!values.contains_key("--no-receive"),
@@ -1913,7 +1932,7 @@ pub fn cli(args: &[String]) -> Value {
                 actor_id: actor.into(),
             });
         }
-        request = if values.contains_key("--program") {connect.normalize_request(request)?} else {connect.normalize_agent_request(request)?};
+        if !normal {request = if values.contains_key("--program") {connect.normalize_request(request)?} else {connect.normalize_agent_request(request)?};}
         if selected_adapter.is_some() && !request.receive {
             return Err(local("HOST_SELECTION_REQUIRES_RECEIVE"));
         }
@@ -1941,22 +1960,46 @@ pub fn cli(args: &[String]) -> Value {
                     )
                     .await?;
             }
-            if values.contains_key("--codex") {
+            let mut resume = false;
+            if normal {
+                let ordinary = ConnectIntent {
+                    participant:Some(handle.clone()), workspace_id:values.get("--workspace").cloned(), new_peer:false,
+                    host:values.get("--host").cloned(),
+                    send:if values.contains_key("--tools-only")||values.contains_key("--no-send"){Some(false)}else if values.contains_key("--send"){Some(true)}else{None},
+                    receive:if values.contains_key("--tools-only")||values.contains_key("--no-receive"){Some(false)}else if values.contains_key("--receive")&&!values.contains_key("--codex"){Some(true)}else{None},
+                    receive_mode:values.get("--receive-mode").map(|v|if v=="inbox"{ReceiveMode::Inbox}else{ReceiveMode::Push}),
+                    require_body_keys:if values.contains_key("--body-keys"){Some(true)}else if values.contains_key("--tools-only"){Some(false)}else{None},
+                    request_membership:if values.contains_key("--join"){Some(true)}else if values.contains_key("--tools-only"){Some(false)}else{None},
+                };
+                (request,resume)=connect.resolve_intent(ordinary,!values.contains_key("--program"))?;
+                if !resume && values.get("--install").is_some_and(|host|host=="claude") && request.receive && request.host.is_none() {
+                    request.receive_mode=Some(ReceiveMode::Inbox);request.setup_id.clear();
+                    request=connect.normalize_agent_request(request)?;
+                }
+                if resume && !values.contains_key("--codex-chat") && !values.contains_key("--codex-host") && selected_adapter.is_none() {
+                    let mut result=connect.resume_selected(&request.setup_id,Some(&handle),Some(&request.workspace_id)).await?;
+                    if let Some(spec)=installation{result["integration"]=connect.install(&handle,&request.workspace_id,spec)?;}
+                    return Ok(result);
+                }
+            }
+            if values.contains_key("--codex") && (!normal || request.receive && (request.receive_mode!=Some(ReceiveMode::Inbox) || values.contains_key("--codex-chat") || values.contains_key("--codex-host"))) {
+                if normal && resume {request=connect.codex_original_invocation(&handle,&request.workspace_id).unwrap_or(request);}
                 let config_path=values.get("--runtime-config").map(std::path::absolute).transpose().map_err(|_|local("LOCAL_SELECTION_INVALID"))?;
                 let admin=values.get("--admin").map(std::path::absolute).transpose().map_err(|_|local("HOST_SELECTION_INVALID"))?
                     .or_else(||config_path.as_ref().and_then(|p|crate::communication_store::private_json(p,65536).ok())
                         .and_then(|v|v["state_directory"].as_str().map(|d|PathBuf::from(d).join("admin.json"))));
                 let selection=match admin {Some(admin_endpoint)=>Some(RuntimeSelection{admin_endpoint,config_path}),None=>None};
+                let request_workspace=request.workspace_id.clone();
                 // Resume the existing durable attachment before opening a
                 // potentially stopped endpoint through ordinary discovery.
                 let mut result=if let Some(decision)=binding_recovery {connect.recover_codex_attachment(request,values.get("--codex-chat").or_else(||values.get("--codex-host")).map(String::as_str),decision).await?}
                     else if let Some(host)=values.get("--codex-host") {connect.attach_codex_host_with_runtime(request,host,selection).await?}
                     else {connect.attach_codex_with_runtime(request,values.get("--codex-chat").map(String::as_str),selection).await?};
-                if let Some(spec)=installation {result["integration"]=connect.install(&handle,&required("--workspace")?,spec)?;}
+                if let Some(spec)=installation {result["integration"]=connect.install(&handle,&request_workspace,spec)?;}
                 return Ok(result);
             }
             connect.adopt(&handle).await?;
-            if !values.contains_key("--local") {discovery::pin_project_binding(&project,&connect,&handle)?;}
+            if !values.contains_key("--local") && (!values.contains_key("--new") || connect.registry.selected_source.as_ref().is_none_or(|old|old==&handle)) {discovery::pin_project_binding(&project,&connect,&handle)?;}
             if let Some(mut adapter) = selected_adapter {
                 if adapter["kind"] == "agy-stdio" {
                     if let Some(spec) = installation.as_ref().filter(|spec| spec.host == "agy") {

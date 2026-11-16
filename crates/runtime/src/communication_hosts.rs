@@ -76,6 +76,31 @@ fn merge(configs: &mut Vec<HostConfig>, incoming: HostConfig) -> Result<()> {
     configs.push(incoming);
     Ok(())
 }
+// Resolve configured selections before filtering for currently live clients.
+// Update inventory and runtime startup must agree even when every source of a
+// configured bridge is blocked and no dispatcher can be started for it.
+fn resolve(base: &[HostConfig], saved: &[HostConfig], suppressed: &[HostConfig]) -> Result<Vec<HostConfig>> {
+    if saved.len() > 8 { return Err(local("HOST_CONFIG_LIMIT")); }
+    let mut configs = Vec::new();
+    for config in base {
+        if base_active(config, suppressed)? { merge(&mut configs, config.clone())?; }
+    }
+    for config in saved { merge(&mut configs, config.clone())?; }
+    Ok(configs)
+}
+/// Read the original private selection without acquiring its live writer or
+/// creating state. Older live runtimes and stopped installations use this same
+/// resolver; a malformed overlay must never silently fall back to base hosts.
+pub(crate) fn configuration_snapshot(directory: &Path, base: &[HostConfig]) -> Result<Vec<HostConfig>> {
+    let path = directory.join("runtime-hosts.state");
+    let (saved, suppressed) = match std::fs::symlink_metadata(&path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => (Vec::new(), Vec::new()),
+        Err(_) => return Err(local("HOST_REGISTRY_RECOVERY_REQUIRED")),
+        Ok(_) => decode_saved(&SecureStateStore::read_snapshot(&path, 512 * 1024)
+            .map_err(|_| local("HOST_REGISTRY_RECOVERY_REQUIRED"))?)?,
+    };
+    resolve(base, &saved, &suppressed)
+}
 fn sources(
     config: &HostConfig,
     clients: &BTreeMap<String, ParticipantClient>,
@@ -162,16 +187,7 @@ impl Hosts {
             Some(wire) => decode_saved(&wire)?,
             None => (Vec::new(),Vec::new()),
         };
-        if saved.len() > 8 {
-            return Err(local("HOST_CONFIG_LIMIT"));
-        }
-        let mut configs = Vec::new();
-        for config in base {
-            if base_active(config,&suppressed_base)? {merge(&mut configs,config.clone())?;}
-        }
-        for config in &saved {
-            merge(&mut configs, config.clone())?;
-        }
+        let configs = resolve(base, &saved, &suppressed_base)?;
         let (active, blocked) = active_configs(&configs, clients, generations);
         for config in &active {
             sources(config, clients, generations)?;
@@ -460,5 +476,63 @@ mod initial_selection_tests {
         let mut target=existing.clone();target.name="another-name".into();target.subscriptions[0].watch.mailbox_id="n".repeat(43);
         assert_eq!(initial_host_available(root.path(),&[existing],&target).unwrap_err().code,"HOST_INITIAL_EXISTING_BASE_HOST_GROUP");
         assert!(!root.path().join("runtime-hosts.state").exists());
+    }
+}
+
+#[cfg(test)]
+mod inventory_tests {
+    use super::*;
+
+    fn host(name: &str) -> HostConfig {
+        HostConfig {
+            name: name.into(),
+            adapter: json!({"kind":"codex","endpoint":"codex-proxy://local","thread_id":name,"expected_session_id":"original-session"}),
+            subscriptions: vec![HostSubscription {
+                client: "unavailable-client".into(), client_generation: Some(7),
+                watch: WatchOptions { workspace_id:"w".repeat(43), mailbox_id:"m".repeat(43), membership_id:"g".repeat(43), consumer_id:"inbox".into(), host_destination:None },
+            }],
+        }
+    }
+
+    #[test]
+    fn effective_inventory_without_overlay_preserves_base_without_creating_state() {
+        let root = crate::test_support::protected_test_dir();
+        let base = host("base");
+        let current = configuration_snapshot(root.path(), &[base.clone()]).unwrap();
+        assert!(same_config(&current[0], &base));
+        assert!(!root.path().join("runtime-hosts.state").exists());
+    }
+
+    #[tokio::test]
+    async fn effective_inventory_keeps_blocked_additions_and_omits_suppressed_base() {
+        let root = crate::test_support::protected_test_dir();
+        let base = host("old");
+        let replacement = host("replacement");
+        let added = host("added");
+        let wire = encoded(&[replacement.clone(), added.clone()], &[base.clone()]).unwrap();
+        let path = root.path().join("runtime-hosts.state");
+        { let store = SecureStateStore::open(&path).unwrap(); store.write_exact(&wire).unwrap(); }
+        let current = configuration_snapshot(root.path(), &[base.clone()]).unwrap();
+        assert_eq!(serde_json::to_value(&current).unwrap(), json!([replacement, added]));
+        let mut hosts = Hosts::open(root.path(), &[base.clone()], &BTreeMap::new(), &BTreeMap::new(), KernelCancellationToken::new()).unwrap();
+        assert_eq!(serde_json::to_value(hosts.configurations()).unwrap(), serde_json::to_value(&current).unwrap());
+        assert_eq!(hosts.statuses()[0]["state"], "BLOCKED_SOURCES");
+        assert!(hosts.jobs.is_empty());
+        assert_eq!(SecureStateStore::read_snapshot(&path, 512 * 1024).unwrap(), wire);
+        // A live writer does not prevent the compatibility snapshot reader.
+        assert_eq!(configuration_snapshot(root.path(), &[base]).unwrap().len(), 2);
+        hosts.close().await;
+    }
+
+    #[test]
+    fn effective_inventory_rejects_changed_suppressed_base_and_corrupt_overlay() {
+        let root = crate::test_support::protected_test_dir();
+        let base = host("old");
+        let store = SecureStateStore::open(&root.path().join("runtime-hosts.state")).unwrap();
+        store.write_exact(&encoded(&[host("replacement")], &[base.clone()]).unwrap()).unwrap();
+        let mut changed = base; changed.adapter["expected_session_id"] = json!("other-session");
+        assert_eq!(configuration_snapshot(root.path(), &[changed]).err().unwrap().code, "HOST_REBIND_BASE_CONFIGURATION_CHANGED");
+        store.write_exact(b"{broken").unwrap();
+        assert_eq!(configuration_snapshot(root.path(), &[]).err().unwrap().code, "HOST_REGISTRY_RECOVERY_REQUIRED");
     }
 }

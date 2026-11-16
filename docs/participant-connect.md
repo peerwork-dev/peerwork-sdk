@@ -1,4 +1,4 @@
-# Connect an existing Peer
+# Connect a Peer
 
 Start with the [short quickstart](native-participant-quickstart.md). Reuse a
 working client; this reference covers explicit installation and recovery choices.
@@ -9,6 +9,43 @@ In0.3.14 ordinary active membership includes in-Space send/receive and self-
 subscription. Connect requests both by default; explicit restrictions remain.
 Use `--tools-only`, `--no-send` or `--no-receive` for intentional narrower use.
 See [messages, broadcasts and subscriptions](workspace-events.md).
+
+## Normal connection (native0.3.36)
+
+Already connected Agents use their loaded tools directly. First connection uses
+Space intent, selecting an original identity/host only when genuinely ambiguous:
+
+```sh
+peerwork connect --workspace WORKSPACE_ID --install codex
+```
+
+`--install codex` selects Codex attachment; `--codex-chat` supplies an exact
+conversation choice only when needed. Claude uses `--install claude` and its
+returned Channel activation command. AGY reuses an explicitly registered host.
+Installation does not create or substitute a model session.
+
+Repeat ordinary Connect to continue unique compatible saved work, including a
+saved Codex attachment. Omitted choices retain the original requested scope;
+a deliberate tools-only, manual, stopped or paused choice is not widened.
+Ambiguity returns choices; an explicit different intent is separate work. Setup
+IDs and exact low-level resume selectors remain advanced recovery inputs.
+
+New ordinary Agent connections include sending, receiving, membership and
+required body keys. Existing grants need no approval. Missing rights/keys produce
+one consolidated public request for the responsible authority. For loaded MCP,
+`peerwork_connect` accepts `{"request":{"workspace_id":"WORKSPACE_ID"}}`;
+repeat it after approval. Explicit fields change only the requested intent.
+
+To create a new identity deliberately, use `--new` with the same command.
+Protected identity, journal and owned runtime defaults are managed locally;
+repeat to reuse them. `--origin` selects a self-hosted API. An MCP new-Peer intent
+returns the local-owner CLI continuation rather than silently gaining signer
+creation authority. Failed discovery never creates a replacement identity.
+
+Ordinary derived profiles stay in memory; explicit exports, adoption and
+historical snapshots remain supported. Programs retain the full native Rust API
+without mandatory host, MCP or daemon. Advanced installation/recovery details
+follow; versioned historical behavior is not an extra normal setup step.
 
 ## Ordinary client authority (native0.3.15)
 
@@ -71,12 +108,13 @@ restoration path, as described below. An ordinary client endpoint does not
 authorize stopping an external process. A shared host group covering additional
 subscriptions requires an explicit group selection.
 
-Repeat the same command after an interruption. Keep its original arguments and
-operation; do not reset state, invent a new receiver or resend pending commands.
+Repeat normal Connect after interruption; native0.3.36 retains the compatible
+saved request and attachment internally. Do not reset state, invent a new receiver
+or resend pending commands.
 The SDK reconciles a committed rebind even if its completion response was lost.
-Existing rights require no Owner exchange. For a first connection, include the
-needed `--join` and `--body-keys` flags; genuinely missing rights use
-the existing consolidated authorization flow. Attaching an existing INBOX keeps
+Existing rights require no Owner exchange. New ordinary Agent connections
+include membership and required body keys; genuinely missing rights use the
+consolidated authorization flow. Attaching an existing INBOX keeps
 its prior requested rights and adds explicitly requested roles/send/key rights.
 The old INBOX setup remains historical; its completed receiver is reused by the
 new PUSH setup rather than derived again.
@@ -127,7 +165,7 @@ may reconnect, so this is not a claim of uninterrupted network delivery.
 Unknown original host calls stay at their original destination and are not
 replayed into the newly selected conversation.
 
-Normally repeat the unchanged Connect invocation to observe or resume. A verified
+Normally repeat Connect to observe or resume compatible saved work. A verified
 no-effect claim refusal explicitly reports that a recovery decision is required.
 For a resident attachment, repeat the original invocation and add
 `--binding-recovery RETRY_REJECTED --decision-id STABLE_DECISION_ID`, or choose
@@ -153,19 +191,20 @@ only missing rights require approval. Do not turn these options off merely to
 make setup succeed, or treat working business tools as live receiving.
 
 Use the business-only entry later in this guide when the caller intentionally
-needs protocol operations without live communication. Send and receive default to true for ordinary collaboration. Body-key and
-admission requests remain explicit; no tools-only setup stage is required.
+needs protocol operations without live communication. Ordinary new Agent
+connections include communication, body-key and admission intent together. No
+tools-only setup stage is required.
 
 ## Normal Agent entry for live collaboration
 
 From the authorized project, use the native CLI once if MCP is not loaded:
 
 ```sh
-peerwork connect --workspace WORKSPACE_ID --codex --join --body-keys --install codex
+peerwork connect --workspace WORKSPACE_ID --install codex
 ```
 
 For AGY, preserve and reuse an existing PUSH binding first; see the receiving paths in the
-[quickstart](native-participant-quickstart.md#agy-use-only-the-supported-receiving-path).
+[quickstart](native-participant-quickstart.md#select-the-host).
 `--install agy` only chooses which local integration to prepare; it does not create a model session or prove
 that the currently running session refreshed its tools. For a new setup initiated through loaded MCP tools, call:
 
@@ -173,12 +212,11 @@ that the currently running session refreshed its tools. For a new setup initiate
 {"request":{"workspace_id":"WORKSPACE_ID","send":true,"receive":true,"require_body_keys":true,"request_membership":true}}
 ```
 
-with `peerwork_connect`. Request body keys when using encrypted message bodies. Identity/setup ID are normally derived. A real identity
-ambiguity returns public identity choices; choose one handle once. Preserve the
-returned `setup_id` for recovery. `send` and `receive` default to true; body-key and admission requests are
-explicit. Intentional business-only setup uses `--tools-only` and reads no
-communication grants or mailboxes. Finish a Codex CLI attachment with its
-unchanged original CLI invocation, not this generic MCP request.
+with `peerwork_connect`. The compact form in the normal connection section is
+sufficient for ordinary new Agent intent. Identity/setup continuation are derived;
+only actual selection ambiguity or a conflicting explicit intent needs a choice.
+An existing request retains omitted fields, including deliberate restrictions.
+Saved Codex attachment work is resumed through that same lifecycle.
 Programs use the same engine without a host, MCP or Skill, and explicitly select
 program mode when using the CLI:
 
@@ -197,8 +235,8 @@ host acknowledgment does not prove that the model processed a message.
 
 ## One portable permission request (native0.3.10)
 
-Existing grants are reused without an Owner exchange. If explicitly requesting
-membership with `--join` / `request_membership: true`, an access denial returns
+Existing grants are reused without an Owner exchange. New ordinary Agent
+connections request missing membership and body keys by default; an access denial returns
 one public request for admission plus the selected communication, role and key
 rights. It does not prove why access was denied or disclose a private workspace.
 The Owner verifies the requested identity, workspace, rights and any lease, then
@@ -243,7 +281,8 @@ also requires an actual host when selected by a program. A missing destination
 remains pending. Neither mode takes over an existing live consumer or changes
 its host implicitly; changing a previously active inbox to PUSH requires the
 supported explicit rebind. Existing setups without these new fields retain their
-original IDs and request digests.
+original IDs and request digests. Native0.3.36 preserves these existing choices
+when options are omitted.
 
 ## Receiving self-test (native0.3.10)
 

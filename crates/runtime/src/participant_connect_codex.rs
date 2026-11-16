@@ -110,6 +110,27 @@ fn validate_committed(job: &Attachment, committed: &RuntimeConfig, outcome: &Val
 }
 
 impl Connect {
+    pub(super) fn codex_original_invocation(&self,participant:&str,workspace:&str)->Option<ConnectRequest> {
+        self.registry.codex_attachments.get(&format!("{participant}:{workspace}")).map(|job|job.invocation.clone())
+    }
+    pub(super) fn saved_codex_intent(&self,participant:&str,workspace:&str)->Option<ConnectRequest> {
+        self.registry.codex_attachments.get(&format!("{participant}:{workspace}"))
+            .filter(|job|!job.aborted && (!job.finished || self.registry.setups.get(&job.desired.setup_id).is_none_or(|s|s.result["state"]=="PENDING")))
+            .map(|job|job.desired.clone())
+    }
+    pub(super) fn codex_attachment_pending(&self,participant:&str,workspace:&str)->bool {
+        self.registry.codex_attachments.get(&format!("{participant}:{workspace}")).is_some_and(|job|!job.finished)
+    }
+    pub(super) fn saved_codex_setup(&self,id:&str)->Option<ConnectRequest> {
+        self.registry.codex_attachments.values().find(|job|job.desired.setup_id==id).map(|job|job.desired.clone())
+    }
+    pub(super) async fn resume_saved_codex(&mut self,id:&str)->Result<Value> {
+        self.require_writer()?;
+        let (key,job)=self.registry.codex_attachments.iter().find(|(_,job)|job.desired.setup_id==id)
+            .map(|(key,job)|(key.clone(),job.clone())).ok_or_else(||local("SETUP_NOT_FOUND"))?;
+        if job.finished && !job.aborted {return self.run_agent(job.desired).await;}
+        self.resume_codex(&key,job).await
+    }
     /// One explicit local selection; ordinary MCP requests cannot supply paths,
     /// process IDs or administrative authority. This names the selected session,
     /// not an assertion that a generic MCP caller owns that exact thread.
@@ -556,6 +577,26 @@ impl Connect {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn ordinary_connect_selects_original_attachment_before_generic_setup_exists() {
+        let root=crate::test_support::protected_test_dir();let mut connect=Connect::open(root.path()).unwrap();
+        let workspace="W".repeat(43);
+        connect.registry.participants.insert("peer".into(),Registration{origin:"https://example.invalid/".into(),actor_id:"A".repeat(43),endpoint_path:root.path().join("original.json")});
+        let invocation:ConnectRequest=serde_json::from_value(json!({"setup_id":"old-invocation","participant":"peer","workspace_id":workspace,"send":false,"receive":true,"receive_mode":"INBOX"})).unwrap();
+        let mut desired=invocation.clone();desired.setup_id="original-attachment".into();desired.receive_mode=Some(ReceiveMode::Push);desired.host=Some("exact-host".into());
+        let job=Attachment{setup_id:"old-setup".into(),selected_chat:"exact-conversation".into(),desired:desired.clone(),invocation,
+            owned:None,resident_admin:None,source_binding:json!({"namespace":"original-namespace"}),committed:None,finished:false,aborted:false,
+            request:HostRebindRequest{format:"peerwork.host-rebind.v1".into(),operation_id:"immutable-rebind-operation".into(),engine:"original".into(),host:"exact-host".into(),adapter:json!({"kind":"codex","thread_id":"exact-thread","expected_session_id":"exact-session"}),initial_subscriptions:None}};
+        connect.registry.codex_attachments.insert(format!("peer:{workspace}"),job);connect.save().unwrap();
+        let before=std::fs::read(root.path().join("connect.state")).unwrap();
+        let input=serde_json::from_value(json!({"workspace_id":workspace})).unwrap();
+        let (resolved,resume)=connect.resolve_input(input).unwrap();assert!(resume);assert!(resolved==desired);assert!(!resolved.send);
+        assert_eq!(connect.resume_selected(&resolved.setup_id,Some("another-peer"),None).await.unwrap_err().code,"FRONTEND_IDENTITY_PIN_MISMATCH");
+        // Missing original lifecycle evidence is an attachment blocker. Generic
+        // setup dispatch would instead say SETUP_NOT_FOUND or create another job.
+        assert_eq!(connect.resume_selected(&resolved.setup_id,Some("peer"),Some(&workspace)).await.unwrap_err().code,"ORIGINAL_RUNTIME_CONFIG_REQUIRED");
+        assert!(connect.registry.setups.is_empty());assert_eq!(std::fs::read(root.path().join("connect.state")).unwrap(),before);
+    }
     #[test]
     fn explicit_chat_selection_does_not_guess_latest_or_confuse_parent_and_child() {
         let sessions = json!({"sessions":[{"thread_id":"parent","session_id":"parent","title":"Master"},{"thread_id":"child","session_id":"parent","title":"Worker"}]});

@@ -15,7 +15,7 @@ impl Connect {
     }
     pub(super) async fn establish_baseline(&mut self, request:&ConnectRequest, selected:&Registration, parent:&Capability, client:&RuntimeClient, membership:&str)->Result<()> {
         if let Some(profile)=self.registry.setups[&request.setup_id].profile.as_ref() {
-            self.ensure_profile(&request.setup_id,profile)?;
+            profile.validate()?;
             let key=format!("{}:{}",request.participant,request.workspace_id);
             if !self.registry.active_by_scope.contains_key(&key) {
                 self.registry.active_by_scope.insert(key,request.setup_id.clone());
@@ -42,7 +42,6 @@ impl Connect {
         let setup=self.registry.setups.get_mut(&request.setup_id).unwrap();
         setup.profile=Some(profile.clone());setup.sender_capability=Some(capability);setup.result["client_authority_model"]=json!("SERVICE_CURRENT");
         self.save()?;
-        self.ensure_profile(&request.setup_id,&profile)?;
         self.registry.active_by_scope.insert(format!("{}:{}",request.participant,request.workspace_id),request.setup_id.clone());
         self.registry.active=Some(request.setup_id.clone());self.save()
     }
@@ -88,8 +87,7 @@ impl Connect {
             next.profile=Some(profile.clone());next.sender_capability=Some(cap);next.result["setup_id"]=json!(revision);next.result["client_authority_model"]=json!("SERVICE_CURRENT");
             self.registry.setups.insert(revision.clone(),next);self.save()?;
         }
-        let profile_path=self.ensure_profile(&revision,&profile)?;
-        self.registry.setups.get_mut(&revision).unwrap().result["profile_path"]=json!(profile_path);
+        self.registry.setups.get_mut(&revision).unwrap().result.as_object_mut().unwrap().remove("profile_path");
         self.registry.active_by_scope.insert(format!("{}:{}",old.desired.participant,old.desired.workspace_id),revision.clone());self.registry.active=Some(revision.clone());self.save()?;
         Ok(revision)
     }
@@ -211,7 +209,7 @@ impl Connect {
         if id!=active {
             let mut setup=self.registry.setups[&active].clone();setup.desired.setup_id=id.clone();setup.digest=sha256_hex(&serde_json::to_vec(&setup.desired).map_err(|_|local("CONNECT_ARGUMENT_INVALID"))?);setup.profile=Some(profile.clone());setup.result["setup_id"]=json!(id);
             if !self.registry.setups.contains_key(&id)&&self.registry.setups.len()>=64{return Err(local("SETUP_LIMIT"));}self.registry.setups.insert(id.clone(),setup);self.save()?;
-            let path=self.ensure_profile(&id,&profile)?;self.registry.setups.get_mut(&id).unwrap().result["profile_path"]=json!(path);self.registry.active_by_scope.insert(format!("{handle}:{ws}"),id.clone());self.registry.active=Some(id.clone());self.save()?;
+            self.registry.setups.get_mut(&id).unwrap().result.as_object_mut().unwrap().remove("profile_path");self.registry.active_by_scope.insert(format!("{handle}:{ws}"),id.clone());self.registry.active=Some(id.clone());self.save()?;
         }
         Ok(json!({"state":"PROTOCOL_VIEWS_REFRESHED","setup_id":id,"remote_grants_changed":false,"original_operations_preserved":true}))
     }

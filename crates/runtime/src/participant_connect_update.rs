@@ -98,6 +98,14 @@ async fn observation(owned: &bootstrap::OwnedRuntime) -> Result<Value> {
     client.call(json!({"method":"binding"})).await?;
     Ok(status.clone())
 }
+fn host_inventory(owned: &bootstrap::OwnedRuntime, status: Option<&Value>) -> Result<Vec<crate::participant_dispatch::HostConfig>> {
+    if let Some(hosts) = status.and_then(|status| status.get("host_configurations")) {
+        // This field comes only from the authenticated original administrator.
+        // Do not replace invalid current inventory with an older disk snapshot.
+        return serde_json::from_value(hosts.clone()).map_err(|_| local("UPDATE_HOST_INVENTORY_INVALID"));
+    }
+    crate::communication_runtime::host_configuration_snapshot(&owned.config.state_directory, &owned.config.hosts)
+}
 fn continuation(
     connect: &Connect,
     participant: &str,
@@ -145,12 +153,12 @@ impl Connect {
                     (
                         json!({"ownership":"OWNED","state":"RUNNING","loaded_version":status["sdk_version"],
                         "compatible":compatible(&status,&required),"required_features":required}),
-                        o.config.hosts.clone(),
+                        host_inventory(o, Some(&status))?,
                     )
                 }
                 Some(o) => (
                     json!({"ownership":"OWNED","state":"STOPPED","loaded_version":"NOT_RUNNING"}),
-                    o.config.hosts.clone(),
+                    host_inventory(o, None)?,
                 ),
                 None => (
                     json!({"ownership":"EXTERNAL","state":"UNKNOWN","loaded_version":"UNKNOWN"}),
@@ -269,14 +277,18 @@ impl Connect {
             save(&store, &update)?;
         }
         let outputs = install::update_owned(self, &handle, &executable)?;
-        if update.was_running {
+        let hosts = if update.was_running {
             let current = observation(&update.original).await?;
             if !compatible(&current, &required) {
                 return Err(local("UPDATE_TARGET_MISSING_REQUIRED_FEATURE"));
             }
-        } else if bootstrap::owned_runtime(self, &handle)?.running()? {
-            return Err(local("UPDATE_RUNTIME_STATE_CHANGED"));
-        }
+            host_inventory(&update.original, Some(&current))?
+        } else {
+            if bootstrap::owned_runtime(self, &handle)?.running()? {
+                return Err(local("UPDATE_RUNTIME_STATE_CHANGED"));
+            }
+            host_inventory(&update.original, None)?
+        };
         if update.was_running {crate::runtime_startup::enroll(&update.original.config.state_directory)?;}
         crate::runtime_startup::select_launcher(&update.original.config.state_directory,crate::runtime_startup::Launcher {
             executable:update.executable.clone(),sha256:update.executable_digest.clone()
@@ -287,10 +299,14 @@ impl Connect {
             json!({"state":"OWNED_UPDATE_COMPLETE","participant":handle,"runtime":if update.was_running{"RUNNING_COMPATIBLE"}else{"STOPPED_PRESERVED"},
             "required_features":required,"installations":outputs,"original_operations":"PRESERVED",
             "delivery_pause":"PRESERVED","approvals":"UNCHANGED","model_wake":"NOT_ATTESTED",
-            "continuation":continuation(self,&handle,false,&update.original.config.hosts)}),
+            "continuation":continuation(self,&handle,false,&hosts)}),
         )
     }
 }
+
+#[cfg(test)]
+#[path = "participant_connect_update_inventory_tests.rs"]
+mod inventory_tests;
 
 #[cfg(test)]
 mod tests {
@@ -361,6 +377,9 @@ mod process_tests {
     }
     impl Fixture {
         async fn new() -> Self {
+            Self::with_host_inventory(false).await
+        }
+        async fn with_host_inventory(include_hosts: bool) -> Self {
             let binary = PathBuf::from(
                 std::env::var_os("PEERWORK_UPDATE_TEST_BINARY").expect("set exact candidate CLI"),
             );
@@ -376,10 +395,14 @@ mod process_tests {
             let mut connect = Connect::open(&directory).unwrap();
             let runtime = directory.join("runtime-peer");
             create_private_state_directory(&runtime).unwrap();
+            let base = include_hosts.then(|| inventory_tests::bridge(root.path(), "old"));
+            if let Some(base) = &base {
+                inventory_tests::overlay(&runtime, &[inventory_tests::bridge(root.path(), "replacement"), inventory_tests::bridge(root.path(), "added")], &[base.clone()]);
+            }
             let config = RuntimeConfig {
                 format: "peerwork.participant-runtime.v1".into(),
                 state_directory: runtime.clone(),
-                hosts: vec![],
+                hosts: base.into_iter().collect(),
                 engines: vec![EngineConfig {
                     name: "original".into(),
                     origin: "http://127.0.0.1:1".into(),
@@ -518,6 +541,31 @@ mod process_tests {
                 .status();
             let _ = self.child.try_wait();
         }
+    }
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore = "requires exact candidate/previous CLI artifacts and synthetic loopback IPC"]
+    async fn owned_update_real_process_inventory_survives_interrupted_update_and_stop() {
+        let fixture = Fixture::with_host_inventory(true).await;
+        let path = fixture.config.state_directory.join("runtime-hosts.state");
+        let hosts_before = SecureStateStore::read_snapshot(&path, 512 * 1024).unwrap();
+        let config_before = std::fs::read(fixture.config.state_directory.join("config.json")).unwrap();
+        let inspection = fixture.cli("status");
+        assert_eq!(inventory_tests::names(&inspection), ["replacement", "added"]);
+        let update = fixture.record(Phase::Stopping);
+        update.original.stop().await.unwrap();
+        let result = fixture.cli("apply");
+        assert_eq!(result["state"], "OWNED_UPDATE_COMPLETE", "{result}");
+        assert_eq!(inventory_tests::names(&result), ["replacement", "added"]);
+        let status = observation(&update.original).await.unwrap();
+        assert_eq!(status["host_configurations"].as_array().unwrap().len(), 2);
+        assert_eq!(status["hosts"][0]["state"], "BLOCKED_SOURCES");
+        fixture.stop().await;
+        assert_eq!(inventory_tests::names(&fixture.cli("status")), ["replacement", "added"]);
+        let stopped = fixture.cli("apply");
+        assert_eq!(stopped["runtime"], "STOPPED_PRESERVED");
+        assert_eq!(inventory_tests::names(&stopped), ["replacement", "added"]);
+        assert_eq!(SecureStateStore::read_snapshot(&path, 512 * 1024).unwrap(), hosts_before);
+        assert_eq!(std::fs::read(fixture.config.state_directory.join("config.json")).unwrap(), config_before);
     }
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[ignore = "requires exact candidate/previous CLI artifacts and synthetic loopback IPC"]

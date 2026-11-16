@@ -229,9 +229,19 @@ peerwork connect --local ORIGINAL_REGISTRY --participant HANDLE --update status
 peerwork connect --local ORIGINAL_REGISTRY --participant HANDLE --update apply
 ```
 
-An existing project selection can supply the registry and handle. `status`
-inventories the recorded installation and authenticated owned runtime. `apply`
-uses the executing CLI as its target, checks required runtime features, and
+An existing project selection can supply the registry and handle. For an owned
+runtime, `status` inventories the recorded installation and its effective host
+configurations.
+This includes bridges added or rebound after installation and configured hosts
+whose sources are currently blocked; superseded base selections are omitted.
+A running owned runtime supplies this inventory through authenticated admin
+status. Stopped installations and older runtimes that lack the inventory field
+use the original protected host state with the same configuration merge rules.
+The admin `hosts` field describes dispatcher observations; `host_configurations`
+contains the full configured selection. Update completion uses the current
+effective inventory, including after an interrupted update.
+
+`apply` uses the executing CLI as its target, checks required runtime features, and
 leaves a compatible running runtime unchanged regardless of version equality.
 It updates owned MCP/Skill entries through the existing installer. This release's
 runtime requirement is `host-observation-upload-deadline-v1`.

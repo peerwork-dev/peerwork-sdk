@@ -139,6 +139,7 @@ impl Lifecycle {
     async fn call_snapshot(&self,connect:crate::participant_connect::Connect,directory:&std::path::Path,handle_pin:Option<&str>,workspace_pin:Option<&str>,request:AgentRequest)->Result<Value> {
             let identity_handle=match &request {
                 AgentRequest::Connect{request:crate::participant_connect::ConnectInput::Configure(desired)} if !desired.participant.is_empty()=>Some(desired.participant.clone()),
+                AgentRequest::Connect{request:crate::participant_connect::ConnectInput::Intent(desired)} if desired.participant.is_some()=>desired.participant.clone(),
                 AgentRequest::ConnectApprove{participant,..}=>Some(participant.clone()),
                 _=>connect.selected_handle(handle_pin).ok().flatten(),
             };
@@ -147,7 +148,7 @@ impl Lifecycle {
                 if selected!=&identity{return Err(ParticipantError::local("FRONTEND_IDENTITY_PIN_MISMATCH","CONNECT"));}
             }
             if let AgentRequest::Connect{request}=request {
-                let (request,resume)=connect.resolve_input(request)?;
+                let (request,resume)=connect.resolve_input_selected(request,handle_pin,workspace_pin)?;
                 // Selection-only observations remain available while another
                 // setup holds the writer. They cannot sign or create bindings.
                 if workspace_pin.is_some_and(|ws|ws!=request.workspace_id){return Err(ParticipantError::local("FRONTEND_WORKSPACE_PIN_MISMATCH","CONNECT"));}
@@ -187,10 +188,11 @@ impl Lifecycle {
                 let alias=agent_tools::protocol_request_alias(&request).map(str::to_owned);let retry=request.clone();
                 let has_recovery=!profile.recovery_views.is_empty();
                 let selected=self.selected_tools(profile,binding).await?;
+                let selected=selected.for_request(&request);
                 // Cross-namespace mutations consult retained original routes
                 // using this same cached client, before any fresh resolution.
                 if has_recovery {if let Some(original)=selected.original_request(&request).await?{return Ok(original);}}
-                let result=selected.call(request).await;
+                let result=selected.call_observed(request).await;
                 let mut value=match result {
                     Err(error)if agent_tools::refresh_workspace_error(&error).is_some() && crate::participant_connect::Connect::inspect(directory)?.workspace_profile_refreshable(handle_pin,agent_tools::refresh_workspace_error(&error).unwrap())?=>{
                         if let Some(original)=selected.original_request(&retry).await?{return Ok(original);}

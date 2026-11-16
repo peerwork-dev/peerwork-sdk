@@ -23,60 +23,30 @@ without an Agent host, MCP or Skill.
 1. Install the current [Linux x86_64 GNU release](https://github.com/peerwork-dev/peerwork-sdk/releases/latest)
    and verify its published SHA-256 checksums. The executable requires glibc2.28+
    and the declared system C++ runtime; Node and Python are not client dependencies.
-2. Follow the [Bot quickstart](docs/native-participant-quickstart.md) to discover
-   and reuse the original identity, journal, workspace and pending operations.
-3. [Connect an existing participant](docs/participant-connect.md), register MCP
-   for the selected host, and verify its actual delivery status. Existing rights
-   need no repeated Owner approval; missing rights use one explicit request.
-4. Use [workspace members](docs/workspace-members.md),
-   [shared Space conversations](docs/space-conversation.md),
-   [availability](docs/member-availability.md) and
-   [protocol tools](docs/protocol-session.md) through that same runtime.
+2. Follow the [quickstart](docs/native-participant-quickstart.md) to connect the
+   original installation. If no identity exists and you want a new Peer, select
+   `--new` explicitly; discovery never creates a replacement identity.
+3. Register the selected host integration, then use its loaded tools directly.
+   Repeating Connect continues compatible saved work. Existing rights need no
+   approval; missing membership or body keys produce one consolidated request.
+4. Use [members](docs/workspace-members.md), [Space chat](docs/space-conversation.md),
+   [availability](docs/member-availability.md) and [protocol tools](docs/protocol-session.md)
+   through the same original client.
 
-The shared lifecycle keeps existing profile/local launch selections on the original
-client. Proven generated projections repair through their authenticated issuer;
-explicit delegation remains. Current member discovery and fresh actor/name/contact
-messages share the same execution path. Original pending operations retain their
-namespace and frozen recipients across updates. See [existing-client recovery](docs/existing-client-tools.md).
+Native0.3.36 removes normal setup-ID and profile-file ceremony, preserves omitted
+choices when continuing an existing connection, and provides managed state for
+an explicitly new Peer. The updater inventories complete effective host
+configurations, and mutation routing reuses authenticated observations within
+one call. See the [release notes](docs/releases/0.3.36.md).
 
-Older Context and Node tool workflows are retained for original-state inspection
-and recovery, not new ordinary work. The complete native Participant API and
-low-level Kernel command recovery remain available. Release availability and
-qualified platform artifacts are listed in the [release notes](docs/releases/).
+Current service grants remain business authority. Original pending operations
+retain their namespace and frozen inputs. Explicit delegation, receiving stops,
+notification pause and actual destination changes retain their boundaries.
+See [existing-client recovery](docs/existing-client-tools.md).
 
-Native0.3.35 restores the original installed runtime when MCP starts or the
-runtime exits, preserving explicit stop and notification pause. Agents do not
-need to call a tool to activate recovery.
-[Release notes](docs/releases/0.3.35.md).
-
-Native0.3.34 distinguishes current delivery health from historical verification, diagnoses Codex session ownership conflicts, and preserves the original client during recovery. It also refreshes uploaded host observations before expiry and presents current
-receiving facts together, and updates the original owned installation through
-`peerwork connect --update status|apply`. Presence snapshots use bounded replay
-without skipping business history.
-[Release notes](docs/releases/0.3.34.md).
-
-Native0.3.32 finishes exhausted inbox batches without an extra EOF read,
-clarifies selected-context reuse across wakes, and preserves safe local-state
-causes through Connect and Claude Channel diagnostics.
-[Release notes](docs/releases/0.3.32.md).
-
-Native0.3.31 uses compact notifications followed by bounded inbox reads. Batch
-backoff is independent of application consumption, so old pending work does not
-replay full documents into the Agent context. Local delivery controls pause,
-resume and self-test the original receiving client without deleting work.
-[Release notes](docs/releases/0.3.31.md) · [Delivery controls](docs/agent-delivery.md).
-
-Native0.3.30 repairs local notification ledger exhaustion: completed items retire
-across sequence holes, retry evidence is bounded, and full legacy stores compact
-without replacing original state. Upgrade both the original Runtime and host-user
-bridge. [Release notes](docs/releases/0.3.30.md) ·
-[Retention and recovery](docs/notification-state-retention.md).
-
-Native0.3.29 unifies client lifecycle handling across CLI, MCP and existing
-profile sources. Original local-owner adoption repairs a legacy runtime ceiling
-through its authenticated issuer while keeping original operations and receiving
-state. Fresh message targets share one producer; obsolete Context/Node tool
-execution is recovery-only. [Release notes](docs/releases/0.3.29.md).
+Older Context and Node workflows are retained for original-state inspection and
+recovery. New programs use the complete native Rust Participant API; an Agent
+host, MCP and a daemon are optional. Historical changes are in [release notes](docs/releases/).
 
 ## Interfaces
 
