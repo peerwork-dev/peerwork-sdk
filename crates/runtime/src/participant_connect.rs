@@ -1978,6 +1978,9 @@ pub fn cli(args: &[String]) -> Value {
             let mut selected_adapter=selected_adapter;
             if values.get("--install").is_some_and(|host|host=="opencode") || values.contains_key("--opencode-session") || values.contains_key("--opencode-service") {
                 if selected_adapter.is_some(){return Err(local("SELECT_ONE_HOST_ADAPTER"));}
+                if normal && request.workspace_id.is_empty() {
+                    request.workspace_id=connect.resolve_intent(ConnectIntent{participant:Some(handle.clone()),..Default::default()},false)?.0.workspace_id;
+                }
                 selected_adapter=opencode::select(&connect,&handle,&request.workspace_id,&project,&values).await?;
             }
             let mut resume = false;

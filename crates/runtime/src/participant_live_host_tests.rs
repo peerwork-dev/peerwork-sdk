@@ -651,7 +651,13 @@ async fn qualify_native_reply(mcp_only: bool) {
     let worker_profile_path = root.join("worker-agent.json");
     crate::communication_host::write_private(&worker_profile_path,
         &serde_json::to_vec(&early_worker_profile).unwrap()).unwrap();
-    let (mut bridge_lifecycle, adapter, destination) = if mcp_only {
+    let (mut bridge_lifecycle, adapter, destination) = if !mcp_only && host["kind"] == "opencode" {
+        // OpenCode V2 is a direct runtime adapter, not another bridge process.
+        let selected = crate::communication_host::Host::open(host.clone(), tokio::runtime::Handle::current()).unwrap();
+        let destination = HostBinding::new(selected.destination.clone()).unwrap();
+        drop(selected);
+        (None, Some(host), Some(destination.digest))
+    } else if mcp_only {
         (None, None, None)
     } else {
         let worker_identity = KernelIdentity::open(&worker_config.identity_path).unwrap();
@@ -808,6 +814,9 @@ async fn qualify_native_reply(mcp_only: bool) {
         "timing_basis":"one observer monotonic clock; delivery observations are upper bounds, not isolated internal phase spans"});
     write_report(&report, &result);
     println!("LIVE_HOST_READY {}", result);
+    if std::env::var("PEERWORK_LIVE_HOST_START_GATE").as_deref() == Ok("1") {
+        observed_host_state_gate(&root, "observed-host-ready").await;
+    }
     let state_gates = std::env::var("PEERWORK_LIVE_HOST_STATE_GATES").as_deref() == Ok("1");
     if state_gates {
         assert!(!mcp_only && original_bridge_adapter.as_ref().unwrap()["destination"]["host"] == "ANTIGRAVITY_CLI");

@@ -269,7 +269,13 @@ where R:AsyncBufRead+Send+Unpin+'static,W:AsyncWrite+Unpin {
                     "ping"=>write(&mut writer,success(id,json!({}),modern)).await?,
                     "tools/list"=>{
                         if params.get("cursor").is_some_and(|v|!v.is_null()){write(&mut writer,error(id,-32602,"No further tool page")).await?;continue;}
-                        match tools.catalog(){Ok(catalog)=>write(&mut writer,success(id,json!({"tools":catalog}),modern)).await?,Err(e)=>write(&mut writer,error_response(id,&e.code)).await?};
+                        match tools.catalog(){Ok(catalog)=>{
+                            let mut result=json!({"tools":catalog});
+                            // Modern hosts validate catalog cache policy. Never share
+                            // an identity-bound tool catalog across local clients.
+                            if modern {result["ttlMs"]=json!(0);result["cacheScope"]=json!("private");}
+                            write(&mut writer,success(id,result,modern)).await?
+                        },Err(e)=>write(&mut writer,error_response(id,&e.code)).await?};
                     },
                     "tools/call"=>{
                         if calls.len()>=MAX_INFLIGHT{write(&mut writer,error(id,1001,"MCP_INFLIGHT_LIMIT; no new tool admission")).await?;continue;}
@@ -437,6 +443,8 @@ mod tests {
         assert_eq!(list["result"]["tools"].as_array().unwrap().len(), agent_tools::catalog().len());
         assert!(list["result"]["tools"].as_array().unwrap().iter().any(|v| v["name"] == "peerwork_connect"));
         assert_eq!(list["result"]["resultType"], "complete");
+        assert_eq!(list["result"]["ttlMs"], 0);
+        assert_eq!(list["result"]["cacheScope"], "private");
         send(&mut cw, modern(2, "server/discover", json!({}))).await;
         let discovery=receive(&mut cr).await;
         assert_eq!(
