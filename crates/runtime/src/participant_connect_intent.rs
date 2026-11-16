@@ -24,6 +24,17 @@ impl ConnectIntent {
             && self.require_body_keys.is_none_or(|v|v==request.require_body_keys)
             && self.request_membership.is_none_or(|v|v==request.request_membership)
     }
+    fn matches_selected(&self, request:&ConnectRequest, selected:Option<&ConnectRequest>)->bool {
+        self.matches(request) && selected.is_none_or(|current|
+            (self.send.is_some() || request.send==current.send)
+            && (self.receive.is_some() || request.receive==current.receive)
+            && (self.receive_mode.is_some() || request.receive_mode==current.receive_mode)
+            && (self.host.is_some() || request.host==current.host)
+            && (self.require_body_keys.is_some() || request.require_body_keys==current.require_body_keys)
+            && (self.request_membership.is_some() || request.request_membership==current.request_membership)
+            && request.alias==current.alias && request.protocols==current.protocols
+            && request.management==current.management && request.contacts==current.contacts)
+    }
 }
 
 impl Connect {
@@ -54,7 +65,8 @@ impl Connect {
         }.ok_or_else(||local("LOCAL_SELECTION_REQUIRED"))?;
         let workspace=if let Some(workspace)=&intent.workspace_id {workspace.clone()}else{
             let spaces=self.registry.setups.values().filter(|s|s.desired.participant==participant)
-                .map(|s|s.desired.workspace_id.clone()).collect::<std::collections::BTreeSet<_>>();
+                .map(|s|s.desired.workspace_id.clone()).chain(self.saved_codex_workspaces(&participant))
+                .collect::<std::collections::BTreeSet<_>>();
             if spaces.len()!=1{return Err(local("WORKSPACE_SELECTION_REQUIRED"));}
             spaces.into_iter().next().unwrap()
         };
@@ -63,9 +75,10 @@ impl Connect {
             if intent.matches(&request){return Ok((request,true));}
             if self.codex_attachment_pending(&participant,&workspace){return Err(local("CODEX_ATTACHMENT_PENDING_RESUME_ORIGINAL_CHAT"));}
         }
+        let active=self.registry.active_by_scope.get(&format!("{participant}:{workspace}")).and_then(|id|self.registry.setups.get(id));
         let matching_scope=|s:&&Setup|s.desired.participant==participant&&s.desired.workspace_id==workspace;
         let pending=self.registry.setups.values().filter(matching_scope)
-            .filter(|s|s.result["state"]=="PENDING" && intent.matches(&s.desired))
+            .filter(|s|s.result["state"]=="PENDING" && intent.matches_selected(&s.desired,active.map(|s|&s.desired)))
             .collect::<Vec<_>>();
         if pending.len()>1 {
             let mut error=local("CONNECT_PENDING_SELECTION_REQUIRED");error.recovery="SELECT_ORIGINAL_PENDING_CONNECTION".into();
@@ -73,7 +86,6 @@ impl Connect {
             return Err(error);
         }
         if let Some(saved)=pending.first(){return Ok((saved.desired.clone(),true));}
-        let active=self.registry.active_by_scope.get(&format!("{participant}:{workspace}")).and_then(|id|self.registry.setups.get(id));
         if let Some(saved)=active.filter(|s|intent.matches(&s.desired)){return Ok((saved.desired.clone(),true));}
         // Explicit changed fields amend a new intent, never overwrite its old transaction.
         // Omitted fields inherit deliberate restrictions on the selected installation.
@@ -93,6 +105,10 @@ impl Connect {
         Ok((request,false))
     }
 }
+
+#[cfg(test)]
+#[path="participant_connect_intent_native_tests.rs"]
+mod native_tests;
 
 #[cfg(test)]
 mod tests {
@@ -140,9 +156,19 @@ mod tests {
         assert!(!resume);assert!(request.send&&request.receive&&request.require_body_keys&&request.request_membership);
         let first=saved(&mut connect,"first",false,true,"PENDING");
         let (resolved,resume)=connect.resolve_input(serde_json::from_value(json!({})).unwrap()).unwrap();assert!(resume);assert!(resolved==first);
-        saved(&mut connect,"second",true,true,"PENDING");
+        saved(&mut connect,"second",false,true,"PENDING");
         let error=connect.resolve_input(serde_json::from_value(json!({})).unwrap()).err().unwrap();
         assert_eq!(error.code,"CONNECT_PENDING_SELECTION_REQUIRED");assert_eq!(error.details.unwrap()["candidates"].as_array().unwrap().len(),2);
+    }
+    #[test]
+    fn old_pending_objective_does_not_widen_current_deliberate_selection() {
+        let root=crate::test_support::protected_test_dir();let mut connect=selected(root.path());
+        saved(&mut connect,"historical-broad",true,true,"PENDING");
+        let current=saved(&mut connect,"selected-tools-only",false,false,"LOCAL_CONFIGURED");
+        let (request,resume)=connect.resolve_input(serde_json::from_value(json!({})).unwrap()).unwrap();
+        assert!(resume);assert!(request==current);
+        let (changed,resume)=connect.resolve_input(serde_json::from_value(json!({"send":true})).unwrap()).unwrap();
+        assert!(!resume);assert!(changed.send);assert!(!changed.receive);assert!(!changed.require_body_keys);
     }
     #[test]
     fn original_identity_and_frontend_scope_pins_are_preserved() {

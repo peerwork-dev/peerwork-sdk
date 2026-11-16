@@ -146,9 +146,11 @@ async fn cached_observations_do_not_authorize_invocation_and_errors_are_not_nega
     assert!(tools.original_general_operation("saved", None, None).await.unwrap().is_some());
     worker.revoke_local();
     assert_eq!(tools.invoke_client(&tools.client, request, 0).await.unwrap_err().code, "LOCAL_CLIENT_REVOKED");
-    for _ in 0..2 {
-        assert_eq!(tools.original_general_operation("saved", None, None).await.err().unwrap().code, "LOCAL_CLIENT_REVOKED");
-    }
-    assert_eq!(reads(&tools), 3, "both revoked observations reach the original engine");
+    // Original local operation inspection deliberately remains available after
+    // revocation. A stopped engine supplies a genuine observation failure.
     owner.close().await.unwrap();
+    for _ in 0..2 {
+        assert_eq!(tools.original_general_operation("saved", None, None).await.err().unwrap().code, "ENGINE_UNAVAILABLE");
+    }
+    assert_eq!(reads(&tools), 3, "both failed observations reach the original engine");
 }

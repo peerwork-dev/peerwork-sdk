@@ -110,11 +110,16 @@ fn validate_committed(job: &Attachment, committed: &RuntimeConfig, outcome: &Val
 }
 
 impl Connect {
+    pub(super) fn saved_codex_workspaces(&self,participant:&str)->Vec<String> {
+        self.registry.codex_attachments.values().filter(|job|!job.aborted && job.desired.participant==participant)
+            .map(|job|job.desired.workspace_id.clone()).collect()
+    }
     pub(super) fn codex_original_invocation(&self,participant:&str,workspace:&str)->Option<ConnectRequest> {
         self.registry.codex_attachments.get(&format!("{participant}:{workspace}")).map(|job|job.invocation.clone())
     }
     pub(super) fn saved_codex_intent(&self,participant:&str,workspace:&str)->Option<ConnectRequest> {
         self.registry.codex_attachments.get(&format!("{participant}:{workspace}"))
+            .filter(|job|self.registry.active_by_scope.get(&format!("{participant}:{workspace}")).is_none_or(|active|active==&job.setup_id || active==&job.desired.setup_id))
             .filter(|job|!job.aborted && (!job.finished || self.registry.setups.get(&job.desired.setup_id).is_none_or(|s|s.result["state"]=="PENDING")))
             .map(|job|job.desired.clone())
     }
@@ -591,11 +596,21 @@ mod tests {
         let before=std::fs::read(root.path().join("connect.state")).unwrap();
         let input=serde_json::from_value(json!({"workspace_id":workspace})).unwrap();
         let (resolved,resume)=connect.resolve_input(input).unwrap();assert!(resume);assert!(resolved==desired);assert!(!resolved.send);
+        for input in [json!({}),json!({"resume_setup_id":desired.setup_id})] {
+            let (saved,resume)=connect.resolve_input(serde_json::from_value(input).unwrap()).unwrap();
+            assert!(resume);assert!(saved==desired);
+        }
         assert_eq!(connect.resume_selected(&resolved.setup_id,Some("another-peer"),None).await.unwrap_err().code,"FRONTEND_IDENTITY_PIN_MISMATCH");
         // Missing original lifecycle evidence is an attachment blocker. Generic
         // setup dispatch would instead say SETUP_NOT_FOUND or create another job.
         assert_eq!(connect.resume_selected(&resolved.setup_id,Some("peer"),Some(&workspace)).await.unwrap_err().code,"ORIGINAL_RUNTIME_CONFIG_REQUIRED");
         assert!(connect.registry.setups.is_empty());assert_eq!(std::fs::read(root.path().join("connect.state")).unwrap(),before);
+        let current:ConnectRequest=serde_json::from_value(json!({"setup_id":"current-tools-only","participant":"peer","workspace_id":workspace,"send":false,"receive":false})).unwrap();
+        connect.begin_setup(&current,connect.registry.participants["peer"].clone(),true,None).unwrap();
+        connect.registry.setups.get_mut(&current.setup_id).unwrap().result["state"]=json!("LOCAL_CONFIGURED");
+        connect.registry.active_by_scope.insert(format!("peer:{workspace}"),current.setup_id.clone());
+        let (resolved,resume)=connect.resolve_input(serde_json::from_value(json!({})).unwrap()).unwrap();
+        assert!(resume);assert!(resolved==current,"historical attachment widened current tools-only selection");
     }
     #[test]
     fn explicit_chat_selection_does_not_guess_latest_or_confuse_parent_and_child() {

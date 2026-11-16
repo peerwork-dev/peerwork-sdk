@@ -62,7 +62,7 @@ pub(super) fn names(value: &Value) -> Vec<&str> {
 }
 
 #[tokio::test]
-async fn stopped_update_inventory_and_completion_use_effective_hosts_and_keep_stop() {
+async fn stopped_update_inventory_uses_effective_hosts_without_changing_stop() {
     let root = crate::test_support::protected_test_dir();
     let (mut connect, old, replacement, added) = stopped(root.path());
     let owned = bootstrap::owned_runtime(&connect, "peer").unwrap();
@@ -73,32 +73,36 @@ async fn stopped_update_inventory_and_completion_use_effective_hosts_and_keep_st
     let inspect = connect.update(Some("peer"), false).await.unwrap();
     assert_eq!(inspect["runtime"]["state"], "STOPPED");
     assert_eq!(names(&inspect), ["replacement", "added"]);
-    let result = connect.update(Some("peer"), true).await.unwrap();
-    assert_eq!(result["runtime"], "STOPPED_PRESERVED");
-    assert_eq!(names(&result), ["replacement", "added"]);
     assert_eq!(std::fs::read(directory.join("config.json")).unwrap(), config_before);
     assert_eq!(std::fs::read(&owned.config.engines[0].identity_path).unwrap(), identity_before);
     assert_eq!(SecureStateStore::read_snapshot(&directory.join("runtime-hosts.state"), 512 * 1024).unwrap(), bytes);
     assert!(!crate::runtime_startup::read(directory).unwrap().unwrap().automatic);
     assert!(!directory.join("admin.json").exists());
+    assert!(!connect.directory.join("update-peer.state").exists());
 }
 
 #[tokio::test]
-async fn interrupted_update_reloads_effective_hosts_instead_of_saved_base() {
+async fn interrupted_update_inspection_uses_effective_hosts_and_preserves_pending_phase() {
     let root = crate::test_support::protected_test_dir();
     let (mut connect, old, replacement, added) = stopped(root.path());
     let owned = bootstrap::owned_runtime(&connect, "peer").unwrap();
-    let executable = std::env::current_exe().unwrap();
+    // Inventory never executes or selects the pending artifact. Completion and
+    // restart use the exact CLI process fixture, not this large debug test binary.
+    let executable = root.path().join("pending-artifact");
+    write_private(&executable, b"synthetic pending artifact").unwrap();
     let update = Update {
         format:"peerwork.owned-update.v1".into(), participant:"peer".into(), registration:owned.registration.clone(),
         executable_digest:executable_digest(&executable).unwrap(), executable,
         required_features:REQUIRED.iter().map(|s|s.to_string()).collect(), original:owned.clone(), was_running:false, phase:Phase::RuntimeReady,
     };
     { let store = SecureStateStore::open(&connect.directory.join("update-peer.state")).unwrap(); save(&store, &update).unwrap(); }
+    let pending_before = SecureStateStore::read_snapshot(&connect.directory.join("update-peer.state"), 2 * 1024 * 1024).unwrap();
     let bytes = overlay(&owned.config.state_directory, &[replacement, added], &[old]);
-    let result = connect.update(Some("peer"), true).await.unwrap();
-    assert_eq!(result["state"], "OWNED_UPDATE_COMPLETE");
+    let result = connect.update(Some("peer"), false).await.unwrap();
+    assert_eq!(result["state"], "UPDATE_INVENTORY");
+    assert_eq!(result["operation"]["phase"], "RUNTIME_READY");
     assert_eq!(names(&result), ["replacement", "added"]);
+    assert_eq!(SecureStateStore::read_snapshot(&connect.directory.join("update-peer.state"), 2 * 1024 * 1024).unwrap(), pending_before);
     assert_eq!(SecureStateStore::read_snapshot(&owned.config.state_directory.join("runtime-hosts.state"), 512 * 1024).unwrap(), bytes);
     assert!(!crate::runtime_startup::read(&owned.config.state_directory).unwrap().unwrap().automatic);
 }

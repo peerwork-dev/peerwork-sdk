@@ -1786,7 +1786,7 @@ pub fn cli(args: &[String]) -> Value {
             if let Some((directory,participant))=discovery::project_target(&project)? {
                 installed_directory=Some(directory);
                 if !participant.is_empty() && !values.contains_key("--participant") && !values.contains_key("--new") {values.insert("--participant".into(),participant);}
-            } else {
+            } else if !values.contains_key("--new") {
                 let choices=discovery::project_bindings(&project,values.get("--workspace").map(String::as_str))?;
                 let selected:Vec<_>=choices.iter().filter(|choice|values.get("--participant").is_none_or(|wanted|
                     wanted==&choice.participant || choice.summary["handle"]==*wanted)).collect();
@@ -1820,7 +1820,7 @@ pub fn cli(args: &[String]) -> Value {
         }
         if let Some(id)=values.get("--resume"){
             if values.keys().any(|k|!["--resume","--local","--project","--participant","--install"].contains(&k.as_str())){return Err(local("SETUP_RESUME_USES_SAVED_REQUEST_ONLY"));}
-            let saved=connect.registry.setups.get(id).ok_or_else(||local("SETUP_NOT_FOUND"))?.desired.clone();
+            let (saved,_)=connect.resolve_input(ConnectInput::Resume(ResumeSetup{resume_setup_id:id.clone()}))?;
             let runtime=tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().map_err(|_|local("EXECUTOR_FAILED"))?;
             let mut result=runtime.block_on(connect.resume_selected(id,values.get("--participant").map(String::as_str),None))?;
             if let Some(host)=values.get("--install"){result["integration"]=connect.install(&saved.participant,&saved.workspace_id,Installation{host:host.clone(),project,executable:std::env::current_exe().map_err(|_|local("EXECUTABLE_UNAVAILABLE"))?})?;}
