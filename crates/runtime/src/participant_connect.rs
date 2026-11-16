@@ -21,6 +21,8 @@ mod approval;
 mod install;
 #[path = "participant_connect_update.rs"]
 mod update;
+#[path = "participant_connect_startup.rs"]
+mod startup;
 pub use approval::AuthorizationRequest;
 pub use approval::deserialize_input as deserialize_authorization_input;
 pub use install::Installation;
@@ -28,7 +30,7 @@ pub use install::Installation;
 mod host;
 pub use host::{HostInvocation, HostSelection};
 #[path = "participant_connect_bootstrap.rs"]
-mod bootstrap;
+pub(crate) mod bootstrap;
 pub use bootstrap::RuntimeSelection;
 #[path="participant_connect_views.rs"]
 mod protocol_views;

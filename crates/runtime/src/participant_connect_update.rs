@@ -3,7 +3,7 @@
 use super::*;
 use std::io::Read;
 
-const REQUIRED: &[&str] = &["host-observation-upload-deadline-v1","current-host-delivery-health-v1"];
+const REQUIRED: &[&str] = &["host-observation-upload-deadline-v1","current-host-delivery-health-v1","automatic-runtime-startup-v1"];
 
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -44,6 +44,22 @@ fn executable_digest(path: &Path) -> Result<String> {
         return Err(local("UPDATE_EXECUTABLE_INVALID"));
     }
     Ok(sha256_hex(&bytes))
+}
+pub(super) fn startup_update(connect: &Connect, participant: &str) -> Result<Option<PathBuf>> {
+    let path = connect.directory.join(format!("update-{participant}.state"));
+    if !path.exists() { return Ok(None); }
+    let update: Update = serde_json::from_slice(&SecureStateStore::read_snapshot(&path, 2 * 1024 * 1024)
+        .map_err(|_| local("UPDATE_STATE_UNAVAILABLE"))?).map_err(|_| local("UPDATE_STATE_INVALID"))?;
+    if update.phase == Phase::Complete { return Ok(None); }
+    if update.format != "peerwork.owned-update.v1" || update.participant != participant
+        || connect.registry.participants.get(participant) != Some(&update.registration)
+        || !update.executable.is_absolute() || executable_digest(&update.executable)? != update.executable_digest {
+        return Err(local("UPDATE_RESUME_ORIGINAL_ARTIFACT_AND_SELECTION"));
+    }
+    // A live updater owns this existing operation fence. Do not start another
+    // observer process while that operation is still progressing.
+    if SecureStateStore::open(&path).is_err() { return Err(local("UPDATE_ALREADY_OWNED_OR_UNSAFE")); }
+    Ok(Some(update.executable))
 }
 fn save(store: &SecureStateStore, update: &Update) -> Result<()> {
     store
@@ -163,6 +179,7 @@ impl Connect {
             );
         };
         let digest = executable_digest(&executable)?;
+        let _maintenance = crate::runtime_startup::recovery_fence(&owned.config.state_directory)?;
         let store =
             SecureStateStore::open(&path).map_err(|_| local("UPDATE_ALREADY_OWNED_OR_UNSAFE"))?;
         let previous: Option<Update> = store

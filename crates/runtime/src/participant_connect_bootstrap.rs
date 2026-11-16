@@ -420,6 +420,7 @@ async fn launch_at(config: RuntimeConfig, selected: Registration, config_path: P
         use std::os::windows::process::CommandExt;
         command.creation_flags(0x00000200 | 0x00000008);
     }
+    let intent = crate::runtime_startup::launch_guard(&runtime_dir)?;
     owner
         .write_exact(
             &serde_json::to_vec(&Launch {
@@ -457,6 +458,7 @@ async fn launch_at(config: RuntimeConfig, selected: Registration, config_path: P
             &serde_json::to_vec(&launch).map_err(|_| local("RUNTIME_LAUNCH_RECOVERY_REQUIRED"))?,
         )
         .map_err(|_| local("RUNTIME_LAUNCH_RECOVERY_REQUIRED"))?;
+    drop(intent);
     for _ in 0..50 {
         if RuntimeClient::connect(
             selected.endpoint_path.clone(),
@@ -482,7 +484,7 @@ async fn launch_at(config: RuntimeConfig, selected: Registration, config_path: P
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct OwnedRuntime {
+pub(crate) struct OwnedRuntime {
     pub config: RuntimeConfig,
     pub registration: Registration,
     launch: Option<Launch>,
@@ -502,7 +504,7 @@ impl OwnedRuntime {
     }
     /// A free writer fence plus a dead recorded child proves stopped. An IPC
     /// error alone never grants permission to launch another writer.
-    pub(super) fn running(&self) -> Result<bool> {
+    pub(crate) fn running(&self) -> Result<bool> {
         if serde_json::to_value(self.load()?).ok()!=serde_json::to_value(&self.config).ok(){return Err(local("ORIGINAL_RUNTIME_CONFIG_CHANGED"));}
         let launch=self.launch.as_ref().ok_or_else(||local("EXTERNAL_RUNTIME_LIFECYCLE_REQUIRED"))?;
         if alive(launch.pid.ok_or_else(||local("RUNTIME_LAUNCH_RECOVERY_REQUIRED"))?,launch.process_token.as_deref())? {return Ok(true);}
@@ -521,7 +523,12 @@ impl OwnedRuntime {
         // Management authority comes from the selected authenticated admin.
         // The original ownership fence, not process discovery, proves release.
         let admin=self.config.state_directory.join("admin.json");
-        let result=crate::communication_runtime::call(&admin,json!({"method":"stop"})).await;
+        let mut result=crate::communication_runtime::call(&admin,json!({"method":"stop","maintenance":true})).await;
+        // An authenticated old runtime rejects the new field before effect.
+        // Its stop implementation cannot change the new startup intent.
+        if result.as_ref().is_ok_and(|v|v["ok"]==false && v["error"]["code"]=="ADMIN_COMMAND_INVALID") {
+            result=crate::communication_runtime::call(&admin,json!({"method":"stop"})).await;
+        }
         for _ in 0..100 {
             if let Ok(_fence)=SecureStateStore::open(&self.config.state_directory.join("runtime.state")) {return Ok(());}
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;

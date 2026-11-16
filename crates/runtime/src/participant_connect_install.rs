@@ -355,13 +355,13 @@ mod tests {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Installed {
-    participant: String,
+    pub(super) participant: String,
     workspace_id: String,
     spec: Installation,
     name: String,
     entry: Value,
     skill_hash: String,
-    committed: bool,
+    pub(super) committed: bool,
     #[serde(default)]
     entry_owned: bool,
     #[serde(default)]
@@ -737,6 +737,7 @@ impl Connect {
         let mut result=json!({"state":"HOST_INTEGRATION_INSTALLED","host":spec.host,"server_name":name,"participant":participant,"workspace_id":workspace,
             "mcp_configuration":config,"skill":skill,"current_session_tools":"NOT_ATTESTED","host_delivery":"NOT_ATTESTED",
             "next_action":"REFRESH_HOST_AND_CALL_PEERWORK_CONTEXT","identity_files_copied":false});
+        result["automatic_startup"] = self.enroll_startup(participant)?;
         if spec.host=="claude" {
             result["channel"]=json!({"state":"ACTIVATION_REQUIRED","maturity":"RESEARCH_PREVIEW","start_argv":["claude","--dangerously-load-development-channels",format!("server:{name}")],"host_acceptance":"NOT_ATTESTED","next_action":"ENABLE_CHANNEL_IN_CLAUDE_AND_VERIFY_A_REAL_MESSAGE"});
         }

@@ -4,7 +4,10 @@ use crate::participant::{ParticipantError, Result};
 use serde_json::{json, Value};
 use tokio::sync::{OnceCell,Mutex};
 use std::sync::Arc;
+#[path = "agent_startup.rs"]
+mod startup;
 pub(crate) struct Lifecycle {
+    startup: startup::State,
     pub(crate) profile: Option<AgentProfile>,
     pub(crate) local: Option<std::path::PathBuf>,
     pub(crate) handle: Option<String>,
@@ -17,13 +20,13 @@ pub(crate) struct Lifecycle {
 }
 impl Lifecycle {
     pub(crate) fn profile(profile:AgentProfile)->Self {
-        Self{profile:Some(profile),local:None,handle:None,workspace:None,client:OnceCell::new(),selected:Mutex::new(None),source_guard:Mutex::new(None),source_directory:std::sync::Mutex::new(None),identity:std::sync::OnceLock::new()}
+        Self{startup:startup::State::default(),profile:Some(profile),local:None,handle:None,workspace:None,client:OnceCell::new(),selected:Mutex::new(None),source_guard:Mutex::new(None),source_directory:std::sync::Mutex::new(None),identity:std::sync::OnceLock::new()}
     }
     pub(crate) fn local(directory:std::path::PathBuf,handle:Option<String>,workspace:Option<String>)->Self {
-        Self{profile:None,local:Some(directory),handle,workspace,client:OnceCell::new(),selected:Mutex::new(None),source_guard:Mutex::new(None),source_directory:std::sync::Mutex::new(None),identity:std::sync::OnceLock::new()}
+        Self{startup:startup::State::default(),profile:None,local:Some(directory),handle,workspace,client:OnceCell::new(),selected:Mutex::new(None),source_guard:Mutex::new(None),source_directory:std::sync::Mutex::new(None),identity:std::sync::OnceLock::new()}
     }
     pub(crate) fn attached(tools:AgentTools)->Self {
-        Self{profile:None,local:None,handle:None,workspace:None,client:OnceCell::new_with(Some(tools)),selected:Mutex::new(None),source_guard:Mutex::new(None),source_directory:std::sync::Mutex::new(None),identity:std::sync::OnceLock::new()}
+        Self{startup:startup::State::default(),profile:None,local:None,handle:None,workspace:None,client:OnceCell::new_with(Some(tools)),selected:Mutex::new(None),source_guard:Mutex::new(None),source_directory:std::sync::Mutex::new(None),identity:std::sync::OnceLock::new()}
     }
     async fn selected_tools(&self,profile:AgentProfile,binding:Option<Value>)->Result<Arc<AgentTools>> {
         let key=serde_json::to_string(&json!([profile,binding])).map_err(|_|ParticipantError::local("AGENT_PROFILE_INVALID","CONNECT"))?;
@@ -59,6 +62,23 @@ impl Lifecycle {
         Ok(value["allowed"]==true)
     }
     pub(crate) async fn call(&self,request:AgentRequest)->Result<Value> {
+        let internal = matches!(&request, AgentRequest::NotificationPoll{..} | AgentRequest::NotificationValidate{..});
+        if matches!(&request, AgentRequest::Delivery{mode,..} if mode=="resume") {
+            self.resume_startup().await?;
+        }
+        let observe = matches!(&request, AgentRequest::Context | AgentRequest::Delivery{..});
+        let result = self.call_inner(request).await;
+        if internal { return result; }
+        match (result, self.startup.snapshot(observe)) {
+            (Ok(mut value), Some(startup)) => { value["local_startup"] = startup; Ok(value) },
+            (Err(mut error), Some(startup)) => {
+                error.details.get_or_insert_with(|| json!({}))["local_startup"] = startup;
+                Err(error)
+            },
+            (result, _) => result,
+        }
+    }
+    async fn call_inner(&self,request:AgentRequest)->Result<Value> {
         if let Some(profile)=&self.profile {
             if let Some((directory,connect,handle))=self.source_selection(profile)? {
                 self.verify_source(&connect,profile).await?;

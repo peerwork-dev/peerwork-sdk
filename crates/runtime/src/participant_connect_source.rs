@@ -158,7 +158,7 @@ impl Connect {
         if let Some(owned)=self.registry.profile_upgrades.get(&id).cloned() {
             if owned.path()!=config_path{return Err(local("ORIGINAL_RUNTIME_CONFIG_CHANGED"));}
             let ready=RuntimeClient::connect(profile.endpoint_path.clone(),&profile.expected_origin,&profile.expected_actor).await;
-            if ready.is_err(){owned.stop().await?;owned.restart(&owned.config).await?;}
+            if ready.is_err(){let _maintenance=crate::runtime_startup::recovery_fence(&owned.config.state_directory)?;owned.stop().await?;owned.restart(&owned.config).await?;}
         }
         let handle=self.adopt_profile(profile,None,false).await?;
         let config:crate::communication_runtime::RuntimeConfig=serde_json::from_value(crate::communication_store::private_json(&config_path,65536)
@@ -171,6 +171,7 @@ impl Connect {
             // Persist the original config before stopping: retries never choose
             // another engine or synthesize an empty journal after interruption.
             self.registry.profile_upgrades.insert(id.clone(),owned.clone());self.save()?;
+            let _maintenance=crate::runtime_startup::recovery_fence(&owned.config.state_directory)?;
             owned.stop().await?;owned.restart(&owned.config).await?;
         }
         let source=self.original_client(&handle).await?;

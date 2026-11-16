@@ -407,6 +407,7 @@ impl Connect {
     }
     async fn resume_codex_with_recovery(&mut self,key:&str,mut job:Attachment,recovery:Option<crate::participant_rebind::HostRebindRecoveryRequest>)->Result<Value>{
         if job.aborted{return Ok(Self::attachment_aborted(&job));}
+        let _maintenance = job.owned.as_ref().map(|owned|crate::runtime_startup::recovery_fence(&owned.config.state_directory)).transpose()?;
         let mut runtime_restarted=false;
         if let Some(admin)=&job.resident_admin {
             self.adopt(&job.invocation.participant).await?;

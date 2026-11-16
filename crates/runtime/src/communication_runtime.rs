@@ -426,6 +426,8 @@ impl Runtime {
             struct AdminRequest {
                 method: String,
                 #[serde(default)]
+                maintenance: bool,
+                #[serde(default)]
                 config: Option<crate::participant_dispatch::HostConfig>,
                 #[serde(default)]
                 expected_actor: Option<String>,
@@ -446,13 +448,16 @@ impl Runtime {
                 Ok(request)if request.method=="host_rebind"&&request.config.is_none()&&request.rebind.is_some()=>{
                     self.start_resident_rebind(request.rebind.unwrap(),request.recovery).await
                 },
-                Ok(request)if request.method=="stop"&&request.config.is_none()&&request.rebind.is_none()&&request.recovery.is_none()=>Ok(json!({"state":"STOPPING"})),
+                Ok(request)if request.method=="stop"&&request.config.is_none()&&request.rebind.is_none()&&request.recovery.is_none()=>{
+                    if !request.maintenance {crate::runtime_startup::disable(&self.directory)?;}
+                    Ok(json!({"state":"STOPPING"}))
+                },
                 Ok(request)if request.method=="status"&&request.config.is_none()&&request.rebind.is_none()&&request.recovery.is_none()=>{
                     let mut engines=Vec::new();for (name,owner) in &self.owners{engines.push(json!({"name":name,"actor_id":owner.actor_id(),"origin":owner.origin(),"state_binding":owner.state_binding(),"engine_digest":self.engine_bindings.get(owner.state_binding()),"metrics":owner.metrics().await?}));}
                     let (clients,generations)=self.client_snapshot()?;
                     let mut receivers=Vec::new();
                     for (name,client) in clients {let bindings=client.watch_bindings().await?;if !bindings.is_empty(){receivers.push(json!({"client":name,"client_generation":generations.get(&name),"actor_id":client.actor_id(),"origin":client.origin(),"state_binding":client.state_binding(),"engine_digest":self.engine_bindings.get(client.state_binding()),"bindings":bindings}));}}
-                    Ok(json!({"state":"LOCAL_READY","sdk_version":env!("CARGO_PKG_VERSION"),"optional_features":["resident-scope-rebind-v1","source-client-adoption-v1","host-observation-upload-deadline-v1","current-delivery-observation-v1","current-host-delivery-health-v1"],"engines":engines,"receivers":receivers,"hosts":self.hosts.lock().await.statuses(),"pending_client_revocations":self.pending_revocation_status()?,"network_or_host_readiness":"NOT_ATTESTED"}))
+                    Ok(json!({"state":"LOCAL_READY","sdk_version":env!("CARGO_PKG_VERSION"),"optional_features":["resident-scope-rebind-v1","source-client-adoption-v1","host-observation-upload-deadline-v1","current-delivery-observation-v1","current-host-delivery-health-v1","automatic-runtime-startup-v1"],"engines":engines,"receivers":receivers,"hosts":self.hosts.lock().await.statuses(),"pending_client_revocations":self.pending_revocation_status()?,"network_or_host_readiness":"NOT_ATTESTED"}))
                 },
                 Ok(request)if request.method=="host_ensure"&&request.config.is_some()&&request.rebind.is_none()&&request.recovery.is_none()=>{
                     let (clients,generations)=self.client_snapshot()?;
@@ -903,6 +908,9 @@ pub async fn serve(
         .map_err(|_| local("RUNTIME_STATE_NOT_PRIVATE"))?;
     let _lock = SecureStateStore::open(&config.state_directory.join("runtime.state"))
         .map_err(|_| local("RUNTIME_ALREADY_OWNED"))?;
+    if crate::runtime_startup::read(&config.state_directory)?.is_some_and(|p| !p.automatic) {
+        return Err(local("RUNTIME_AUTOMATIC_START_DISABLED"));
+    }
     let mut owners = BTreeMap::new();
     let mut sessions = Vec::new();
     let mut names = BTreeSet::new();
@@ -1047,9 +1055,18 @@ pub async fn serve(
     let notification_job=tokio::spawn(runtime.notifications.clone().maintain(runtime.cancel.clone()));
     let mut connections = JoinSet::new();
     let mut control_connections=JoinSet::new();
+    let mut intent_check = tokio::time::interval(Duration::from_secs(3));
     loop {
         tokio::select! {
             _=runtime.cancel.cancelled()=>break,
+            _=intent_check.tick()=>{
+                match crate::runtime_startup::read(&runtime.directory) {
+                    Ok(Some(policy)) if !policy.automatic => runtime.cancel.cancel(),
+                    Ok(Some(policy)) if !policy.qualified => { let _ = crate::runtime_startup::qualify(&runtime.directory); },
+                    Err(_) => runtime.cancel.cancel(),
+                    _ => {},
+                }
+            },
             _=connections.join_next(),if !connections.is_empty()=>{},
             _=control_connections.join_next(),if !control_connections.is_empty()=>{},
             incoming=control_listener.accept(),if control_connections.len()<4=>{
@@ -1206,6 +1223,9 @@ pub fn cli(args: &[String]) -> Value {
             [verb, path, method]
                 if verb == "admin" && matches!(method.as_str(), "status" | "stop") =>
             {
+                if method == "stop" && Path::new(path).file_name().is_some_and(|name| name == "admin.json") {
+                    if let Some(directory) = Path::new(path).parent() { crate::runtime_startup::disable(directory)?; }
+                }
                 executor.block_on(call(Path::new(path), json!({"method":method})))
             }
             _ => Err(local("RUNTIME_ARGUMENT_INVALID")),

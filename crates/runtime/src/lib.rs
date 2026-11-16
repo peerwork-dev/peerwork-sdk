@@ -137,6 +137,7 @@ mod process_identity;
 mod participant_client_tools;
 mod agent_client;
 mod agent_lifecycle;
+mod runtime_startup;
 mod agent_delivery_status;
 mod delivery_health;
 mod host_recovery_policy;
