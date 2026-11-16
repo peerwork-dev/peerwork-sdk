@@ -43,9 +43,9 @@ impl Fixture {
     async fn initial(origin:&str,previous:Option<&Path>)->Self {
         let candidate = PathBuf::from(std::env::var_os("PEERWORK_UPDATE_TEST_BINARY").expect("set exact candidate CLI"));
         let root = crate::test_support::protected_test_dir();
-        let binary = root.path().join("peerwork"); std::fs::copy(&candidate, &binary).unwrap();
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+        // Installation requires a persistent executable. Reuse the caller's
+        // frozen candidate; keep only synthetic identity/state in the temp root.
+        let binary=std::fs::canonicalize(&candidate).unwrap();
         let identity_path = root.path().join("identity");
         let identity = KernelIdentity::create(&identity_path).unwrap();
         let directory = root.path().join("registry");

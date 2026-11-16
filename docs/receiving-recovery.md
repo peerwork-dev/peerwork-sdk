@@ -24,6 +24,10 @@ kind, diagnostic ID and available UID/mode observations. The exact component
 path is recorded under the same ID in the original MCP's owner-local stderr;
 the ordinary owner CLI also returns that path in `error.local_diagnostic`.
 Credentials, endpoint contents and private message bodies are never included.
+The MCP protocol and tool catalog remain available during a path fault; the
+catalog's `peerwork/local_error` metadata and individual tool calls carry the
+blocker. A failed component does not create another installation or prevent
+the original connection from reporting its own diagnosis.
 
 | Code | Meaning |
 | --- | --- |

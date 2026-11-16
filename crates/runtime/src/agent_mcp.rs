@@ -153,10 +153,8 @@ where R:AsyncBufRead+Send+Unpin+'static,W:AsyncWrite+Unpin {
 }
 pub async fn serve_local_selected<R,W>(directory:std::path::PathBuf,handle:Option<String>,workspace:Option<String>,reader:R,writer:W)->Result<()>
 where R:AsyncBufRead+Send+Unpin+'static,W:AsyncWrite+Unpin {
-    // The directory itself was explicitly selected by the host owner. Missing
-    // identity handles expose discovery only, never secret scanning/bootstrap.
-    if directory.exists(){crate::participant_connect::Connect::inspect(&directory)?;}
-    else{drop(crate::participant_connect::Connect::open(&directory)?);}
+    // Keep the protocol available to diagnose the selected original component.
+    // The shared lifecycle validates it before any private work or mutation.
     serve_tools(Tools::local(directory,handle,workspace),reader,writer).await
 }
 /// Claude Code's opt-in Channels transport over the same native tools and inbox.
@@ -168,7 +166,6 @@ where R:AsyncBufRead+Send+Unpin+'static,W:AsyncWrite+Unpin {
 }
 pub async fn serve_claude_local<R,W>(directory:std::path::PathBuf,handle:Option<String>,workspace:Option<String>,reader:R,writer:W)->Result<()>
 where R:AsyncBufRead+Send+Unpin+'static,W:AsyncWrite+Unpin {
-    if directory.exists(){crate::participant_connect::Connect::inspect(&directory)?;}else{drop(crate::participant_connect::Connect::open(&directory)?);}
     serve_tools_mode(Tools::local(directory,handle,workspace),reader,writer,true).await
 }
 async fn serve_tools<R,W>(tools:Tools,reader:R,writer:W)->Result<()>
@@ -277,8 +274,12 @@ where R:AsyncBufRead+Send+Unpin+'static,W:AsyncWrite+Unpin {
                             write(&mut writer,success(id,result,modern)).await?
                         },Err(e)=>{
                             if let Some(diagnostic)=&e.local_diagnostic{eprintln!("Peerwork local diagnostic: {diagnostic}");}
-                            let mut response=error_response(id,&e.code);response["error"]["data"]=json!({"error":e});
-                            write(&mut writer,response).await?
+                            // Catalog availability grants no local or remote
+                            // authority. Calls still validate the original
+                            // component; diagnostics stay usable during repair.
+                            let mut result=json!({"tools":agent_tools::catalog(),"_meta":{"peerwork/local_error":e}});
+                            if modern{result["ttlMs"]=json!(0);result["cacheScope"]=json!("private");}
+                            write(&mut writer,success(id,result,modern)).await?
                         }};
                     },
                     "tools/call"=>{
@@ -488,6 +489,30 @@ mod tests {
         drop(cw);
         drop(cr);
         task.await.unwrap().unwrap();
+    }
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn original_path_failure_keeps_catalog_diagnostic_and_same_mcp_recovery_available() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp=crate::test_support::protected_test_dir();let directory=temp.path().join("original");
+        std::fs::create_dir(&directory).unwrap();std::fs::set_permissions(&directory,std::fs::Permissions::from_mode(0o700)).unwrap();
+        let path=directory.join("connect.state");let wire=crate::secure_state::SecureStateStore::snapshot_wire(br#"{"participants":{},"setups":{},"active":null}"#).unwrap();
+        std::fs::write(&path,&wire).unwrap();std::fs::set_permissions(&path,std::fs::Permissions::from_mode(0o644)).unwrap();
+        let (server,client)=tokio::io::duplex(65536);let(sr,sw)=tokio::io::split(server);let(cr,mut cw)=tokio::io::split(client);let mut cr=BufReader::new(cr);
+        let task=tokio::spawn(serve_local(directory,BufReader::new(sr),sw));
+        send(&mut cw,modern(1,"tools/list",json!({}))).await;
+        let list=receive(&mut cr).await;
+        assert!(list["result"]["tools"].as_array().unwrap().iter().any(|tool|tool["name"]=="peerwork_context"));
+        assert_eq!(list["result"]["_meta"]["peerwork/local_error"]["details"]["local_diagnostic"]["reason"],"FILE_PERMISSIONS");
+        assert!(!list.to_string().contains(temp.path().to_str().unwrap()));
+        send(&mut cw,modern(2,"tools/call",json!({"name":"peerwork_context","arguments":{}}))).await;
+        let denied=receive(&mut cr).await;assert_eq!(denied["result"]["isError"],true);
+        assert_eq!(denied["result"]["structuredContent"]["error"]["effect_certainty"],"NOT_SUBMITTED");
+        std::fs::set_permissions(&path,std::fs::Permissions::from_mode(0o600)).unwrap();
+        send(&mut cw,modern(3,"tools/call",json!({"name":"peerwork_context","arguments":{}}))).await;
+        let restored=receive(&mut cr).await;assert_eq!(restored["result"]["isError"],false);
+        assert_eq!(restored["result"]["structuredContent"]["state"],"NOT_CONFIGURED");assert_eq!(std::fs::read(path).unwrap(),wire);
+        drop(cw);drop(cr);task.await.unwrap().unwrap();
     }
     #[tokio::test]
     async fn unconfigured_mcp_exposes_connect_without_a_profile_or_identity() {

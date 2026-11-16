@@ -10,6 +10,9 @@ responses include safe component metadata and a diagnostic ID; owner-local
 stderr and the ordinary Agent CLI identify the exact failed path without
 credentials or private message contents. Missing, inaccessible, unprotected,
 malformed and oversized endpoint files have distinct error codes.
+Path faults no longer terminate MCP before protocol startup. Its tool catalog
+and structured diagnostics remain available while the original component is
+repaired; no private operation bypasses the failed check.
 
 Persistent local configuration faults report BLOCKED with their diagnostic and
 repair action. Repeated unchanged startup failures are coalesced. After a
