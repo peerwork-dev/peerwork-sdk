@@ -604,6 +604,19 @@ impl Connect {
 #[cfg(test)]
 mod tests {
     use super::*;
+    async fn observe_host_hint(local:&Path,host:&crate::communication_host::tests::CodexFixture,started:&mut bool) {
+        let profile=Connect::inspect(local).unwrap().profile().unwrap().unwrap();
+        let tools=crate::agent_tools::AgentTools::open(profile).await.unwrap();
+        if !*started {tools.call(crate::agent_tools::AgentRequest::Delivery{mode:"self_test".into(),scope:None}).await.unwrap();*started=true;}
+        let batch=host.calls().iter().rev().find_map(|call| {
+            call["params"]["input"].as_array()?.iter().find_map(|item| {
+                let text=item["text"].as_str()?;let start=text.find("{\"batch\":")?;
+                let end=text[start..].find('}')?+start+1;
+                serde_json::from_str::<Value>(&text[start..end]).ok()?["batch"].as_str().map(str::to_owned)
+            })
+        });
+        if let Some(batch)=batch {tools.call(crate::agent_tools::AgentRequest::parse("inbox",json!({"batch":batch})).unwrap()).await.unwrap();}
+    }
     #[tokio::test]
     async fn ordinary_connect_selects_original_attachment_before_generic_setup_exists() {
         let root=crate::test_support::protected_test_dir();let mut connect=Connect::open(root.path()).unwrap();
@@ -836,8 +849,8 @@ mod tests {
         let mut attach = base;
         attach.push("--codex".into());
         let choices = run(&executable, &attach, root.path()).await;
-        assert_eq!(choices["blocker"]["code"], "CODEX_CHAT_SELECTION_REQUIRED");
-        assert_eq!(choices["sessions"].as_array().unwrap().len(), 1);
+        assert_eq!(choices["state"],"LOCAL_CONFIGURED","{choices}");
+        assert_eq!(choices["receive_mode"],"INBOX","plain repeat preserves deliberate INBOX intent");
         fn launch_bytes(directory:&Path)->Vec<u8>{if !directory.join("bootstrap.state").exists(){Vec::new()}else{SecureStateStore::read_snapshot(&directory.join("bootstrap.state"),65536).unwrap().to_vec()}}
         let original_launch=launch_bytes(&runtime_dir);
         attach.extend(["--codex-chat".into(), "Worker".into()]);
@@ -873,11 +886,15 @@ mod tests {
         let mut premature=attach.clone();premature.extend(["--binding-recovery".into(),"RETRY_REJECTED".into(),"--decision-id".into(),"not-a-new-attachment".into()]);
         assert_eq!(run(&executable,&premature,root.path()).await["error"]["code"],"ORIGINAL_CODEX_ATTACHMENT_REQUIRED");
         let mut result = run(&executable, &attach, root.path()).await;
+        let mut self_test_started=false;
         for _ in 0..20 {
             if result["state"] == "LOCAL_CONFIGURED" {
                 break;
             }
             assert_eq!(result["state"], "PENDING", "{result}");
+            if result["blocker"]["code"]=="DELIVERY_SELF_TEST_PENDING" {
+                observe_host_hint(&local,&proxy_fixture,&mut self_test_started).await;
+            }
             tokio::time::sleep(Duration::from_millis(100)).await;
             result = run(&executable, &attach, root.path()).await;
         }
@@ -1046,9 +1063,22 @@ mod tests {
             }
             let mut request=request;request.receive_mode=Some(ReceiveMode::Push);
             let selection=Some(RuntimeSelection{admin_endpoint:ready.admin_endpoint.clone(),config_path:None});
-            let result=connect.attach_codex_host_with_runtime(request,"selected",selection).await;
+            let result=connect.attach_codex_host_with_runtime(request.clone(),"selected",selection.clone()).await;
             if hidden_receiver {assert_eq!(result.unwrap_err().code,"ORIGINAL_RECEIVER_SETUP_RECOVERY_REQUIRED");}
-            else {let result=result.unwrap();assert_eq!(result["state"],"LOCAL_CONFIGURED","{result}");assert_eq!(result["receive_mode"],"PUSH");}
+            else {
+                let mut result=result.unwrap();let mut self_test_started=false;
+                for _ in 0..100 {
+                    if result["state"]!="PENDING"{break;}
+                    if result["blocker"]["code"]=="DELIVERY_SELF_TEST_PENDING" {
+                        drop(connect);
+                        observe_host_hint(&root.path().join("connect"),&host,&mut self_test_started).await;
+                        connect=Connect::open(&root.path().join("connect")).unwrap();
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    result=connect.attach_codex_host_with_runtime(request.clone(),"selected",selection.clone()).await.unwrap();
+                }
+                assert_eq!(result["state"],"LOCAL_CONFIGURED","{result}");assert_eq!(result["receive_mode"],"PUSH");
+            }
             assert!(!serving.is_finished(),"online binding must not restart original runtime");assert!(!runtime.state_directory.join("bootstrap.state").exists());
             cancel.cancel();serving.await.unwrap().unwrap();
         }
