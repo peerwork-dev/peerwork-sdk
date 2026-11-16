@@ -255,7 +255,11 @@ impl Hosts {
         let selected = active
             .iter()
             .find(|c| c.key().is_ok_and(|k| k == key))
-            .ok_or_else(|| local("HOST_REGISTRY_INVALID"))?
+            .ok_or_else(|| {
+                let mut error=local("HOST_REGISTRY_INVALID");
+                error.details=Some(json!({"blocked_sources":blocked}));
+                error
+            })?
             .clone();
         let selected_sources = sources(&selected, clients, generations)?;
         if self.jobs.get(&key).is_some_and(|job|job.task.is_finished()) {

@@ -161,6 +161,8 @@ impl RunningHost {
         Ok(keys.iter().all(|key|drained.contains(key)))
     }
     pub fn validate_sources(&self, sources: &[(ParticipantClient, WatchOptions)]) -> Result<()> {
+        let destination=self.status.lock().map_err(|_|error("HOST_STATE_INVALID"))?
+            .get("destination").and_then(|value|HostBinding::new(value.clone()).ok()).map(|binding|binding.digest);
         let old = self
             .sources
             .lock()
@@ -179,7 +181,15 @@ impl RunningHost {
             }
             if old
                 .iter()
-                .any(|(c, o)| o.key() == wanted.key() && (!c.same_client(client) || o != wanted))
+                .any(|(c, o)| {
+                    // First attachment may now name the destination already
+                    // verified by this dispatcher. This is pinning the same
+                    // source, never changing its client or physical target.
+                    let mut pinned=o.clone();pinned.host_destination=destination.clone();
+                    let same=o==wanted || o.host_destination.is_none()
+                        && destination.is_some() && pinned==*wanted;
+                    o.key()==wanted.key() && (!c.same_client(client) || !same)
+                })
             {
                 return Err(error("HOST_SUBSCRIPTION_CONFLICT"));
             }
