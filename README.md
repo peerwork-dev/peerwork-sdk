@@ -33,6 +33,12 @@ without an Agent host, MCP or Skill.
    [availability](docs/member-availability.md) and [protocol tools](docs/protocol-session.md)
    through the same original client.
 
+Native0.3.39 keeps MCP diagnostics available during local path failures, reuses
+the original opened registry for ordinary reads, and reports actionable endpoint
+and startup failures. Targeted original-component repair preserves identity,
+pending operations and host selection. See the
+[release notes](docs/releases/0.3.39.md).
+
 Native0.3.38 lets [OpenCode V2](docs/opencode.md) reuse its existing inbox and
 switch selected conversations through Connect, preserves launch state across
 rebind recovery, and exposes the actual selected session/project. See the
