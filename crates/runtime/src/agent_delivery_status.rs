@@ -37,7 +37,7 @@ fn refresh_at(context: &mut Value, now: i64) {
             let candidate = &context["host_channel"]["scopes"][alias];
             let channel_matches = candidate["binding"] == expected;
             let channel = if channel_matches && candidate["observation_age_ms"].as_u64().is_some_and(|age|age<10_000) {
-                json!({"state":candidate["state"],"code":candidate["code"],"observation_age_ms":candidate["observation_age_ms"]})
+                json!({"state":candidate["state"],"code":candidate["code"],"observation_age_ms":candidate["observation_age_ms"],"session_receiving":candidate["session_receiving"]})
             } else { json!({"state":"UNKNOWN","reason":if candidate.is_null(){"NOT_OBSERVED"}else if !channel_matches{"BINDING_MISMATCH"}else{"STALE_OBSERVATION"}}) };
             let selected_binding=observation.map(|v|v["binding"].clone()).unwrap_or(Value::Null);
             let hosts=context["host_status"]["hosts"].as_array().map(Vec::as_slice).unwrap_or(&[]);
@@ -124,7 +124,7 @@ mod tests {
     fn current_receiving_does_not_complete_pending_setup_or_attest_channel_wake() {
         let mut value=context(); let saved=value["onboarding"].clone();
         let bound=binding(&value,&value["scopes"]["space"]);
-        value["host_channel"]=json!({"notifications_written":8,"scopes":{"space":{"binding":bound,"state":"WAITING_READ","observation_age_ms":5}}});
+        value["host_channel"]=json!({"notifications_written":8,"scopes":{"space":{"binding":bound,"state":"WAITING_READ","observation_age_ms":5,"session_receiving":"VERIFIED"}}});
         refresh_at(&mut value,1001);
         assert_eq!(value["delivery_status"]["scopes"]["space"]["state"],"READY");
         assert_eq!(value["delivery_status"]["scopes"]["space"]["transport"],"MCP_STDIO_CHANNEL");

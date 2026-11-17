@@ -29,7 +29,15 @@ fn failure(code: &str) -> ParticipantError {
     local(code)
 }
 
+fn exact_thread_id(value: &str) -> bool {
+    value.len()==36 && value.bytes().enumerate().all(|(i,b)|
+        if [8,13,18,23].contains(&i) { b==b'-' } else { b.is_ascii_hexdigit() })
+}
+
 fn select_session(sessions: &Value, choice: &str) -> Result<Value> {
+    if sessions["complete"]==false && !sessions["sessions"].as_array().is_some_and(|items|items.iter().any(|s|s["thread_id"]==choice)) {
+        return Err(local("CODEX_CHAT_LIST_PARTIAL_SELECT_EXACT_THREAD"));
+    }
     let matches: Vec<_> = sessions["sessions"]
         .as_array()
         .ok_or_else(|| local("HOST_RESPONSE_INVALID"))?
@@ -164,24 +172,34 @@ impl Connect {
             // Its sealed rebind evidence remains in the original ledger; only
             // a new explicit chat selection starts the next attachment.
         }
-        let executable = crate::communication_host::codex_executable(None).map_err(failure)?;
-        let config = json!({"endpoint":"codex-proxy://local","codex_executable":executable});
-        let executor = tokio::runtime::Handle::current();
-        let sessions = tokio::task::spawn_blocking(move || {
-            crate::communication_host::codex_sessions(config, executor)
-        })
-        .await
-        .map_err(|_| local("HOST_DISCOVERY_FAILED"))?
-        .map_err(failure)?;
-        let Some(chat) = chat else {
-            return Ok(
-                json!({"state":"PENDING","blocker":{"stage":"HOST_SELECTION","code":"CODEX_CHAT_SELECTION_REQUIRED",
-                "next_actor":"LOCAL_USER","next_action":"SELECT_EXISTING_CODEX_CHAT_TITLE"},"sessions":sessions["sessions"],
-                "next_cursor":sessions["next_cursor"],"existing_receiver_preserved":true}),
-            );
+        let config=crate::communication_host::codex_installation().map_err(failure)?;
+        let query_config=config.clone();
+        let choice=chat.map(str::to_owned);
+        let executor=tokio::runtime::Handle::current();
+        let sessions=tokio::task::spawn_blocking(move || {
+            if let Some(id)=choice.as_deref().filter(|id|exact_thread_id(id)) {
+                crate::communication_host::codex_session(query_config,id,executor)
+            }else{
+                crate::communication_host::codex_sessions(query_config,executor)
+            }
+        }).await.map_err(|_|local("HOST_DISCOVERY_FAILED"))?.map_err(|code| {
+            let mut error=failure(code);
+            let hosts=self.registry.hosts.iter().filter(|(_,h)|h.participant==request.participant &&
+                (h.adapter["kind"]=="codex" || h.adapter["kind"]=="bridge"&&h.adapter["destination"]["host"]=="CODEX_APP_SERVER"))
+                .map(|(name,_)|json!({"host":name})).collect::<Vec<_>>();
+            error.details=Some(json!({"stage":"HOST_SELECTION","owner_identity":"NOT_DETERMINED",
+                "registered_hosts":hosts,"next_action":"SELECT_REGISTERED_CODEX_HOST_OR_RESTORE_ORIGINAL_CODEX",
+                "existing_receiver_preserved":true,"exit_required":"NOT_DETERMINED"}));
+            error
+        })?;
+        let Some(chat)=chat else {
+            return Ok(json!({"state":"PENDING","blocker":{"stage":"HOST_SELECTION","code":"CODEX_CHAT_SELECTION_REQUIRED",
+                "next_actor":"LOCAL_USER","next_action":"SELECT_EXACT_EXISTING_CODEX_THREAD"},
+                "sessions":sessions["sessions"],"complete":sessions["complete"],"next_cursor":sessions["next_cursor"],
+                "existing_receiver_preserved":true}));
         };
-        let mut adapter = select_session(&sessions, chat)?;
-        adapter["codex_executable"] = json!(executable);
+        let mut adapter=select_session(&sessions,chat)?;
+        for field in ["codex_executable","codex_home","codex_uid"] { adapter[field]=config[field].clone(); }
         self.attach_selected_host(request, adapter, chat, selection).await
     }
     /// Reuse a host-owner registered native/bridge destination without opening
@@ -322,6 +340,7 @@ impl Connect {
         }
         let admin=self.runtime_admin(&request.participant,selection.as_ref()).await?;
         let runtime_status=crate::communication_runtime::call(&admin,json!({"method":"status"})).await?;
+        host::validate_runtime_features(&runtime_status["value"],&adapter)?;
         let resident=runtime_status["value"]["optional_features"].as_array().is_some_and(|features|features.iter().any(|feature|feature=="resident-scope-rebind-v1"));
         let owned=if resident {
             // An explicitly supplied legacy config must not contradict the
@@ -662,6 +681,12 @@ mod tests {
             select_session(&duplicate, "Worker").unwrap_err().code,
             "CODEX_CHAT_TITLE_AMBIGUOUS"
         );
+        let partial=json!({"complete":false,"sessions":[{"thread_id":"exact","session_id":"shared-root","title":"Worker"}]});
+        assert_eq!(select_session(&partial,"Worker").unwrap_err().code,"CODEX_CHAT_LIST_PARTIAL_SELECT_EXACT_THREAD");
+        assert_eq!(select_session(&partial,"exact").unwrap()["thread_id"],"exact");
+        assert!(exact_thread_id("019a8e02-0000-7000-8000-000000000001"));
+        assert!(!exact_thread_id("latest"));
+        assert!(!exact_thread_id("019a8e02_0000-7000-8000-000000000001"));
     }
 
     #[cfg(unix)]

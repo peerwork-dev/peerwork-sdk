@@ -60,6 +60,18 @@ fn source_bound_to_host(host:&Value,key:&str,expected:&HostSubscription,adapter:
         source.client==expected.client&&source.client_generation==expected.client_generation&&source.watch==expected.watch
     }))
 }
+pub(super) fn validate_runtime_features(status:&Value,adapter:&Value)->Result<()> {
+    let feature=if adapter["kind"]=="opencode" {"opencode-v2-host-v1"}
+        else if adapter["kind"]=="codex" && adapter["codex_home"].is_string()
+            || adapter["kind"]=="agy-app" && adapter["inbox_directory"].is_string() {"harness-connection-context-v1"}
+        else{return Ok(())};
+    if !status["optional_features"].as_array().is_some_and(|features|features.iter().any(|v|v==feature)) {
+        let mut error=local("LOCAL_RUNTIME_UPGRADE_REQUIRED");
+        error.details=Some(json!({"missing_features":[feature],"next_action":"UPDATE_ORIGINAL_OWNED_RUNTIME","existing_operations_preserved":true}));
+        return Err(error);
+    }
+    Ok(())
+}
 impl Connect {
     /// Entry for a client that ALREADY owns the actual host event channel.
     /// This API does not manufacture that channel for an arbitrary UI/CLI.
@@ -155,10 +167,7 @@ impl Connect {
             json!({"method":"status"}),
         )
         .await?;
-        if selected.adapter["kind"]=="opencode" && !status["value"]["optional_features"].as_array().is_some_and(|features|features.iter().any(|v|v=="opencode-v2-host-v1")) {
-            let mut error=local("LOCAL_RUNTIME_UPGRADE_REQUIRED");
-            error.details=Some(json!({"missing_features":["opencode-v2-host-v1"],"next_action":"UPDATE_ORIGINAL_OWNED_RUNTIME","existing_operations_preserved":true}));return Err(error);
-        }
+        validate_runtime_features(&status["value"],&selected.adapter)?;
         if status["ok"] != true
             || !status["value"]["engines"]
                 .as_array()
@@ -180,14 +189,18 @@ impl Connect {
             if old != &selected {
                 return Err(local("HOST_SELECTION_CHANGED_REBIND_REQUIRED"));
             }
-        } else {
+        }
+        // Refresh only after original runtime identity and unchanged selection
+        // are checked. The selected App host supplies its current environment.
+        let refreshed=crate::communication_host::refresh_agy_registration(&selected.adapter).map_err(local)?;
+        if !self.registry.hosts.contains_key(name) {
             if self.registry.hosts.len() >= 8 {
                 return Err(local("HOST_SELECTION_LIMIT"));
             }
             self.registry.hosts.insert(name.into(), selected);
             self.save()?;
         }
-        Ok(json!({"state":"LOCAL_HOST_REGISTERED","host":name,"model_response":"NOT_ATTESTED"}))
+        Ok(json!({"state":"LOCAL_HOST_REGISTERED","host":name,"environment_refreshed":refreshed,"model_response":"NOT_ATTESTED"}))
     }
     pub(super) async fn ensure_host(
         &self,
@@ -303,6 +316,17 @@ pub(super) fn adapter(values: &BTreeMap<String, String>) -> Result<Option<Value>
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn new_launch_context_requires_runtime_support_but_keeps_existing_explicit_routes() {
+        let old=json!({"optional_features":[]});
+        assert!(validate_runtime_features(&old,&json!({"kind":"codex","endpoint":"unix:///original/socket"})).is_ok());
+        for adapter in [json!({"kind":"codex","codex_home":"/original/home"}),json!({"kind":"agy-app","inbox_directory":"/original/context"})] {
+            let error=validate_runtime_features(&old,&adapter).unwrap_err();
+            assert_eq!(error.code,"LOCAL_RUNTIME_UPGRADE_REQUIRED");
+            assert_eq!(error.details.unwrap()["missing_features"],json!(["harness-connection-context-v1"]));
+            assert!(validate_runtime_features(&json!({"optional_features":["harness-connection-context-v1"]}),&adapter).is_ok());
+        }
+    }
     #[tokio::test]
     async fn explicit_inbox_rejects_current_host_binding_before_local_changes() {
         let state=crate::test_support::protected_test_dir();

@@ -51,6 +51,50 @@ pub(super) fn executable(explicit: Option<&str>) -> R<PathBuf> {
     Ok(path)
 }
 
+/// Pin the host installation once, independently of the signer's later environment.
+pub(super) fn pin_installation(config: &mut Value) -> R<()> {
+    let home = std::env::var_os("CODEX_HOME").map(PathBuf::from).or_else(||
+        std::env::var_os("HOME").map(|p| PathBuf::from(p).join(".codex")))
+        .filter(|p| p.is_absolute()).ok_or("CODEX_HOME_REQUIRED")?;
+    config["codex_home"] = serde_json::json!(home);
+    #[cfg(unix)]
+    { config["codex_uid"] = serde_json::json!(unsafe { libc::geteuid() }); }
+    Ok(())
+}
+
+fn configure_installation(command: &mut tokio::process::Command, config: &Value) -> R<()> {
+    if let Some(home) = config.get("codex_home") {
+        let home = home.as_str().filter(|p| Path::new(p).is_absolute())
+            .ok_or("CODEX_HOME_INVALID")?;
+        command.env("CODEX_HOME", home);
+    }
+    #[cfg(unix)]
+    if let Some(uid) = config.get("codex_uid") {
+        if uid.as_u64() != Some(unsafe { libc::geteuid() } as u64) {
+            return Err("CODEX_HOST_USER_MISMATCH");
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn proxy_uses_pinned_installation_and_rejects_another_os_user_before_spawn() {
+        let mut command=tokio::process::Command::new("unused");
+        command.env("CODEX_HOME","/stale-signer-home");
+        configure_installation(&mut command,&json!({"codex_home":"/selected-host-home"})).unwrap();
+        let env=command.as_std().get_envs().find(|(key,_)|*key=="CODEX_HOME").unwrap().1.unwrap();
+        assert_eq!(env,"/selected-host-home");
+        assert_eq!(configure_installation(&mut command,&json!({"codex_home":"relative"})),Err("CODEX_HOME_INVALID"));
+        #[cfg(unix)]
+        assert_eq!(configure_installation(&mut command,&json!({"codex_uid":u64::MAX})),Err("CODEX_HOST_USER_MISMATCH"));
+        assert!(configure_installation(&mut command,&json!({})).is_ok(),"existing explicit routes remain usable");
+    }
+}
+
 pub(super) struct Proxy {
     child: Child,
     input: ChildStdin,
@@ -66,6 +110,7 @@ impl Proxy {
         let path = executable(config["codex_executable"].as_str())?;
         let mut command = tokio::process::Command::new(path);
         command.args(["app-server", "proxy"]);
+        configure_installation(&mut command, config)?;
         if let Some(socket) = config["control_socket"].as_str() {
             if !Path::new(socket).is_absolute() {
                 return Err("HOST_ENDPOINT_INVALID");

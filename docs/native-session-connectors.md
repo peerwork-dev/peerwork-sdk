@@ -1,208 +1,104 @@
-# Connect an existing Codex or Antigravity App conversation
+# Existing-session connectors
 
-SDK 0.2.16 adds native existing-session transports and a scoped local host bridge.
-The service must advertise `native-host-queue-v1` for Antigravity App queue
-receipts. Check actual release assets and discovery before using this capability.
-Core SDK identities, E2EE keys, grants and existing receiver checkpoints stay in
-their original profile; this is not an identity migration.
+Use [Connect a Peer](participant-connect.md) for the normal native connection
+workflow. It reuses the original identity, journal, receiver and pending operation
+IDs. Model sessions remain owned by their harness. The Runtime, durable inbox,
+compact notifications and tools are shared across adapters; no Node, Python or
+Bun dependency is introduced by a native connector.
 
-## Codex: attach to the original App Server
+## Codex
 
-Use the endpoint of the App Server that actually hosts the selected live thread.
-Unix control sockets speak WebSocket over HTTP Upgrade, not JSONL. The connector
-performs that handshake, initializes one connection, checks that the exact thread
-is already loaded, then subscribes with `excludeTurns: true`. It does not start
-another App Server or recreate a stored conversation.
+Attach to the existing shared App Server using the official control proxy, or
+reuse a previously registered endpoint/host bridge. Select the exact thread once
+when necessary; the session-tree root is not a writer identity. The connector
+checks current metadata before committing the existing durable attachment.
 
-```json
-{
-  "kind": "codex",
-  "endpoint": "unix:///private/codex/app-server-control.sock",
-  "thread_id": "EXISTING_THREAD_UUID",
-  "expected_session_id": "EXPECTED_SESSION_TREE_ROOT_UUID"
-}
-```
+The connection-recovery update pins new proxy selections to their original
+Codex home, executable and OS user. Exact UUID selection reads just that thread;
+the bounded picker marks partial results. An ownership rejection preserves the
+original route and suppresses repeated resume attempts. It does not prove that
+the user must exit. See [host recovery](host-bridge-recovery.md) for the supported
+one-time handover boundary when a standalone owner is actually established.
 
-`expected_session_id` is optional but recommended when the host supplies it.
-Use an absolute Unix socket path or a pinned `wss://` endpoint. Plain `ws://`
-is restricted to loopback. WebSocket bearer authentication uses
-`auth_token_env: "YOUR_HOST_TOKEN_ENV_NAME"`; put the token in that environment,
-not the URL or command line. TLS verification is never disabled.
+## Antigravity App
 
-The connector targets the exact active turn when steering; an unknown active
-turn does not authorize guessing. Initial active-turn lookup is limited to one
-turn with items omitted. Disconnecting the connector closes its own connection,
-not the shared App Server. No permission or model overrides are submitted.
-Errors distinguish socket access, connection, handshake, initialization and
-session binding failures. A failure before a turn submission is not a lost
-model acknowledgement.
-
-The previous implicit `codex app-server --listen stdio://` launch is removed.
-Users intentionally managing a separate CLI server must select `managed: true`;
-that explicit mode retains the stdio adapter, and is not existing-App attachment.
-The same explicit opt-in is required for `kind: "agy-cli"`. No adapter silently
-falls back to a managed/headless process.
-
-## Antigravity App: native Sidecar API
-
-Run the host adapter within an enabled Antigravity App sidecar. The App supplies
-its own `agentapi` command. This is Google's sidecar API, not Coder's archived
-same-named terminal wrapper. The adapter invokes only:
-
-```text
-agentapi send-message EXISTING_CONVERSATION_ID MESSAGE_REFERENCE
-```
-
-It never invokes `new-conversation`, `agy --conversation` or permission-bypass
-flags. Example host configuration:
+Use an explicitly selected App sidecar and its absolute `agentapi_path`:
 
 ```json
 {
   "kind": "agy-app",
+  "agentapi_path": "/absolute/host/agentapi",
   "conversation_id": "EXISTING_CONVERSATION_ID",
-  "inbox_directory": "/private/project/.peerwork-host-inbox"
+  "inbox_directory": "/private/host/peerwork-context"
 }
 ```
 
-Inside a sidecar, the adapter resolves the App-supplied executable from PATH;
-outside that context, an explicit absolute `agentapi_path` is required. If no
-inbox directory is selected, the sidecar's executable data directory is used.
-The selected directory must be private. Choose a directory readable under the
-original conversation's existing file-access policy; an approval request is not
-a reason to bypass that policy.
+Delivery invokes only `agentapi send-message` for that existing conversation.
+It sends a compact verified-inbox reference, never decrypted message bodies or
+business fields in process arguments. There is no second plaintext file queue.
+Exit success establishes `HOST_QUEUED`, not a model response. Uncertain outcomes
+retain the original attempt evidence and controlled notification recovery.
 
-Private message bodies are written to a 0600 JSON file in this directory.
-The native command receives only an opaque file reference, keeping decrypted
-content out of process arguments and normal command logs. The prompt identifies
-it as external peer data and asks the original Agent to read it using its usual
-tools and permissions. The adapter retains these files because API queue
-acceptance does not prove the Agent has read them. It caps them at 64 files of
-at most 64 KiB and applies backpressure when full. Remove only files whose
-processing has been confirmed; no timed cleanup discards unprocessed messages.
-This local inbox is separate from workspace storage.
+With the connection-recovery update, explicit original host registration captures
+`ANTIGRAVITY_LS_ADDRESS` and `ANTIGRAVITY_CSRF_TOKEN` from the owning App's current
+environment into the selected private directory. Invoke the same registration
+from the original host at App startup/restart: `Connect::register_host` or
+`connect_current`, or the same normal Connect command with its existing host and
+App adapter selections. Keep the same conversation, agentapi executable and
+private directory. The original resident Runtime reads that protected context
+before every send, so refreshing the port/token needs no receiver restart or
+host rebind. A host-selection mismatch is rejected before refreshing credentials.
 
-The documented native API establishes queue submission, not model execution.
-The adapter therefore reports `HOST_QUEUED`, `execution_state: UNKNOWN`, and
-`QUEUED_ONLY` / service `TOOL_ONLY`, never `REALTIME_READY`. Queue acknowledgement
-advances the delivery checkpoint without resending the same input. A signed,
-correlated application reply is still the evidence that the Agent processed it.
-CLI exit failure/timeout has an unknown result and is not blindly retried.
-Busy-turn scheduling and permission prompts remain owned by Antigravity App.
+The directory must already be private to the host user. Tokens are not returned
+in registration results or status. Refresh accepts only a loopback address.
+Dispatch does not scan processes, search other sessions or guess a new port.
+A host without such a registration still uses its process environment; restarting
+only the App cannot refresh an older independent Runtime's inherited values.
+`target.environment_refresh` identifies which integration contract is selected;
+it is not a credential freshness or model-wake attestation. This mechanism does
+not attach arbitrary interactive AGY terminals or create an App registration.
 
-## Different system users: scoped local host bridge
-
-When the Peerwork signer is `agent-user` and the original host is Root, keep
-them separate. Run the host bridge as the host user; run the receiver as the
-Peerwork identity's user. Do not change the original socket's permissions or
-move identity/key files. The bridge exposes only health, selected-message input,
-pending host requests for its configured conversation. Permission responses
-are disabled by default; delegating them requires explicit
-`allow_permission_responses: true` in the host-owned bridge configuration and
-still rejects requests from any other thread.
-It does not expose arbitrary App Server RPC or a shell endpoint.
-
-Create a new capability token **as the Peerwork identity's user**:
+For an existing local registry, the host-owned registration through normal Connect
+uses the same original arguments, for example:
 
 ```sh
-peerwork-host-bridge token /private/master/host-bridge.token
+peerwork connect --local ORIGINAL_REGISTRY --participant ORIGINAL_HANDLE \
+  --workspace WORKSPACE_ID --host ORIGINAL_HOST --agy-api /absolute/host/agentapi \
+  --agy-conversation EXISTING_CONVERSATION_ID --agy-inbox /private/host/peerwork-context \
+  --install agy
 ```
 
-The token file is created with 0600 permissions and cannot overwrite an existing
-file. Only its path is printed/configured. The bridge user needs permission to
-read that file; Root can read it without changing the original identity owner.
-If different non-root users need access, explicitly provision the capability to
-them through the user's normal mechanism. No global socket permission change is
-part of this tool.
+Run from the current enabled App context. Existing managed/external installations
+retain their original runtime/admin selection; use the owning integration rather
+than guessing missing paths or credentials.
 
-Prepare a private bridge configuration for the host user:
+## Managed AGY stdio
 
-```json
-{
-  "port": 40817,
-  "token_file": "/private/master/host-bridge.token",
-  "state_directory": "/private/host/peerwork-bridge",
-  "host": {
-    "kind": "codex",
-    "endpoint": "unix:///private/codex/app-server-control.sock",
-    "thread_id": "EXISTING_THREAD_UUID"
-  },
-  "bindings": [{
-    "expected_origin": "https://api.peerwork.dev",
-    "expected_actor": "EXPLICIT_ACTOR_ID",
-    "workspace_id": "WORKSPACE_ID",
-    "instance_id": "INSTANCE_ID",
-    "protocol_digest": "EXECUTION_SHA256",
-    "package_digest": "PACKAGE_SHA256",
-    "role": "EXACT_GRANTED_ROLE"
-  }]
-}
-```
+An explicitly owned managed stdio child is supported separately. Its launch and
+conversation remain pinned; delivery never starts a replacement child/model to
+work around a busy or failed interactive session. This contract does not promise
+attachment to an arbitrary terminal's stdin.
 
-For AGY, replace `host` with the `agy-app` configuration and launch this bridge
-from the enabled sidecar using an absolute `peerwork-host-bridge` executable
-and arguments `["run", "/private/host/bridge.json"]`. Follow the App's normal
-explicit sidecar enablement flow; the SDK does not edit user App configuration.
+## Claude Code and OpenCode V2
 
-```sh
-peerwork-host-bridge run /private/host/bridge.json
-```
+[Claude Code](claude-code.md) uses the original native inbox projected through an
+explicitly activated Channel. A written notification and historical validation
+do not establish receiving by a new session.
 
-The bridge binds only 127.0.0.1, requires the capability on every call, rejects
-browser-origin requests and pins the full Peerwork binding and host destination.
-It prints its endpoint and exact destination, not the token. Configure the
-receiver's `host` with that reported destination verbatim:
+[OpenCode V2](opencode.md) uses the originally selected protected service
+registration, exact session and project directory. The adapter rereads that
+registration on each operation, including service credential/port rotation.
+The current target is visible, but generic MCP does not attest its caller's
+conversation. Do not substitute another session or an unregistered standalone
+service merely to obtain a READY status.
 
-```json
-{
-  "kind": "bridge",
-  "endpoint": "http://127.0.0.1:40817",
-  "token_file": "/private/master/host-bridge.token",
-  "destination": {
-    "host": "CODEX_APP_SERVER",
-    "conversation_id": "EXISTING_THREAD_UUID",
-    "endpoint": "unix:///private/codex/app-server-control.sock"
-  }
-}
-```
+## Cross-user host bridges
 
-An AGY destination contains `host: "ANTIGRAVITY_APP"` and its explicit
-`conversation_id`; use the bridge's reported object. Keep each receiver's
-existing private state directory. Its stored destination digest must match;
-changing destinations requires an explicit new selection, not a silent rebind.
-No change to a Peer identity or workspace grant is implied.
+Keep the signing user's state and the host user's session separate. Use the
+existing scoped local bridge when the original installation requires it; do not
+relax the host socket or copy signer keys across users. It grants only the
+selected delivery/observation capability. See [host bridge recovery](host-bridge-recovery.md)
+for compatible original-stack updates and current health diagnostics.
 
-The bridge durably records attempted input hashes and outcomes. A lost HTTP
-response reconciles the original message ID; changed input under the same ID is
-refused. An unknown host outcome is retained across bridge restart and requires
-the existing explicit receiver resolution flow. It retains up to 256 recent
-completed/unknown entries, never evicts unresolved attempts to make room, and
-owns one locked state directory. Receiver checkpoints remain the authority for
-old committed events; clearing them is not a supported retry mechanism.
-
-## Start and verify
-
-Use Node24 and matching release assets. The host bridge does not open the
-Peerwork identity or require native signing keys; only the receiver does.
-
-```sh
-peerwork-connect doctor /private/master/delivery.json
-peerwork-connect run /private/master/delivery.json
-peerwork-connect status /private/master/delivery.json
-```
-
-`doctor` checks the host connection without a model turn. Automatic startup
-self-testing sends one explicitly identified probe to the original conversation;
-it may incur provider cost. Codex can attest host input acceptance. AGY reports
-only native queue acceptance, which is reflected in its self-test report.
-Neither is a model PONG. Preserve the original pending message/intent when
-recovering. Do not reset checkpoints or select a different Agent to make a test
-appear successful.
-
-Acceptance uses real Unix WebSocket and HTTP transports, synthetic host peers,
-actual cross-UID IPC and real Peerwork HTTP/PostgreSQL/native receipts. This does
-not qualify a particular installed Antigravity App/Codex version or the user's
-actual live conversation. The user must explicitly enable/register that host
-endpoint and conversation; missing endpoints fail rather than creating an Agent.
-
-References: [Codex App Server](https://learn.chatgpt.com/docs/app-server),
-[Antigravity Sidecars](https://antigravity.google/docs/sidecars).
+Normal setup, recovery, self-test and updates use existing native tools. A
+successful synthetic protocol test is not evidence of an actual model reply.

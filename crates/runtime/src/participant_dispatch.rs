@@ -52,6 +52,8 @@ impl HostConfig {
                 "expected_session_id",
                 "auth_token_env",
                 "codex_executable",
+                "codex_home",
+                "codex_uid",
                 "control_socket",
             ],
             Some("agy-app") => &[

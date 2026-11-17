@@ -74,6 +74,27 @@ fn official_codex_proxy_reads_existing_thread_without_starting_a_model_turn() {
     // inference response, idle wake SLA or access to any user's conversation.
 }
 
+#[test]
+fn codex_exact_selection_bypasses_listing_and_picker_pages_are_bounded() {
+    let fixture=CodexFixture::start();
+    fixture.emit_events.store(false,Ordering::SeqCst);
+    let runtime=tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build().unwrap();
+    *fixture.rpc_error.lock().unwrap()=Some(("thread/loaded/list".into(),json!({"code":-32601})));
+    let exact=codex_session(fixture.config(),"existing-thread",runtime.handle().clone()).unwrap();
+    assert_eq!(exact["selection"],"EXACT_THREAD_ID");
+    assert!(fixture.calls().iter().all(|c|!matches!(c["method"].as_str(),Some("thread/loaded/list"|"thread/resume"|"turn/start"))));
+    *fixture.rpc_error.lock().unwrap()=None;
+    *fixture.loaded_pages.lock().unwrap()=vec![json!({"data":[],"nextCursor":"1"}),json!({"data":["existing-thread"],"nextCursor":null})];
+    let complete=codex_sessions(fixture.config(),runtime.handle().clone()).unwrap();
+    assert_eq!(complete["complete"],true);assert_eq!(complete["sessions"][0]["thread_id"],"existing-thread");
+    *fixture.loaded_pages.lock().unwrap()=(0..5).map(|i|json!({"data":["existing-thread"],"nextCursor":(i+1).to_string()})).collect();
+    let partial=codex_sessions(fixture.config(),runtime.handle().clone()).unwrap();
+    assert_eq!(partial["complete"],false);assert_eq!(partial["next_cursor"],"4");
+    assert_eq!(partial["sessions"].as_array().unwrap().len(),1,"page overlap must not repeat thread reads");
+    *fixture.loaded_pages.lock().unwrap()=vec![json!({"data":[],"nextCursor":"1"}),json!({"data":[],"nextCursor":"1"})];
+    assert_eq!(codex_sessions(fixture.config(),runtime.handle().clone()).unwrap_err(),"HOST_RESPONSE_INVALID");
+}
+
 #[cfg(unix)]
 #[test]
 fn agy_inline_queue_preserves_session_and_does_not_accumulate_message_files() {
@@ -200,6 +221,7 @@ pub(crate) struct CodexFixture {
     pub status_override: Arc<Mutex<Option<String>>>,
     pub stall_health: Arc<AtomicBool>,
     pub rpc_error: Arc<Mutex<Option<(String,Value)>>>,
+    pub loaded_pages: Arc<Mutex<Vec<Value>>>,
     stop: Arc<AtomicBool>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
@@ -241,6 +263,7 @@ impl CodexFixture {
         let status_override=Arc::new(Mutex::new(None::<String>));let override_status=status_override.clone();
         let stall_health=Arc::new(AtomicBool::new(false));let stall=stall_health.clone();
         let rpc_error=Arc::new(Mutex::new(None::<(String,Value)>));let rejected=rpc_error.clone();
+        let loaded_pages=Arc::new(Mutex::new(vec![json!({"data":["existing-thread"],"nextCursor":null})]));let pages=loaded_pages.clone();
         let stop = Arc::new(AtomicBool::new(false));
         let done = stop.clone();
         let thread = std::thread::spawn(move || {
@@ -274,7 +297,7 @@ impl CodexFixture {
                     }
                     let result = match method {
                         "initialize" => json!({"userAgent":"synthetic-protocol-fixture"}),
-                        "thread/loaded/list"=>json!({"data":["existing-thread"],"nextCursor":null}),
+                        "thread/loaded/list"=>pages.lock().unwrap().get(value["params"]["cursor"].as_str().unwrap_or("0").parse::<usize>().unwrap()).cloned().unwrap(),
                         "thread/read" | "thread/resume" => {
                             while stall.load(Ordering::SeqCst)&&!done.load(Ordering::SeqCst){std::thread::sleep(Duration::from_millis(2));}
                             if method=="thread/resume"{*override_status.lock().unwrap()=None;}
@@ -348,6 +371,7 @@ impl CodexFixture {
             status_override,
             stall_health,
             rpc_error,
+            loaded_pages,
             stop,
             thread: Some(thread),
         }

@@ -20,19 +20,44 @@ impl State {
         }}
         value
     }
-    pub(super) fn written(&self) {let mut value=self.0.lock().unwrap();value.written=value.written.saturating_add(1);}
+    pub(super) fn written(&self,notice:&Value) {
+        let mut value=self.0.lock().unwrap();value.written=value.written.saturating_add(1);
+        let batch=&notice["params"]["meta"]["batch"];
+        if !batch.is_string(){return;}
+        for scope in value.scopes.values_mut().filter(|scope|scope["due_batch"]==*batch) {
+            scope["published_batch"]=batch.clone();
+        }
+    }
+    /// Successful reads through this MCP connection establish this projection,
+    /// independently of historical native-inbox self-tests in earlier sessions.
+    pub(super) fn batch_read(&self,batch:&str) {
+        let mut value=self.0.lock().unwrap();
+        for scope in value.scopes.values_mut().filter(|scope|scope["published_batch"]==batch) {
+            scope["session_receiving"]=json!("VERIFIED");
+        }
+    }
     pub(super) fn consumed(&self) {self.1.notify_waiters();}
     pub(super) fn validation_failed(&self,code:&str) {self.0.lock().unwrap().validation_error=Some(code.into());}
     fn scope(&self,alias:&str,state:&str,code:Option<&str>) {
         let mut observed=self.0.lock().unwrap();
-        let binding=observed.scopes.get(alias).map(|v|v["binding"].clone()).unwrap_or(Value::Null);
-        observed.scopes.insert(alias.into(),json!({"state":state,"code":code,"binding":binding}));
+        let mut value=observed.scopes.get(alias).cloned().unwrap_or_else(||json!({"binding":null,"session_receiving":"UNCONFIRMED"}));
+        value["state"]=json!(state);value["code"]=json!(code);
+        observed.scopes.insert(alias.into(),value);
         observed.at.insert(alias.into(),std::time::Instant::now());
     }
     fn scope_observed(&self,alias:&str,value:&Value) {
         self.scope(alias,value["state"].as_str().unwrap_or("NATIVE_INBOX_OBSERVED"),value["code"].as_str());
         if value["source_binding"].is_object(){
-            self.0.lock().unwrap().scopes.get_mut(alias).unwrap()["binding"]=value["source_binding"].clone();
+            let mut observed=self.0.lock().unwrap();let scope=observed.scopes.get_mut(alias).unwrap();
+            if scope["binding"]!=value["source_binding"] {
+                scope["session_receiving"]=json!("UNCONFIRMED");
+                scope.as_object_mut().unwrap().remove("published_batch");
+                scope.as_object_mut().unwrap().remove("due_batch");
+            }
+            scope["binding"]=value["source_binding"].clone();
+        }
+        if value["state"]=="NOTIFICATION_DUE" {
+            self.0.lock().unwrap().scopes.get_mut(alias).unwrap()["due_batch"]=value["batch"].clone();
         }
     }
     fn scope_failed(&self,alias:&str,error:&ParticipantError) {
@@ -134,7 +159,7 @@ async fn watch_scope(client:Arc<Tools>,profile:AgentProfile,alias:String,scope:M
     let context=client.call(AgentRequest::Context).await?;
     validate_source(&context,&scope)?;
     let binding=crate::agent_delivery_status::binding(&context,&serde_json::to_value(&scope).unwrap());
-    observed.0.lock().unwrap().scopes.insert(alias.clone(),json!({"state":"STARTING","binding":binding}));
+    observed.0.lock().unwrap().scopes.insert(alias.clone(),json!({"state":"STARTING","binding":binding,"session_receiving":"UNCONFIRMED"}));
     project_scope(&alias,output,observed,||client.call(AgentRequest::NotificationPoll{scope:alias.clone()})).await
 }
 
@@ -174,6 +199,24 @@ where F:FnMut()->Fut,Fut:std::future::Future<Output=Result<Value>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn new_channel_requires_its_own_written_batch_read_and_resets_on_source_change() {
+        let state=State::default();
+        let input=json!({"state":"NOTIFICATION_DUE","batch":"current","source_binding":{"client_generation":1}});
+        state.scope_observed("space",&input);
+        state.batch_read("current");
+        assert_eq!(state.status()["scopes"]["space"]["session_receiving"],"UNCONFIRMED","queued output is not a published notice");
+        let notice=json!({"params":{"meta":{"batch":"current"}}});
+        state.written(&notice);state.batch_read("old");
+        assert_eq!(state.status()["scopes"]["space"]["session_receiving"],"UNCONFIRMED");
+        state.batch_read("current");
+        state.scope_observed("space",&json!({"state":"WAITING_NATIVE_INBOX","source_binding":{"client_generation":1}}));
+        assert_eq!(state.status()["scopes"]["space"]["session_receiving"],"VERIFIED");
+        state.scope_observed("space",&json!({"state":"WAITING_NATIVE_INBOX","source_binding":{"client_generation":2}}));
+        state.written(&notice);state.batch_read("current");
+        assert_eq!(state.status()["scopes"]["space"]["session_receiving"],"UNCONFIRMED");
+        assert!(State::default().status()["scopes"].as_object().unwrap().is_empty());
+    }
     #[test]
     fn running_projection_uses_current_authenticated_source_generation() {
         let state=State::default();state.scope_observed("space",&json!({"state":"WAITING_NATIVE_INBOX","source_binding":{"client_generation":1,"membership_id":"original"}}));

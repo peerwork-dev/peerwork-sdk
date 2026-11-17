@@ -23,6 +23,7 @@ pub(crate) fn evaluate(receiver: &Value, notification: &Value, transport: &str, 
         else if !keys {("BLOCKED","BODY_KEYS_NOT_READY")}
         else if blocked {("BLOCKED",host_code.unwrap_or("HOST_NOT_READY"))}
         else if !capable {("UNKNOWN",host_code.unwrap_or("CURRENT_TRANSPORT_OBSERVATION_UNAVAILABLE"))}
+        else if transport=="MCP_STDIO_CHANNEL" && health["session_receiving"]!="VERIFIED" {("VERIFYING","CURRENT_CHANNEL_READ_NOT_OBSERVED")}
         else if !verified {("VERIFYING","DELIVERY_SELF_TEST_PENDING")}
         else {("READY","READY")};
     json!({"state":state,"code":code,"receiver_link_verified":linked,"body_keys_ready":keys,
@@ -30,7 +31,8 @@ pub(crate) fn evaluate(receiver: &Value, notification: &Value, transport: &str, 
         "automatic_receiving":if !automatic{"NOT_CONFIGURED"}else if state=="READY"{"VERIFIED"}else{state},
         "last_verified_at":notification["last_verified_at"],"verification_evidence":"BOUND_LOCAL_INBOX_READ",
         "verification_scope":"HISTORICAL_SELECTED_DESTINATION","acceptance":if !automatic{"LOCAL_INBOX"}else if transport=="MCP_STDIO_CHANNEL"{"CHANNEL_OUTPUT"}else if health["can_attempt"]==true && health["ready"]!=true{"QUEUED_ONLY"}else{"HOST_INPUT_CAPABILITY"},"model_response":"NOT_ATTESTED",
-        "next_action":match state {"READY"=>"CONTINUE_COLLABORATION","PAUSED"=>"RESUME_WHEN_REQUESTED","STOPPED"=>"RESTART_ORIGINAL_RECEIVER_WHEN_REQUESTED","VERIFYING"=>"OBSERVE_EXISTING_SELF_TEST",_=>crate::host_recovery_policy::action(code)}})
+        "recovery":if state=="BLOCKED"{crate::host_recovery_policy::diagnostic(code)}else{Value::Null},
+        "next_action":match state {"READY"=>"CONTINUE_COLLABORATION","PAUSED"=>"RESUME_WHEN_REQUESTED","STOPPED"=>"RESTART_ORIGINAL_RECEIVER_WHEN_REQUESTED","VERIFYING" if code=="CURRENT_CHANNEL_READ_NOT_OBSERVED"=>"OBSERVE_CURRENT_CHANNEL_BATCH_OR_RUN_DELIVERY_SELF_TEST","VERIFYING"=>"OBSERVE_EXISTING_SELF_TEST",_=>crate::host_recovery_policy::action(code)}})
 }
 
 /// A source configured without a destination adopts the verified destination,
@@ -63,13 +65,16 @@ pub(crate) fn host_observation(host: &Value) -> Value {
         let ready=json!({"ready":true,"observation_age_ms":0});
         assert_eq!(evaluate(&r,&n,"HOST_PUSH",&ready)["state"],"READY");
         let failed=json!({"state":"BLOCKED","ready":false,"code":"HOST_SESSION_OWNERSHIP_CONFLICT"});
-        let v=evaluate(&r,&n,"HOST_PUSH",&failed);assert_eq!(v["state"],"BLOCKED");assert_eq!(v["last_verified_at"],123);assert_eq!(v["next_action"],"ATTACH_TO_ORIGINAL_SESSION_OWNER");
+        let v=evaluate(&r,&n,"HOST_PUSH",&failed);assert_eq!(v["state"],"BLOCKED");assert_eq!(v["last_verified_at"],123);assert_eq!(v["next_action"],"VERIFY_SELECTED_CODEX_ROUTE_AND_ORIGINAL_SESSION_OWNER");
+        assert_eq!(v["recovery"]["exit_required"],"NOT_DETERMINED");
         let stale=json!({"ready":true,"observation_age_ms":10_000});assert_eq!(evaluate(&r,&n,"HOST_PUSH",&stale)["state"],"UNKNOWN");
         assert_eq!(evaluate(&r,&n,"NATIVE_INBOX",&failed)["state"],"READY");
     }
     #[test] fn channel_and_queued_contracts_do_not_require_a_codex_host_or_attest_model_wake() {
-        let channel=json!({"state":"WAITING_READ","observation_age_ms":2});
+        let channel=json!({"state":"WAITING_READ","observation_age_ms":2,"session_receiving":"VERIFIED"});
         let v=evaluate(&receiver(),&verified(),"MCP_STDIO_CHANNEL",&channel);assert_eq!(v["state"],"READY");assert_eq!(v["model_response"],"NOT_ATTESTED");
+        let mut restarted=channel.clone();restarted["session_receiving"]=Value::Null;
+        assert_eq!(evaluate(&receiver(),&verified(),"MCP_STDIO_CHANNEL",&restarted)["code"],"CURRENT_CHANNEL_READ_NOT_OBSERVED");
         let queued=json!({"ready":false,"can_attempt":true,"observation_age_ms":0});assert_eq!(evaluate(&receiver(),&verified(),"HOST_PUSH",&queued)["state"],"READY");
         for state in ["STOPPED","RECONNECTING","BLOCKED","FAILED"] {
             let mut unavailable=queued.clone();unavailable["state"]=json!(state);

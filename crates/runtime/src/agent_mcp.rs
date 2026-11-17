@@ -102,7 +102,7 @@ where W:AsyncWrite+Unpin,F:std::future::Future<Output=Result<bool>> {
     match admission.await {
         // Fence immediately before writing. Bytes already being written cannot
         // be recalled by a concurrent pause.
-        Ok(true)=>{write(writer,notification).await?;state.written();},
+        Ok(true)=>{write(writer,notification.clone()).await?;state.written(&notification);},
         Ok(false)=>{},
         Err(error)=>{state.validation_failed(&error.code);eprintln!("Peerwork Claude channel validation: {}",error.code);},
     }
@@ -291,12 +291,15 @@ where R:AsyncBufRead+Send+Unpin+'static,W:AsyncWrite+Unpin {
                         let context=claude&&matches!(request,AgentRequest::Context);
                         let delivery=claude&&matches!(&request,AgentRequest::Delivery{mode,..} if mode=="status");
                         let consume=claude&&matches!(request,AgentRequest::Consume{..});
+                        let channel_batch=if claude {match &request {AgentRequest::InboxRead{batch,..}=>batch.clone(),_=>None}}else{None};
                         let channel_state=channel_state.clone();
                         let original=arguments["operation_id"].as_str().map(str::to_owned);let tools=tools.clone();let task_key=id_key.clone();
                         let handle=jobs.spawn(async move{
                             let (out,is_error)=match tools.call(request).await{
                                 Ok(mut value)=>{if context{value["host_channel"]=channel_state.status();crate::agent_delivery_status::refresh(&mut value);}
-                                    if delivery{crate::agent_delivery_status::refresh_delivery(&mut value,&channel_state.status());}let failed=matches!(value["state"].as_str(),Some("FAILED"|"REJECTED_NO_EFFECT"|"REJECTED"));if consume&&!failed{channel_state.consumed();}(value,failed)},
+                                    if delivery{crate::agent_delivery_status::refresh_delivery(&mut value,&channel_state.status());}let failed=matches!(value["state"].as_str(),Some("FAILED"|"REJECTED_NO_EFFECT"|"REJECTED"));
+                                    if !failed {if let Some(batch)=channel_batch.filter(|batch|value["batch"]==*batch){channel_state.batch_read(&batch);}}
+                                    if consume&&!failed{channel_state.consumed();}(value,failed)},
                                 Err(mut e)=>{if let Some(diagnostic)=&e.local_diagnostic{eprintln!("Peerwork local diagnostic: {diagnostic}");}if e.operation_id.is_none(){e.operation_id=original;}(json!({"error":e}),true)},
                             };
                             let result=json!({"content":[{"type":"text","text":out.to_string()}],"structuredContent":out,"isError":is_error});

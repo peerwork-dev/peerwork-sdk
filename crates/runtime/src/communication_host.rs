@@ -17,6 +17,8 @@ use tungstenite::{
 type R<T> = Result<T, &'static str>;
 #[path = "communication_agy_stdio.rs"]
 mod agy_stdio;
+#[path = "communication_agy_context.rs"]
+mod agy_context;
 #[path = "communication_codex_proxy.rs"]
 mod codex_proxy;
 #[path = "communication_opencode.rs"]
@@ -54,8 +56,12 @@ pub(crate) fn target_summary(adapter: &Value) -> Value {
     for field in ["host","thread_id","session_id","expected_session_id","conversation_id","directory"] {
         if selected[field].is_string() {target[field]=selected[field].clone();}
     }
+    if adapter["kind"]=="codex" {target["installation_context_pinned"]=json!(adapter["codex_home"].is_string());}
+    if adapter["kind"]=="agy-app" {target["environment_refresh"]=json!(if adapter["inbox_directory"].is_string(){"ORIGINAL_HOST_REGISTRATION"}else{"PROCESS_ENVIRONMENT"});}
     target
 }
+
+pub(crate) fn refresh_agy_registration(adapter:&Value)->R<bool> { agy_context::capture(adapter) }
 
 enum Socket {
     Proxy(WebSocket<codex_proxy::Proxy>),
@@ -136,7 +142,7 @@ impl Codex {
             return Err("HOST_SELECTION_CONFLICT");
         }
         let endpoint = text(config, "endpoint")?;
-        if endpoint != "codex-proxy://local" && (config.get("codex_executable").is_some() || config.get("control_socket").is_some()) {
+        if endpoint != "codex-proxy://local" && ["codex_executable","control_socket","codex_home","codex_uid"].iter().any(|key|config.get(key).is_some()) {
             return Err("HOST_SELECTION_CONFLICT");
         }
         let mut request;
@@ -435,26 +441,68 @@ impl Codex {
 }
 /// Explicit local-owner discovery. A loaded thread is a candidate, not proof
 /// that it is the caller. The user selects its title/id; hooks are not authority.
+fn codex_session_summary(thread: &Value, id: &str) -> R<Option<Value>> {
+    if thread["id"] != id { return Err("HOST_BINDING_MISMATCH"); }
+    if !matches!(thread["status"]["type"].as_str(), Some("idle" | "active")) { return Ok(None); }
+    let session = text(thread, "sessionId").map_err(|_| "HOST_SESSION_BINDING_UNAVAILABLE")?;
+    Ok(Some(json!({"thread_id":id,"session_id":session,"title":thread["name"],"status":thread["status"]})))
+}
+
+/// Exact-ID selection never enumerates unrelated chats or resumes a stored one.
+pub(crate) fn codex_session(mut config: Value, id: &str, executor: tokio::runtime::Handle) -> R<Value> {
+    if id.is_empty() || id.len()>256 { return Err("HOST_CONFIG_INVALID"); }
+    config["thread_id"] = json!(id);
+    let mut client = Codex::channel(&config, executor)?;
+    let result = client.rpc("thread/read", json!({"threadId":id,"includeTurns":false}))?;
+    let session = codex_session_summary(&result["thread"], id)?.ok_or("CODEX_CHAT_NOT_LOADED")?;
+    Ok(json!({"sessions":[session],"next_cursor":null,"complete":true,"selection":"EXACT_THREAD_ID"}))
+}
+
 pub(crate) fn codex_sessions(mut config: Value, executor: tokio::runtime::Handle) -> R<Value> {
     config["thread_id"] = json!("");
     let mut client = Codex::channel(&config, executor)?;
-    let loaded = client.rpc("thread/loaded/list", json!({"limit":32}))?;
-    let ids = loaded["data"].as_array().ok_or("HOST_RESPONSE_INVALID")?;
-    if ids.len() > 32 { return Err("HOST_RESPONSE_INVALID"); }
+    let _discovery = client.budget.scope("DISCOVERY");
     let mut items = Vec::new();
-    for id in ids {
-        let id = id.as_str().filter(|id| !id.is_empty() && id.len() <= 256).ok_or("HOST_RESPONSE_INVALID")?;
-        let result = client.rpc("thread/read", json!({"threadId":id,"includeTurns":false}))?;
-        let thread = &result["thread"];
-        if thread["id"] != id { return Err("HOST_BINDING_MISMATCH"); }
-        if matches!(thread["status"]["type"].as_str(), Some("idle" | "active")) {
-            let session = text(thread, "sessionId").map_err(|_| "HOST_SESSION_BINDING_UNAVAILABLE")?;
-            items.push(json!({"thread_id":id,"session_id":session,"title":thread["name"],"status":thread["status"]}));
+    let mut cursor = Value::Null;
+    let mut seen = BTreeSet::new();
+    let mut cursors = BTreeSet::new();
+    let mut complete = false;
+    let mut truncated_by = "PAGE_LIMIT";
+    'pages: for _ in 0..4 {
+        let mut params = json!({"limit":32});
+        if !cursor.is_null() { params["cursor"] = cursor.clone(); }
+        let loaded = match client.rpc("thread/loaded/list", params) {
+            Ok(value) => value,
+            Err("HOST_OPERATION_TIMEOUT" | "HOST_ACK_UNKNOWN") => { truncated_by="TIME_BUDGET"; break; },
+            Err(code) => return Err(code),
+        };
+        let ids = loaded["data"].as_array().ok_or("HOST_RESPONSE_INVALID")?;
+        if ids.len()>32 { return Err("HOST_RESPONSE_INVALID"); }
+        for id in ids {
+            let id = id.as_str().filter(|id| !id.is_empty() && id.len()<=256).ok_or("HOST_RESPONSE_INVALID")?;
+            if !seen.insert(id.to_owned()) { continue; }
+            let result = match client.rpc("thread/read", json!({"threadId":id,"includeTurns":false})) {
+                Ok(value) => value,
+                Err("HOST_OPERATION_TIMEOUT" | "HOST_ACK_UNKNOWN") => { truncated_by="TIME_BUDGET"; break 'pages; },
+                Err(code) => return Err(code),
+            };
+            if let Some(item) = codex_session_summary(&result["thread"], id)? { items.push(item); }
         }
+        let next = loaded.get("nextCursor").cloned().unwrap_or(Value::Null);
+        if next.is_null() { cursor=Value::Null; complete=true; break; }
+        let next_id=next.as_str().filter(|s|!s.is_empty()&&s.len()<=4096).ok_or("HOST_RESPONSE_INVALID")?;
+        if !cursors.insert(next_id.to_owned()) { return Err("HOST_RESPONSE_INVALID"); }
+        cursor=next;
     }
-    Ok(json!({"sessions":items,"next_cursor":loaded["nextCursor"],"selection":"EXPLICIT_LOCAL_USER_REQUIRED"}))
+    Ok(json!({"sessions":items,"complete":complete,"next_cursor":cursor,
+        "truncated_by":if complete{None}else{Some(truncated_by)},"selection":"EXPLICIT_LOCAL_USER_REQUIRED"}))
 }
-pub(crate) fn codex_executable(explicit: Option<&str>) -> R<std::path::PathBuf> { codex_proxy::executable(explicit) }
+
+pub(crate) fn codex_installation() -> R<Value> {
+    let mut config=json!({"endpoint":"codex-proxy://local","codex_executable":codex_proxy::executable(None)?});
+    codex_proxy::pin_installation(&mut config)?;
+    Ok(config)
+}
 
 fn add_auth(config: &Value, request: &mut tungstenite::handshake::client::Request) -> R<()> {
     if let Some(name) = config["auth_token_env"].as_str() {
@@ -922,8 +970,9 @@ impl Host {
             return Err("HOST_INPUT_INVALID");
         }
         if self.progress.remaining().is_err(){return Err("HOST_PREFLIGHT_DEADLINE");}
-        let mut child = std::process::Command::new(exe)
-            .args(["send-message", conversation, &rendered])
+        let mut command = std::process::Command::new(exe);
+        agy_context::configure(&mut command,&self.config)?;
+        let mut child = command.args(["send-message", conversation, &rendered])
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())

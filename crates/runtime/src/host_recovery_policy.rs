@@ -17,14 +17,16 @@ pub(crate) fn policy(code: &str) -> Policy {
         "HOST_SUBSCRIPTION_CONFLICT" | "HOST_CLIENT_BINDING_CHANGED" |
         "HOST_KIND_UNSUPPORTED" | "HOST_UNIX_ENDPOINT_UNSUPPORTED" |
         "CODEX_EXECUTABLE_REQUIRED" | "CODEX_EXECUTABLE_INVALID" |
-        "CODEX_EXECUTABLE_UNTRUSTED" | "ANTIGRAVITY_SIDECAR_REQUIRED" |
+        "CODEX_EXECUTABLE_UNTRUSTED" | "CODEX_HOME_INVALID" | "CODEX_HOME_REQUIRED" |
+        "CODEX_HOST_USER_MISMATCH" | "ANTIGRAVITY_SIDECAR_REQUIRED" |
+        "AGY_HOST_ENVIRONMENT_INVALID" | "AGY_HOST_ENVIRONMENT_UNAVAILABLE" |
         "CLAUDE_CHANNEL_SOURCE_ALREADY_BOUND_TO_ANOTHER_HOST" => Policy::Change,
         _ => Policy::Retry,
     }
 }
 pub(crate) fn action(code: &str) -> &'static str {
     match code {
-        "HOST_SESSION_OWNERSHIP_CONFLICT" => "ATTACH_TO_ORIGINAL_SESSION_OWNER",
+        "HOST_SESSION_OWNERSHIP_CONFLICT" => "VERIFY_SELECTED_CODEX_ROUTE_AND_ORIGINAL_SESSION_OWNER",
         "HOST_SESSION_ALREADY_OWNED" => "REUSE_ORIGINAL_HOST_DISPATCHER",
         "HOST_API_UNSUPPORTED" => "UPDATE_OR_SELECT_SUPPORTED_ORIGINAL_HOST",
         "HOST_ACCESS_DENIED" | "HOST_AUTHENTICATION_FAILED" => "REPAIR_ORIGINAL_HOST_ACCESS",
@@ -39,7 +41,14 @@ pub(crate) fn delay(code: &str, attempt: u32, salt: &str) -> Duration {
     }
 }
 pub(crate) fn diagnostic(code: &str) -> Value {
-    json!({"code":code,"retry_policy":match policy(code) {Policy::Retry=>"SAME_TARGET_BACKOFF",Policy::Observe=>"OBSERVE_OWNER",Policy::Change=>"WAIT_FOR_CONFIGURATION_CHANGE",Policy::Defer=>"WAIT_FOR_HOST"},"next_action":action(code)})
+    let mut value=json!({"code":code,"retry_policy":match policy(code) {Policy::Retry=>"SAME_TARGET_BACKOFF",Policy::Observe=>"OBSERVE_OWNER",Policy::Change=>"WAIT_FOR_CONFIGURATION_CHANGE",Policy::Defer=>"WAIT_FOR_HOST"},"next_action":action(code)});
+    if code=="HOST_SESSION_OWNERSHIP_CONFLICT" {
+        value["owner_identity"]=json!("NOT_DETERMINED");
+        value["exit_required"]=json!("NOT_DETERMINED");
+        value["automatic_second_writer"]=json!(false);
+        value["handover"]=json!("ONLY_AFTER_CONFIRMING_UNSUPPORTED_STANDALONE_OWNER");
+    }
+    value
 }
 /// Structured host categories win; bounded legacy text is classified locally
 /// and discarded. Never retain arbitrary host errors, paths, prompts or tokens.

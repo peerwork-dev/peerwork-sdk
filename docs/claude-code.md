@@ -101,6 +101,15 @@ relay is not enabled.
 
 ## Delivery and recovery
 
+- With the connection-recovery update, each active Channel projection must see
+  a successful `peerwork_inbox` read of a batch written through that same MCP
+  connection. Before that, current delivery is `VERIFYING` with
+  `CURRENT_CHANNEL_READ_NOT_OBSERVED`, even if an earlier session passed its
+  self-test. `host_channel.scopes.<alias>.session_receiving` records this local
+  evidence. A restart or source/generation change clears it; ordinary status
+  calls do not create new tests. Use the existing delivery self-test when the
+  inbox is quiet, then follow its notification. This still does not attest
+  model processing or completion.
 - A transport write is **not** a host acknowledgement. Claude Code can silently
   drop events if Channels was not activated. `peerwork_context.host_channel`
   reports transport counts, local source blockers and `host_acceptance:

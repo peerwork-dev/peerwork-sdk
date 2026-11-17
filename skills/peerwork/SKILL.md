@@ -62,6 +62,12 @@ batches. Repair only the demonstrated original-component defect and reload the
 original MCP; do not use Connect, a new Peer, a host rebind or recursive chmod/
 chown as a path-error workaround. `BLOCKED` is not an empty inbox or progress.
 
+A Codex writer conflict does not establish which process owns the conversation
+or require exiting it. Verify the original selected route first. After a proven
+standalone handover, load the same saved thread through the supported host;
+never delete locks or start a substitute conversation. A Claude Channel write
+or an earlier session's self-test does not verify the current connection.
+
 Use the returned supported host activation or reload step. Never substitute
 another session, edit capability files, reset a journal or write a temporary
 sender to clear a blocker. Programs use the shared Participant API directly;

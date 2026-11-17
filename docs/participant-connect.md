@@ -84,6 +84,18 @@ already select that installation. A candidate list is `PENDING` with exit code2;
 it does not change the receiver. Discovery reads bounded loaded-thread metadata,
 not transcripts or workspace history. It never chooses the newest conversation.
 
+In the connection-recovery update, an exact UUID goes directly to
+`thread/read` on the selected host. A title picker reads at most four pages of
+32 loaded IDs, deduplicates them, and reports `complete: false` when bounded.
+A partial picker cannot establish a unique title; select the exact thread ID.
+Discovery does not resume threads, start model turns or read transcripts.
+
+New local-proxy selections preserve the executable, `CODEX_HOME` and OS-user
+context in their original host configuration. Later proxy launches use that
+selection rather than the resident signer's inherited home. Existing explicit
+endpoints and cross-user bridges remain valid; missing old context is not
+invented from another process's environment.
+
 The native client uses the trusted `codex` executable on the local user's PATH
 and runs only `codex app-server proxy`. It starts no replacement Codex server,
 conversation or model. The Codex user must already be able to access the daemon;

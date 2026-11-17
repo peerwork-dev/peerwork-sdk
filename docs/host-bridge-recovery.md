@@ -60,6 +60,18 @@ writer lock, copy an identity or kill the user's session to make PUSH look ready
 Direct CLI launch alone does not establish incompatibility: use the selected
 host version and supported shared-daemon/remote/standalone mode.
 
+An ownership conflict does not identify the other writer or establish that the
+current conversation is standalone. The connection-recovery update reports
+`VERIFY_SELECTED_CODEX_ROUTE_AND_ORIGINAL_SESSION_OWNER`, with owner identity
+and the need to exit explicitly undetermined. First verify the selected existing
+route. A healthy shared host needs no exit/relaunch. Only a confirmed standalone
+owner without a supported control endpoint needs a one-time handover using that
+Codex installation's standard resume flow. After its writer exits, explicitly
+load the exact saved thread on the selected shared host; merely exiting does not
+reset the SDK's resume suppression. No project Python launcher is required.
+Do not remove locks, kill the session or change sandbox/model settings to repair
+an unverified route.
+
 RPC/handshake diagnostics distinguish ownership, access/authentication,
 unsupported API, binding and temporary transport failures, retaining safe codes
 and phases without exposing arbitrary host errors. Claude scope failures use the
