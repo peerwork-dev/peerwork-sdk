@@ -4792,6 +4792,8 @@ mod management;
 mod protocol_upgrades;
 #[path="participant_collaboration_guard_http_tests.rs"]
 mod collaboration_guards;
+#[path="participant_service_authority_http_tests.rs"]
+mod service_authority;
 
 #[tokio::test(flavor="multi_thread",worker_threads=2)]
 #[ignore="requires local TEST PostgreSQL and real HTTP service"]

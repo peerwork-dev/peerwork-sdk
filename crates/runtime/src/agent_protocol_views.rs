@@ -41,7 +41,7 @@ impl AgentTools {
     pub(super) async fn action_protocol_route(&self,alias:&str,request:&Invoke)->Result<(&Client,Invoke,Option<(&str,&str)>)>{
         let fallback=self.protocol_client(alias)?;
         let value=fallback.call(json!({"method":"capabilities"})).await?;
-        let cap:crate::participant::Capability=serde_json::from_value(value["capability"].clone()).map_err(|_|invalid("LOCAL_CEILING_INVALID"))?;
+        let cap:crate::participant::Capability=crate::participant::Capability::from_observation(&value)?;
         cap.authorize(request)?;
         let reader=self.protocol_read_client(alias,"structure.protocol.resolve")?;
         let selected=reader.call(json!({"method":"resolve_execution","request":request})).await;

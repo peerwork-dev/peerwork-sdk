@@ -984,6 +984,7 @@ impl AgentTools {
                         .unwrap_or_else(|error|json!({"state":"UNKNOWN","code":error.code}))
                 } else {json!({"state":"UNKNOWN","reason":"CURRENT_OBSERVATIONS_UNAVAILABLE"})};
                 let mut value = json!({"actor_id":self.client.actor_id(),"origin":self.client.origin(),"maturity":"EXPERIMENTAL","local_engine":if self.client.attached_mode(){"ATTACHED_ORIGINAL_CLIENT"}else{"AUTHENTICATED"},"state_migration_required":false,"versions":{"frontend":env!("CARGO_PKG_VERSION"),"runtime":capabilities.get("sdk_version").cloned().unwrap_or(json!("NOT_REPORTED"))},"remote_or_host_readiness":"NOT_ATTESTED","host_status":host_status,"delivery_observations":delivery_observations,"workspaces":self.profile.workspaces,"scopes":self.profile.scopes,"send_scopes":self.profile.send_scopes,"contacts":self.profile.contacts.keys().collect::<Vec<_>>(),"protocols":self.profile.protocols,"management_views":self.profile.management_views,"protocol_views":self.profile.protocol_views,"bindings":bindings,"receiving_binding":receiving_binding,"receiving_status":receiving_status,"capability":capabilities["capability"],"tool_discovery":{"source":"LOADED_MCP_TOOL_SCHEMAS","extra_call_required":false},"next_tools":{"reachability":"peerwork_reachability","send":"peerwork_send","chat":"peerwork_chat","post":"peerwork_post","inbox":"peerwork_inbox","protocol":"peerwork_protocol","management":"peerwork_manage","subscriptions":"peerwork_subscriptions"}});
+                value["operation_policy"]=capabilities["operation_policy"].clone();
                 crate::agent_delivery_status::refresh(&mut value);
                 Ok(value)
             }
@@ -1432,7 +1433,8 @@ fn inbox_view(mut value: Value, scope: &str) -> Value {
 }
 
 /// The CLI and MCP expose exactly these tool names and argument schemas.
-/// Runtime capability checks remain authoritative even if a tool is listed.
+/// The service decides ordinary business authority; explicit signer delegates
+/// retain their local boundaries even when a tool is listed.
 pub fn catalog() -> Vec<Value> {
     fn field(kind: &str) -> Value {
         json!({"type":kind})

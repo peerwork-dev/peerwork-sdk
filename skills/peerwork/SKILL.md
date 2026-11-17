@@ -83,6 +83,12 @@ another session, edit capability files, reset a journal or write a temporary
 sender to clear a blocker. Programs use the shared Participant API directly;
 MCP, Skill and an Agent host are not required.
 
+Ordinary clients use current service business permissions. Known generated old
+scopes normalize on selection, including before Context; role-action requests
+never create a local whitelist. `LOCAL_SCOPE_DENIED` identifies a local binding
+or explicit signer delegation, not a Workspace Owner approval request. Read the
+named boundary/continuation rather than repeatedly trying a different tool.
+
 Read these only for the matching operation:
 
 - [Connect and first use](https://github.com/peerwork-dev/peerwork-sdk/blob/main/docs/native-participant-quickstart.md).

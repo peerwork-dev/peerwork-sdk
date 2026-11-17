@@ -59,7 +59,7 @@ pub(crate) const CONNECT_FEATURES: [&str; 13] = [
 ];
 fn runtime_features() -> Vec<&'static str> {
     CONNECT_FEATURES.into_iter().chain([
-        "host-observation-upload-deadline-v1", "current-delivery-observation-v1", "current-host-delivery-health-v1", "opencode-v2-host-v1", "harness-connection-context-v1",
+        "host-observation-upload-deadline-v1", "current-delivery-observation-v1", "current-host-delivery-health-v1", "opencode-v2-host-v1", "harness-connection-context-v1", "service-operation-policy-v1",
     ]).collect()
 }
 const REQUEST_FORMAT: &str = "peerwork.participant-request.v1";
@@ -189,7 +189,7 @@ const OWNER_PREFIX:&str="connect-owner-";
 fn owner_name(engine:&str)->String {format!("{OWNER_PREFIX}{engine}")}
 pub(crate) fn rebind_client(config:&RuntimeConfig,name:&str)->Result<RebindClient> {
     let mut roots=config.clients.clone();
-    roots.extend(config.engines.iter().map(|engine|ClientConfig{name:owner_name(&engine.name),engine:engine.name.clone(),capability:Capability::owner()}));
+    roots.extend(config.engines.iter().map(|engine|ClientConfig{name:owner_name(&engine.name),engine:engine.name.clone(),capability:Capability::service()}));
     derived::resolve_rebind_client(&config.state_directory,&roots,name)
 }
 #[derive(Deserialize)]
@@ -562,7 +562,10 @@ impl Runtime {
                     }
                     Ok(json!({"hosts":values,"scope":"SELECTED_CLIENT_GENERATION","model_response":"NOT_ATTESTED"}))
                 },
-                ClientRequest::Capabilities=>Ok(json!({"format":"peerwork.participant-capability.v1","sdk_version":env!("CARGO_PKG_VERSION"),"actor_id":client.actor_id(),"origin":client.origin(),"capability":client.capability(),"admin":false,"maturity":"EXPERIMENTAL","features":runtime_features()})),
+                ClientRequest::Capabilities=>{
+                    let(capability,policy)=client.capability().observation();
+                    Ok(json!({"format":"peerwork.participant-capability.v1","sdk_version":env!("CARGO_PKG_VERSION"),"actor_id":client.actor_id(),"origin":client.origin(),"capability":capability,"operation_policy":policy,"admin":false,"maturity":"EXPERIMENTAL","features":runtime_features()}))
+                },
                 ClientRequest::Binding=>Ok(json!({"format":"peerwork.local-engine-binding.v1","actor_id":client.actor_id(),"origin":client.origin(),"state_binding":client.state_binding(),"engine_digest":self.engine_bindings.get(client.state_binding()),"namespace":client.local_namespace(),"client_generation":session.generation,"client_name":session.name,"features":runtime_features()})),
                 request=>crate::participant_client_tools::call(client,&session.watches,request).await,
             }
@@ -946,7 +949,7 @@ pub async fn serve(
         for (engine,owner) in &owners {
             let name=owner_name(engine);
             sessions.push(Session{name:name.clone(),token:random_token().map_err(|_|local("ENTROPY_UNAVAILABLE"))?,generation:None,
-                client:owner.restrict(&name,Capability::owner())?,watches:Default::default()});
+                client:owner.restrict(&name,Capability::service())?,watches:Default::default()});
         }
         for client in &config.clients {
             let owner = owners

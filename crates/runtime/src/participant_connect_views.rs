@@ -2,15 +2,52 @@
 //! immutable; old namespaces remain available for exact-operation recovery.
 use super::*;
 use crate::agent_tools::{ProtocolView,ProtocolViewScope,MAX_PROTOCOL_VIEWS};
-const READS:&[&str]=&["structure.instance.records.read","structure.instance.get","structure.instance.resolve","structure.protocol.resolve","structure.protocol.resource.get","structure.record.get","structure.record.relations.read","structure.records.read"];
+pub(super) const AUTHORITY_REVISION:u64=2;
 impl Connect {
+    /// Continue only a sealed native-managed bootstrap through its existing
+    /// local owner. Arbitrary configured clients remain explicit delegates.
+    pub(super) async fn scoped_issuer(&self,participant:&str,workspace:&str,client:RuntimeClient,caps:&Value)->Result<RuntimeClient> {
+        let capability=Capability::from_observation(caps)?;
+        if capability.operations.contains("*"){return Ok(client);}
+        let native=self.directory.join(format!("runtime-{participant}"));
+        if self.registry.local_runtime_admins.get(participant)!=Some(&native.join("admin.json"))
+            || self.registry.participants.get(participant).is_none_or(|registration|registration.endpoint_path!=native.join("client-bootstrap.json")) {return Ok(client);}
+        let owned=bootstrap::owned_runtime(self,participant)?;
+        if owned.config.clients.len()!=1 || owned.config.clients[0].name!="bootstrap"
+            || capability.workspace_ids.is_some() || !capability.allow_root
+            || capability.instance_ids.is_some() || capability.protocol_digests.is_some()
+            || capability.business_actions.is_some() || capability.mailbox_ids.is_some() {return Ok(client);}
+        if !caps["features"].as_array().is_some_and(|values|values.iter().any(|value|value=="service-operation-policy-v1")) {
+            let mut error=local("LOCAL_RUNTIME_UPGRADE_REQUIRED");
+            error.details=Some(json!({"next_action":"UPGRADE_SELECTED_RUNTIME_PRESERVING_ORIGINAL_STATE","missing_features":["service-operation-policy-v1"],"remote_changes_submitted":false}));
+            return Err(error);
+        }
+        let binding=client.call(json!({"method":"binding"})).await?;
+        let adopted=crate::communication_runtime::call(&owned.config.state_directory.join("admin.json"),json!({"method":"client_adopt","adoption":{
+            "source_binding":binding,"workspace_ids":[workspace],"alias":format!("service-space-{}",&sha256_hex(json!([participant,workspace]).to_string().as_bytes())[..32]),"policy":"INHERIT_ENGINE_FOR_WORKSPACES"}})).await?;
+        if adopted["ok"]!=true{return Err(serde_json::from_value(adopted["error"].clone()).unwrap_or_else(|_|local("LOCAL_OWNER_ADOPTION_FAILED")));}
+        let path=adopted["value"]["endpoint_path"].as_str().ok_or_else(||local("DERIVED_ENDPOINT_INVALID"))?;
+        RuntimeClient::connect(PathBuf::from(path),client.origin(),client.actor_id()).await
+    }
+    pub(crate) fn authority_refreshes(&self,participant:Option<&str>,workspace:Option<&str>)->Result<Vec<String>> {
+        let Some(handle)=self.selected_handle(participant)? else{return Ok(vec![]);};
+        Ok(self.registry.active_by_scope.values().filter_map(|id|self.registry.setups.get(id).map(|setup|(id,setup)))
+            .filter(|(_,setup)|setup.desired.participant==handle && workspace.is_none_or(|ws|ws==setup.desired.workspace_id) && Self::generated_authority_candidate(setup))
+            .map(|(id,_)|id.clone()).collect())
+    }
+    pub(crate) async fn normalize_selected_authority(&mut self,ids:&[String])->Result<()> {
+        self.require_writer()?;
+        for id in ids {self.normalize_cached_authority(id).await?;}
+        Ok(())
+    }
     pub(crate) fn workspace_profile_refreshable(&self, participant:Option<&str>, workspace:&str)->Result<bool> {
         let Some(handle)=self.selected_handle(participant)? else {return Ok(false);};
         let Some(setup)=self.registry.active_by_scope.get(&format!("{handle}:{workspace}")).and_then(|id|self.registry.setups.get(id)) else {return Ok(false);};
         Ok(Self::generated_authority_candidate(setup))
     }
     fn generated_authority_candidate(setup:&Setup)->bool {
-        setup.result["client_authority_model"]!="SERVICE_CURRENT"
+        setup.result["client_authority_revision"]!=AUTHORITY_REVISION
+            && setup.result.get("source_policy").is_none()
             && setup.profile.as_ref().is_some_and(|profile|!profile.protocol_endpoints.keys().any(|alias|!setup.protocol_intents.contains_key(alias)&&!setup.desired.protocols.iter().any(|p|p.alias==*alias)))
     }
     pub(super) async fn establish_baseline(&mut self, request:&ConnectRequest, selected:&Registration, parent:&Capability, client:&RuntimeClient, membership:&str)->Result<()> {
@@ -29,6 +66,7 @@ impl Connect {
             let setup=self.registry.setups.get_mut(&request.setup_id).unwrap();
             setup.profile=existing.profile;setup.sender_capability=existing.sender_capability;
             setup.result["client_authority_model"]=existing.result["client_authority_model"].clone();
+            setup.result["client_authority_revision"]=existing.result["client_authority_revision"].clone();
             return self.save();
         }
         let (capability,endpoint)=self.workspace_client(&request.participant,&request.workspace_id,parent,client).await?;
@@ -40,7 +78,7 @@ impl Connect {
             recovery_views:Default::default(),protocol_views:Default::default(),management_views:Default::default()};
         profile.validate()?;
         let setup=self.registry.setups.get_mut(&request.setup_id).unwrap();
-        setup.profile=Some(profile.clone());setup.sender_capability=Some(capability);setup.result["client_authority_model"]=json!("SERVICE_CURRENT");
+        setup.profile=Some(profile.clone());setup.sender_capability=Some(capability);setup.result["client_authority_model"]=json!("SERVICE_CURRENT");setup.result["client_authority_revision"]=json!(AUTHORITY_REVISION);
         self.save()?;
         self.registry.active_by_scope.insert(format!("{}:{}",request.participant,request.workspace_id),request.setup_id.clone());
         self.registry.active=Some(request.setup_id.clone());self.save()
@@ -54,8 +92,6 @@ impl Connect {
         // provenance checks and are never enlarged from the denied endpoint.
         Ok(self.normalize_cached_authority(&active).await?!=active)
     }
-    pub(super) fn inherited_explicit_actions(parent:&Capability,actions:&[String])->bool{actions.is_empty()||parent.business_actions.as_ref()==Some(&actions.iter().cloned().collect())}
-    pub(super) fn explicit_setup(setup:&Setup)->bool{setup.profile.is_some()&&setup.result["client_authority_model"]!="SERVICE_CURRENT"&&setup.protocol_intents.values().chain(setup.desired.protocols.iter()).any(|p|!p.actions.is_empty())}
     pub(super) fn check_requested_actions(parent:&Capability,protocols:&[ProtocolSelection])->Result<()>{
         let Some(allowed)=&parent.business_actions else{return Ok(());};
         let missing:std::collections::BTreeSet<_>=protocols.iter().flat_map(|p|p.actions.iter()).filter(|a|!allowed.contains(*a)).cloned().collect();
@@ -72,8 +108,9 @@ impl Connect {
         let client=self.original_client(&old.desired.participant).await?;
         let caps=client.call(json!({"method":"capabilities"})).await?;
         if !missing_runtime_features(&caps).is_empty(){let mut e=local("LOCAL_RUNTIME_UPGRADE_REQUIRED");e.details=Some(json!({"tools_available":true,"existing_configuration_preserved":true,"next_actor":"LOCAL_RUNTIME_OWNER","next_action":"UPGRADE_SELECTED_RUNTIME_PRESERVING_ORIGINAL_STATE"}));return Err(e);}
-        let parent:Capability=serde_json::from_value(caps["capability"].clone()).map_err(|_|local("LOCAL_CEILING_INVALID"))?;
-        parent.authorize(&Invoke::new("connect-directory-preflight","structure.members.read",Scope{workspace_id:Some(old.desired.workspace_id.clone()),..Default::default()},json!({"view":"COLLABORATION","limit":1})))?;
+        let client=self.scoped_issuer(&old.desired.participant,&old.desired.workspace_id,client,&caps).await?;
+        let caps=client.call(json!({"method":"capabilities"})).await?;
+        let parent:Capability=Capability::from_observation(&caps)?;
         let (cap,path)=self.workspace_client(&old.desired.participant,&old.desired.workspace_id,&parent,&client).await?;
         let mut profile=previous.clone();profile.endpoint_path=path.clone();profile.directory_endpoints.insert(old.desired.workspace_id.clone(),path.clone());
         for(alias,scope)in &profile.protocols{if scope.workspace_id.as_deref()==Some(&old.desired.workspace_id){profile.protocol_endpoints.insert(alias.clone(),path.clone());}}
@@ -87,6 +124,7 @@ impl Connect {
             next.profile=Some(profile.clone());next.sender_capability=Some(cap);next.result["setup_id"]=json!(revision);next.result["client_authority_model"]=json!("SERVICE_CURRENT");
             self.registry.setups.insert(revision.clone(),next);self.save()?;
         }
+        self.registry.setups.get_mut(&revision).unwrap().result["client_authority_revision"]=json!(AUTHORITY_REVISION);
         self.registry.setups.get_mut(&revision).unwrap().result.as_object_mut().unwrap().remove("profile_path");
         self.registry.active_by_scope.insert(format!("{}:{}",old.desired.participant,old.desired.workspace_id),revision.clone());self.registry.active=Some(revision.clone());self.save()?;
         Ok(revision)
@@ -114,22 +152,11 @@ impl Connect {
         let path=PathBuf::from(derived["endpoint_path"].as_str().ok_or_else(||local("DERIVED_ENDPOINT_INVALID"))?);
         Ok((cap,path))
     }
-    pub(super) async fn protocol_endpoint(&self,participant:&str,alias:&str,scope:&Scope,explicit:&[String],parent:&Capability,ordinary:&Path,client:&RuntimeClient)->Result<PathBuf>{
-        if explicit.is_empty(){return Ok(ordinary.to_owned());}
-        let mut cap=parent.clone();cap.instance_ids=Some([scope.instance_id.clone().ok_or_else(||local("BROKEN_PROTOCOL_BINDING"))?].into());
-        cap.protocol_digests=Some([scope.protocol_digest.clone().ok_or_else(||local("BROKEN_PROTOCOL_BINDING"))?].into());
-        cap.business_actions=Some(explicit.iter().filter(|action|parent.business_actions.as_ref().is_none_or(|allowed|allowed.contains(*action))).cloned().collect());
-        cap.mailbox_ids=Some(Default::default());
-        cap.operations.retain(|op|op=="structure.action"||READS.contains(&op.as_str())&&op!="structure.instance.records.read");
-        let name=format!("delegate-{}",&sha256_hex(json!([participant,alias,cap]).to_string().as_bytes())[..40]);
-        let derived=client.call(json!({"method":"derive","name":name,"capability":cap})).await?;
-        Ok(PathBuf::from(derived["endpoint_path"].as_str().ok_or_else(||local("DERIVED_ENDPOINT_INVALID"))?))
-    }
     async fn capture_protocol_view(&self,alias:&str,mut scope:Scope,path:PathBuf,read_only:bool,context:Option<String>,profile:&AgentProfile)->Result<(String,ProtocolView)>{
         let client=RuntimeClient::connect(path.clone(),&profile.expected_origin,&profile.expected_actor).await?;
         let binding=crate::communication_runtime::canonical_binding(&client.call(json!({"method":"binding"})).await?);
         let caps=client.call(json!({"method":"capabilities"})).await?;
-        let cap:Capability=serde_json::from_value(caps["capability"].clone()).map_err(|_|local("LOCAL_CEILING_INVALID"))?;
+        let cap:Capability=Capability::from_observation(&caps)?;
         // A logical alias can now point at a newer default, while its original
         // endpoint remains pinned to an older execution for pending recovery.
         // Persist the endpoint's actual immutable ceiling, not that alias's
@@ -181,12 +208,12 @@ impl Connect {
         let old=profile.clone();
         let original=self.original_client(&handle).await?;let caps=original.call(json!({"method":"capabilities"})).await?;
         if !missing_runtime_features(&caps).is_empty(){return Err(local("LOCAL_RUNTIME_UPGRADE_REQUIRED"));}
-        if self.registry.setups[&active].result["client_authority_model"]!="SERVICE_CURRENT"&&!Self::explicit_setup(&self.registry.setups[&active]){return Err(local("LOCAL_DELEGATION_PROVENANCE_REQUIRED"));}
+        let original=self.scoped_issuer(&handle,&ws,original,&caps).await?;
+        let caps=original.call(json!({"method":"capabilities"})).await?;
+        if self.registry.setups[&active].result["client_authority_model"]!="SERVICE_CURRENT"{return Err(local("LOCAL_DELEGATION_PROVENANCE_REQUIRED"));}
 
-        let parent:Capability=serde_json::from_value(caps["capability"].clone()).map_err(|_|local("LOCAL_CEILING_INVALID"))?;
-        if Self::explicit_setup(&self.registry.setups[&active])&&self.registry.setups[&active].protocol_intents.values().chain(self.registry.setups[&active].desired.protocols.iter()).any(|p|!Self::inherited_explicit_actions(&parent,&p.actions)){return Err(local("EXPLICIT_DELEGATION_PARENT_REQUIRED"));}
+        let parent:Capability=Capability::from_observation(&caps)?;
         self.extend_protocol_views(&handle,Some(&old),&mut profile,&parent,&original).await?;
-        let desired=self.registry.setups[&active].protocol_intents.get(alias).cloned().or_else(||self.registry.setups[&active].desired.protocols.iter().find(|p|p.alias==alias).cloned());
         let mut query=json!({"instance_id":instance});
         if let Some(ctx)=target.and_then(|v|v["execution_context_id"].as_str()){query["execution_context_id"]=json!(ctx);}
         let observed=read(&original,"structure.instance.resolve",Scope{workspace_id:Some(ws.clone()),..Default::default()},query).await?;
@@ -195,8 +222,7 @@ impl Connect {
         let context=selected["execution_context_id"].as_str().map(str::to_owned);
         let actual=Scope{workspace_id:Some(ws.clone()),instance_id:Some(instance),protocol_digest:Some(protocol)};
         let (cap,ordinary)=self.workspace_client(&handle,&ws,&parent,&original).await?;
-        let explicit=desired.as_ref().map(|d|d.actions.as_slice()).unwrap_or_default();
-        let path=if Self::explicit_setup(&self.registry.setups[&active]){self.protocol_endpoint(&handle,alias,&actual,explicit,&cap,&ordinary,&original).await?}else{ordinary.clone()};
+        let path=ordinary.clone();
         profile.protocols.insert(alias.into(),actual.clone());
         profile.protocol_endpoints.insert(alias.into(),path.clone());
         profile.directory_endpoints.insert(ws.clone(),ordinary);

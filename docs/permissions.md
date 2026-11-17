@@ -37,6 +37,21 @@ authorities. A business grant does not authorize a host rebind or shell action.
 Protocol digest verification, body encryption, service trust pins and recipient
 binding remain mandatory.
 
+Identity-owned `ParticipantClient::open` and native-managed ordinary clients use
+`Capability::service()`: a dynamic policy for all operations supported by the
+runtime, with the selected Workspace binding. They persist no business action,
+protocol-version or recipient whitelist. Current service grants remain decisive.
+Capability discovery lists supported operations for tools and includes
+`operation_policy: ALL_SUPPORTED`; that list is documentation, not a local grant
+snapshot. The persisted dynamic policy uses `operations: ["*"]`.
+
+`Capability::owner()` retains its finite operation snapshot for explicitly
+constructed delegations. `restrict` inherits that ceiling, and cannot acquire a
+dynamic policy from a finite parent. Use `Capability::service()` when configuring
+an ordinary program client; use an explicit capability when intentionally
+delegating a signer to a narrower caller. Neither mode grants Workspace Owner
+authority at the service.
+
 For intentional local delegation, pass an already constrained original
 `ParticipantClient`/runtime endpoint. The native `Capability`/`restrict` boundary
 is retained and inherited; Connect cannot expand it. Owner credentials retain
@@ -55,6 +70,14 @@ presumed deliberate delegation. The shared lifecycle validates their original
 issuer before normalizing them and retains old operation routes. Unknown source
 policies remain unchanged until an explicit local-owner source-policy decision.
 Real `Capability` restrictions and child namespaces retain their limits.
+
+Known generated installations normalize once during client selection, before
+Context or fresh tool use, including installations previously marked
+`SERVICE_CURRENT`. Historical role-action requests never prove local delegation.
+A sealed native-managed bootstrap can continue its ordinary scope through its
+existing authenticated local owner without rewriting its old credential/config.
+Arbitrary external endpoints retain their actual parent limits. Exact saved
+operation status/recovery does not depend on this normalization succeeding.
 
 ## Read a denial
 

@@ -207,7 +207,8 @@ impl Lifecycle {
                 Err(error) if matches!(request,AgentRequest::Context) && error.code=="MULTIPLE_IDENTITIES_SELECT_FRONTEND_PARTICIPANT"=>return Ok(connect.context_for(handle_pin,workspace_pin)),
                 Err(error)=>return Err(error),
             };
-            let context=connect.context_for(handle.as_deref(),workspace_pin);
+            let mut context=connect.context_for(handle.as_deref(),workspace_pin);
+            let authority_refreshes=connect.authority_refreshes(handle.as_deref(),workspace_pin)?;
             let profile=match connect.profile_for_scope(handle_pin,workspace_pin) {
                 Ok(profile)=>profile,
                 Err(error) if matches!(request,AgentRequest::Context) && error.code=="MULTIPLE_WORKSPACES_SELECT_FRONTEND_WORKSPACE"=>return Ok(context),
@@ -220,10 +221,21 @@ impl Lifecycle {
                 let alias=agent_tools::protocol_request_alias(&request).map(str::to_owned);let retry=request.clone();
                 let has_recovery=!profile.recovery_views.is_empty();
                 let selected=self.selected_tools(profile,binding).await?;
-                let selected=selected.for_request(&request);
+                let mut selected=selected.for_request(&request);
                 // Cross-namespace mutations consult retained original routes
                 // using this same cached client, before any fresh resolution.
-                if has_recovery {if let Some(original)=selected.original_request(&request).await?{return Ok(original);}}
+                if has_recovery || !authority_refreshes.is_empty() {if let Some(original)=selected.original_request(&request).await?{return Ok(original);}}
+                // Normalize a proven generated installation once on selection,
+                // before any new work, rather than waiting for a denied API.
+                // Exact saved outcomes remain readable without opening an issuer.
+                if !authority_refreshes.is_empty() && !matches!(request,AgentRequest::Status{..}|AgentRequest::Recover{..}) {
+                    crate::participant_connect::Connect::open(directory)?.normalize_selected_authority(&authority_refreshes).await?;
+                    let current=self.inspect(directory)?;
+                    let next=current.profile_for_scope(handle_pin,workspace_pin)?.ok_or_else(||ParticipantError::local("LOCAL_SELECTION_REQUIRED","CONNECT"))?;
+                    let binding=current.selected_profile_binding(handle_pin,&next)?;
+                    context=current.context_for(handle.as_deref(),workspace_pin);
+                    selected=std::borrow::Cow::Owned(self.selected_tools(next,binding).await?.for_request(&request).into_owned());
+                }
                 let result=selected.call_observed(request).await;
                 let mut value=match result {
                     Err(error)if agent_tools::refresh_workspace_error(&error).is_some() && self.inspect(directory)?.workspace_profile_refreshable(handle_pin,agent_tools::refresh_workspace_error(&error).unwrap())?=>{

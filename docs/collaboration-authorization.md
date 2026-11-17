@@ -45,6 +45,10 @@ Known SDK-generated historical projections can be repaired automatically from
 the authenticated registered original parent. Historical Connect action lists
 are remote grant requests, not evidence of local signer delegation. This repair
 also applies when a new Setup continues a known generated old active profile.
+The shared lifecycle normalizes these projections once at selection, before
+Context or new tool work. It does not wait for a particular API to fail. Normal
+clients use a dynamic supported-operation policy rather than a persisted API
+list; all business permissions remain current service decisions.
 Old namespaces remain available
 for exact recovery. An explicitly restricted parent is not broadened, and an
 arbitrary external profile cannot borrow another endpoint's broader authority.
@@ -69,7 +73,7 @@ Protocol lookup starts with `structure.instance.resolve` for an exact instance,
 then uses `structure.protocol.resolve` or `structure.protocol.resource.get`.
 A local `operations` denial at any of these stages is not a service rejection
 or evidence about the protocol's rules. Known historical generated scopes use
-the same original-issuer repair as member discovery. Explicit parent limits
+the same selection-time original-issuer normalization as member discovery. Explicit parent limits
 remain enforced; a new Workspace approval does not repair a local credential.
 
 Original operation lookup precedes fresh metadata selection. Status, recovery

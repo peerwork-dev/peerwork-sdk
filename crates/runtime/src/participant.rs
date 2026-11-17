@@ -293,6 +293,29 @@ pub struct Capability {
     pub mailbox_ids: Option<BTreeSet<String>>,
 }
 impl Capability {
+    /// Ordinary identity-owned clients defer authorization to the service.
+    /// The wildcard denotes supported operations, not a cached remote grant.
+    pub fn service() -> Self {
+        Self { operations: ["*".into()].into(), ..Self::owner() }
+    }
+    pub fn permits_operation(&self, action: &str) -> bool {
+        crate::participant_actions::kind(action).is_some()
+            && (self.operations.contains("*") || self.operations.contains(action))
+    }
+    pub(crate) fn observation(&self) -> (Self, &'static str) {
+        let mut snapshot=self.clone();
+        let policy=if self.operations.contains("*") {
+            snapshot.operations=Self::owner().operations;
+            "ALL_SUPPORTED"
+        } else { "EXPLICIT" };
+        (snapshot,policy)
+    }
+    pub(crate) fn from_observation(value:&Value)->Result<Self> {
+        let mut capability:Self=serde_json::from_value(value["capability"].clone())
+            .map_err(|_|ParticipantError::local("LOCAL_CEILING_INVALID","AUTHORIZATION"))?;
+        if value["operation_policy"]=="ALL_SUPPORTED" {capability.operations=["*".into()].into();}
+        capability.validate()?;Ok(capability)
+    }
     pub fn owner() -> Self {
         Self {
             operations: catalog::STRUCTURE_MUTATIONS
@@ -315,7 +338,8 @@ impl Capability {
             || self
                 .operations
                 .iter()
-                .any(|v| crate::participant_actions::kind(v).is_none())
+                .any(|v| v!="*" && crate::participant_actions::kind(v).is_none())
+            || self.operations.contains("*") && self.operations.len()!=1
         {
             return Err(ParticipantError::local(
                 "CAPABILITY_INVALID",
@@ -333,7 +357,7 @@ impl Capability {
     pub fn authorize(&self, r: &Invoke) -> Result<()> {
         r.validate()?;
         let denied = || self.denied(r, "request_scope");
-        if !self.operations.contains(&r.action) {
+        if !self.permits_operation(&r.action) {
             return Err(self.denied(r, "operations"));
         }
         if r.action=="structure.instance.records.read" {
@@ -479,7 +503,7 @@ impl Capability {
         Ok(())
     }
     pub fn is_subset_of(&self, parent: &Self) -> bool {
-        self.operations.is_subset(&parent.operations)
+        (parent.operations.contains("*") || !self.operations.contains("*") && self.operations.is_subset(&parent.operations))
             && (!self.allow_root || parent.allow_root)
             && subset(&self.workspace_ids, &parent.workspace_ids)
             && subset(&self.instance_ids, &parent.instance_ids)
@@ -815,7 +839,7 @@ impl ParticipantClient {
                 origin,
             }),
             namespace: "program".into(),
-            capability: Capability::owner(),
+            capability: Capability::service(),
             local_live: Arc::new(std::sync::atomic::AtomicBool::new(true)),
         })
     }
@@ -1553,6 +1577,27 @@ async fn engine_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn service_authority_is_dynamic_and_explicit_delegation_is_not_inferred() {
+        let mut ordinary=Capability::service();ordinary.allow_root=false;ordinary.workspace_ids=Some(["W".repeat(43)].into());
+        ordinary.validate().unwrap();
+        for action in Capability::owner().operations {assert!(ordinary.permits_operation(&action),"{action}");}
+        let encoded=serde_json::to_value(&ordinary).unwrap();
+        assert_eq!(encoded["operations"],json!(["*"]));
+        let restored:Capability=serde_json::from_value(encoded).unwrap();assert_eq!(restored,ordinary);
+        let request=Invoke::new("lookup","structure.instance.resolve",Scope{workspace_id:Some("W".repeat(43)),..Default::default()},json!({"instance_id":"I".repeat(43)}));
+        restored.authorize(&request).unwrap();
+        let mut outside=request.clone();outside.scope.workspace_id=Some("X".repeat(43));
+        assert_eq!(restored.authorize(&outside).unwrap_err().details.unwrap()["restricted_by"],json!(["workspace_ids"]));
+        let mut explicit=ordinary.clone();explicit.operations=["structure.workspace.get".into()].into();
+        assert!(explicit.is_subset_of(&ordinary));assert!(!ordinary.is_subset_of(&explicit));
+        assert_eq!(explicit.authorize(&request).unwrap_err().code,"LOCAL_SCOPE_DENIED");
+        let(snapshot,policy)=ordinary.observation();assert_eq!(policy,"ALL_SUPPORTED");
+        assert_eq!(snapshot.operations,Capability::owner().operations);
+        assert_eq!(Capability::from_observation(&json!({"capability":snapshot,"operation_policy":policy})).unwrap(),ordinary);
+        assert_ne!(Capability::from_observation(&json!({"capability":snapshot})).unwrap(),ordinary,"a finite caller policy is not inferred dynamic");
+        let mut malformed=ordinary.clone();malformed.operations.insert("structure.action".into());assert!(malformed.validate().is_err());
+    }
     #[test]
     fn live_running_observation_does_not_invent_or_downgrade_remote_certainty() {
         for (state, certainty, expected) in [

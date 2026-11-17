@@ -97,15 +97,15 @@ impl AgentTools {
             let selected_workspace=if let Some(alias)=protocol{self.protocol(alias)?.workspace_id}else{self.selected_workspace(workspace).ok()};
             let client=selected_workspace.as_deref().map(|ws|self.directory_client(ws)).unwrap_or(&self.client);
             let caps=client.call(json!({"method":"capabilities"})).await?;
-            let cap:crate::participant::Capability=serde_json::from_value(caps["capability"].clone()).map_err(|_|invalid("LOCAL_CEILING_INVALID"))?;
+            let cap:crate::participant::Capability=crate::participant::Capability::from_observation(&caps)?;
             let list=operations().into_iter().filter(|spec|operation.is_none_or(|name|spec.name==name)).map(|spec|{
                 let kind=native_kind(&spec);
                 let view:Option<&str>=None;
                 let selected_cap=&cap;
                 let mut item=json!({"operation":spec.name,"native_action":spec.action,"scope":spec.scope,"description":spec.description,
                     "mode":match kind{StructureOperationKind::Read=>"read",StructureOperationKind::Control=>"request",StructureOperationKind::Mutation=>"invoke"},
-                    "local_operation_listed":selected_cap.operations.contains(spec.action),"management_view":view,"local_scope_checked":false,"remote_permission":"NOT_ATTESTED"});
-                if !selected_cap.operations.contains(spec.action){item["management_enable"]=enable_hint(&spec,selected_workspace.as_deref());}
+                    "local_operation_listed":selected_cap.permits_operation(spec.action),"management_view":view,"local_scope_checked":false,"remote_permission":"NOT_ATTESTED"});
+                if !selected_cap.permits_operation(spec.action){item["management_enable"]=enable_hint(&spec,selected_workspace.as_deref());}
                 if mode=="describe" {
                     item["required_body_fields"]=json!(spec.required);item["body_example"]=spec.example;
                     item["revision_input"]=json!(if matches!(spec.name,"member.set"|"workspace.delete"){"expected_workspace_revision"}else if spec.name=="maintenance.rebuild"{"expected_revision"}else{"SEE_SELECTED_OPERATION"});

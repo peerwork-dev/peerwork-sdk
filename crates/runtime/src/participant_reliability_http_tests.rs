@@ -65,7 +65,7 @@ async fn managed_mcp_and_cli_repair_generated_directory_clients_without_replacin
     let instance=adopted["instance_id"].as_str().unwrap().to_owned();
     let unaliased=mutate(&owner,"adopt-unaliased-protocol","structure.adopt",&scope,json!({"package_digest":package["package_digest"],"bootstrap_grant":{"actions":["claim"],"protocol_roles":["WORKER"]}})).await["instance_id"].as_str().unwrap().to_owned();
     owner.close().await.unwrap();
-    let runtime=ipc::RuntimeConfig{format:"peerwork.participant-runtime.v1".into(),state_directory:root.path().join("runtime"),hosts:vec![],engines:vec![ipc::EngineConfig{name:"original".into(),origin:config.origin.clone(),expected_actor:config.expected_actor.clone(),identity_path:config.identity_path.clone(),state_directory:config.state_directory.clone(),journal_path:Some(config.journal_path.clone()),authority:config.authority.clone(),allow_loopback_http:true,transport:config.transport.clone(),max_inflight:8,max_pending:64,max_stored_bytes:32*1024*1024,migration_sources:vec![]}],clients:vec![ipc::ClientConfig{name:"owner".into(),engine:"original".into(),capability:Capability::owner()}]};
+    let runtime=ipc::RuntimeConfig{format:"peerwork.participant-runtime.v1".into(),state_directory:root.path().join("runtime"),hosts:vec![],engines:vec![ipc::EngineConfig{name:"original".into(),origin:config.origin.clone(),expected_actor:config.expected_actor.clone(),identity_path:config.identity_path.clone(),state_directory:config.state_directory.clone(),journal_path:Some(config.journal_path.clone()),authority:config.authority.clone(),allow_loopback_http:true,transport:config.transport.clone(),max_inflight:8,max_pending:64,max_stored_bytes:32*1024*1024,migration_sources:vec![]}],clients:vec![ipc::ClientConfig{name:"owner".into(),engine:"original".into(),capability:Capability::service()}]};
     let stop=crate::KernelCancellationToken::new();let(tx,rx)=tokio::sync::oneshot::channel();let daemon=tokio::spawn(ipc::serve(runtime,stop.clone(),tx));let ready=rx.await.unwrap().unwrap();
     let registry=root.path().join("registry");let mut connect=Connect::open(&registry).unwrap();
     connect.register("owner",Registration{origin:service.origin.clone(),actor_id:config.expected_actor.clone(),endpoint_path:ready.client_endpoints["owner"].clone()}).await.unwrap();
@@ -84,16 +84,17 @@ async fn managed_mcp_and_cli_repair_generated_directory_clients_without_replacin
     drop(restricted);drop(connect);
     let store=crate::secure_state::SecureStateStore::open(&registry.join("connect.state")).unwrap();let mut state:Value=serde_json::from_slice(&store.read_exact().unwrap().unwrap()).unwrap();let active=state["active"].as_str().unwrap().to_owned();
     state["setups"][&active]["profile"]=json!(profile);state["setups"][&active]["sender_capability"]=json!(narrow);state["setups"][&active]["result"].as_object_mut().unwrap().remove("client_authority_model");
+    state["setups"][&active]["result"].as_object_mut().unwrap().remove("client_authority_revision");
     // Current ordinary profiles stay in memory; older installations may also
     // retain a materialized profile. Exercise either without requiring one.
     if let Some(path)=state["setups"][&active]["result"]["profile_path"].as_str(){crate::onboarding_files::replace(std::path::Path::new(path),&serde_json::to_vec(&profile).unwrap()).unwrap();}
     let historical=serde_json::to_vec(&state).unwrap();store.write_exact(&historical).unwrap();drop(store);
     // Each lookup is the first call after restoring the same historical
     // generated projection. No earlier directory call may repair it for us.
-    for args in [json!({"protocol":format!("{ws}/{unaliased}")}),json!({"protocol":"tasks","role":"WORKER"}),json!({"protocol":"tasks","path":"roles/worker.md"})] {
+    for (name,args) in [("context",json!({})),("protocol",json!({"protocol":format!("{ws}/{unaliased}")})),("protocol",json!({"protocol":"tasks","role":"WORKER"})),("protocol",json!({"protocol":"tasks","path":"roles/worker.md"}))] {
         let local=crate::agent_lifecycle::Lifecycle::local(registry.clone(),Some("owner".into()),Some(ws.clone()));
-        let result=local.call(AgentRequest::parse("protocol",args.clone()).unwrap()).await.unwrap_or_else(|error|panic!("protocol discovery {args}: {error:?}"));
-        assert_eq!(result["authority"],"EXTERNAL_PROTOCOL_DATA");
+        let result=local.call(AgentRequest::parse(name,args.clone()).unwrap()).await.unwrap_or_else(|error|panic!("discovery {name} {args}: {error:?}"));
+        if name=="protocol"{assert_eq!(result["authority"],"EXTERNAL_PROTOCOL_DATA");}
         if args.get("role").is_some(){assert_eq!(result["runtime"]["role"],"WORKER");}
         let fixed=Connect::inspect(&registry).unwrap().profile_for_scope(Some("owner"),Some(&ws)).unwrap().unwrap();
         assert_eq!(fixed.expected_actor,config.expected_actor);assert_ne!(fixed.endpoint_path,legacy);

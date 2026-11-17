@@ -541,6 +541,7 @@ impl Connect {
         // Authority provenance follows the persisted profile, not transient
         // setup status or a coincidental endpoint layout.
         if old.result["client_authority_model"]=="SERVICE_CURRENT"{result["client_authority_model"]=json!("SERVICE_CURRENT");}
+        if let Some(revision)=old.result.get("client_authority_revision"){result["client_authority_revision"]=revision.clone();}
         let profile_changed=profile.as_ref().is_some_and(|next|serde_json::to_value(&old.profile).ok()!=serde_json::to_value(Some(next)).ok());
         if old.result != result || profile_changed {
             old.result = result.clone();
@@ -787,7 +788,9 @@ impl Connect {
                 json!({"missing_features":missing_features,"remote_changes_submitted":false}),
             );
         }
-        let parent: Capability = serde_json::from_value(caps["capability"].clone()).map_err(|_| local("LOCAL_CEILING_INVALID"))?;
+        let client=self.scoped_issuer(&request.participant,&request.workspace_id,client,&caps).await?;
+        let caps=client.call(json!({"method":"capabilities"})).await?;
+        let parent: Capability = Capability::from_observation(&caps)?;
         let scope = Scope {
             workspace_id: Some(request.workspace_id.clone()),
             ..Scope::default()
@@ -795,7 +798,7 @@ impl Connect {
         let communication_requested=request.send||request.receive||!request.contacts.is_empty();
         // Signed reads share the service's trusted clock. Refresh before the
         // first request, including a resumed setup after the old window expired.
-        let now=if (communication_requested||request.require_body_keys)&&parent.operations.contains("participant.time.read") {trusted_time(&client,&scope).await?}else{0};
+        let now=if (communication_requested||request.require_body_keys)&&parent.permits_operation("participant.time.read") {trusted_time(&client,&scope).await?}else{0};
         let workspace = match read(&client, "structure.workspace.get", scope.clone(), json!({})).await {
             Ok(value)=>value,
             Err(error) if request.request_membership && (matches!(error.code.as_str(),"FORBIDDEN"|"UNVERIFIED_AUTHORIZATION_RESPONSE") || error.details.as_ref().is_some_and(|d|d["http_status"]==403))=>{
@@ -834,7 +837,7 @@ impl Connect {
         if unsupported_host {return self.pending_unsupported_host(&request);}
         Self::check_requested_actions(&parent,&request.protocols)?;
         let management_actions=crate::agent_tools::management::workspace_actions(&request.management)?;
-        let missing_management:Vec<_>=management_actions.difference(&parent.operations).cloned().collect();
+        let missing_management:Vec<_>=management_actions.iter().filter(|action|!parent.permits_operation(action)).cloned().collect();
         if !missing_management.is_empty() {
             let mut error=local("LOCAL_SCOPE_DENIED");error.phase="AUTHORIZATION".into();error.recovery="REVIEW_EXPLICIT_LOCAL_CAPABILITY".into();
             error.details=Some(json!({"missing_operations":missing_management,"next_actor":"LOCAL_RUNTIME_OWNER","remote_permission_checked":false,"remote_grants_changed":false}));return Err(error);
@@ -845,7 +848,7 @@ impl Connect {
         if request.receive{required.push("structure.mailboxes.read");}
         if !request.protocols.is_empty(){required.extend(["structure.instance.resolve","structure.protocol.resolve","structure.grant.get"]);}
         if request.send{required.push("structure.message.send");}
-        let missing=required.into_iter().filter(|action|!parent.operations.contains(*action)).collect::<Vec<_>>();
+        let missing=required.into_iter().filter(|action|!parent.permits_operation(action)).collect::<Vec<_>>();
         let probe=Invoke::new("connect-local-preflight","structure.workspace.get",Scope{workspace_id:Some(request.workspace_id.clone()),..Default::default()},json!({}));
         let denied=parent.authorize(&probe).and_then(|_|parent.authorize(&Invoke::new("connect-directory-preflight","structure.members.read",probe.scope.clone(),json!({"view":"COLLABORATION","limit":1})))).err();
         if !missing.is_empty()||denied.is_some(){
@@ -1047,9 +1050,6 @@ impl Connect {
         }else{None};
         if let Some(completed)=&completed_first {previous_setup.as_mut().unwrap().effective_host=Some(completed.name.clone());}
         let previous = previous_setup.as_ref().and_then(|s| s.profile.clone());
-        if previous_setup.as_ref().is_some_and(|s|Self::explicit_setup(s)&&s.protocol_intents.values().chain(s.desired.protocols.iter()).any(|p|!Self::inherited_explicit_actions(&parent,&p.actions))){
-            let mut e=local("EXPLICIT_DELEGATION_PARENT_REQUIRED");e.details=Some(json!({"existing_configuration_preserved":true,"next_actor":"LOCAL_RUNTIME_OWNER","next_action":"SELECT_EXPLICITLY_RESTRICTED_ORIGINAL_CLIENT"}));return Err(e);
-        }
 
         let management_views=previous.as_ref().map(|p|p.management_views.clone()).unwrap_or_default();
         if request.receive_mode==Some(ReceiveMode::Inbox) && previous_setup.as_ref().is_some_and(|s|s.channel_receive&&s.effective_host.is_some()) {
@@ -1127,14 +1127,12 @@ impl Connect {
         let mut protocol_endpoints=previous.as_ref().map(|p|p.protocol_endpoints.clone()).unwrap_or_default();
         let mut effective_protocol_intents=BTreeMap::new();
         for p in &request.protocols {
-            let selected_scope=&protocols[&p.alias];
             let explicit=if !p.actions.is_empty(){p.actions.clone()}else{
                 previous_setup.as_ref().and_then(|old|old.protocol_intents.get(&p.alias)
                     .or_else(||old.desired.protocols.iter().find(|v|v.alias==p.alias))).map(|v|v.actions.clone()).unwrap_or_default()
             };
             let mut intent=p.clone();intent.actions=explicit.clone();effective_protocol_intents.insert(p.alias.clone(),intent);
-            let path=if previous_setup.as_ref().is_some_and(Self::explicit_setup){self.protocol_endpoint(&request.participant,&p.alias,selected_scope,&explicit,&capability,&endpoint,&client).await?}else{endpoint.clone()};
-            protocol_endpoints.insert(p.alias.clone(),path);
+            protocol_endpoints.insert(p.alias.clone(),endpoint.clone());
         }
         // This existing field is also the Workspace management/read route.
         // All ordinary tool families share exactly the same credential.
@@ -1157,8 +1155,7 @@ impl Connect {
             receive_cap.allow_root = false;
             receive_cap.workspace_ids = Some([request.workspace_id.clone()].into());
             receive_cap.mailbox_ids = Some([mailbox_id.into()].into());
-            receive_cap.operations.retain(|s| {
-                [
+            receive_cap.operations=[
                     "structure.mailbox.get",
                     "structure.mailbox.claim",
                     "structure.mailbox.inbox.read",
@@ -1166,9 +1163,7 @@ impl Connect {
                     "structure.mailbox.ack",
                     "structure.mailbox.report",
                     "structure.communication.stream.get",
-                ]
-                .contains(&s.as_str())
-            });
+                ].into_iter().filter(|action|parent.permits_operation(action)).map(str::to_owned).collect();
             let alias = format!(
                 "receive-{}",
                 &sha256_hex(
@@ -1324,7 +1319,8 @@ impl Connect {
                 if let Some(old)=&previous_setup{for selected in &old.desired.protocols{intents.entry(selected.alias.clone()).or_insert_with(||selected.clone());}}
                 for(alias,intent)in &effective_protocol_intents{intents.insert(alias.clone(),intent.clone());}s.protocol_intents=intents;
                 s.profile = Some(profile.clone());
-                if !previous_setup.as_ref().is_some_and(Self::explicit_setup){s.result["client_authority_model"]=json!("SERVICE_CURRENT");}
+                s.result["client_authority_model"]=json!("SERVICE_CURRENT");
+                s.result["client_authority_revision"]=json!(protocol_views::AUTHORITY_REVISION);
                 s.channel_send = channel_send;
                 s.channel_receive = channel_receive;
                 s.sender_capability = Some(capability.clone());

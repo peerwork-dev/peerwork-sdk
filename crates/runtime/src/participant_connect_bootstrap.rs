@@ -295,7 +295,7 @@ fn planned(
         clients: vec![ClientConfig {
             name: "bootstrap".into(),
             engine: "selected".into(),
-            capability: Capability::owner(),
+            capability: Capability::service(),
         }],
         hosts: Vec::new(),
     };
