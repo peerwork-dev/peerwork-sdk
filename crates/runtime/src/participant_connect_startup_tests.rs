@@ -32,6 +32,7 @@ struct Fixture {
     config: RuntimeConfig,
     registration: Registration,
     binding: Value,
+    artifacts: Option<tempfile::TempDir>,
 }
 impl Fixture {
     async fn new() -> Self {
@@ -79,7 +80,23 @@ impl Fixture {
         assert_eq!(installed["automatic_startup"]["state"],if previous.is_some(){"VERIFYING_RUNTIME_SUPPORT"}else{"AUTOMATIC"}); drop(connect);
         if previous.is_some(){assert!(crate::runtime_startup::read(&runtime).unwrap().is_none());}
         else{assert!(crate::runtime_startup::read(&runtime).unwrap().unwrap().launcher.is_some());}
-        Self { root, binary, first, directory, config, registration, binding }
+        Self { root, binary, first, directory, config, registration, binding, artifacts:None }
+    }
+    fn executable_copy(&mut self,name:&str)->PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        // Identity/state stay under the protected temporary root. Installed
+        // launcher copies need a separately selected persistent-path parent.
+        if self.artifacts.is_none() {
+            let parent=PathBuf::from(std::env::var_os("PEERWORK_UPDATE_TEST_ARTIFACT_DIRECTORY")
+                .expect("set PEERWORK_UPDATE_TEST_ARTIFACT_DIRECTORY to an existing persistent test artifact directory"));
+            assert!(parent.is_absolute(),"test artifact directory must be absolute");
+            let parent=std::fs::canonicalize(parent).unwrap();
+            self.artifacts=Some(tempfile::Builder::new().prefix("peerwork-startup-").tempdir_in(parent).unwrap());
+        }
+        let target=self.artifacts.as_ref().unwrap().path().join(name);
+        std::fs::copy(&self.binary,&target).unwrap();
+        std::fs::set_permissions(&target,std::fs::Permissions::from_mode(0o700)).unwrap();
+        target
     }
     fn launch(&self) -> Value { serde_json::from_slice(&SecureStateStore::read_snapshot(&self.config.state_directory.join("bootstrap.state"),65536).unwrap()).unwrap() }
     fn crash(&mut self) {
@@ -169,7 +186,9 @@ async fn healthy_endpoint_observation_preserves_binding_intent_and_update_barrie
         "registration":fixture.registration,"executable":fixture.binary,
         "executable_digest":crate::runtime_startup::Launcher::capture(fixture.binary.clone()).unwrap().sha256,
         "required_features":["automatic-runtime-startup-v1"],"original":original,"was_running":true,"phase":"RUNTIME_READY"})).unwrap()).unwrap();
-    assert_eq!(recover(&fixture.directory,Some("peer"),Trigger::Automatic).await.unwrap_err().code,"UPDATE_ALREADY_OWNED_OR_UNSAFE");
+    // The observing test process is not the recorded updater artifact; healthy
+    // IPC must not bypass the original update selection barrier.
+    assert_eq!(recover(&fixture.directory,Some("peer"),Trigger::Automatic).await.unwrap_err().code,"UPDATE_RESUME_ORIGINAL_ARTIFACT_AND_SELECTION");
     drop(store);
     std::fs::remove_file(update).unwrap();
 
@@ -237,9 +256,7 @@ async fn concurrent_frontends_wait_for_maintenance_then_restore_one_original_wri
 #[ignore="requires exact candidate CLI and synthetic process/loopback IPC"]
 async fn surviving_frontend_restores_the_committed_launcher_instead_of_itself() {
     let mut fixture=Fixture::new().await;
-    let target=fixture.root.path().join("committed-peerwork");std::fs::copy(&fixture.binary,&target).unwrap();
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&target,std::fs::Permissions::from_mode(0o700)).unwrap();
+    let target=fixture.executable_copy("committed-peerwork");
     let mut policy=crate::runtime_startup::read(&fixture.config.state_directory).unwrap().unwrap();
     policy.launcher=Some(crate::runtime_startup::Launcher::capture(target.clone()).unwrap());
     let store=SecureStateStore::open(&fixture.config.state_directory.join("startup.state")).unwrap();
@@ -254,9 +271,7 @@ async fn surviving_frontend_restores_the_committed_launcher_instead_of_itself() 
 #[ignore="requires exact candidate CLI and synthetic process/loopback IPC"]
 async fn explicit_resume_and_adopt_preserve_the_committed_launcher() {
     let mut fixture=Fixture::new().await;
-    let target=fixture.root.path().join("committed-peerwork");std::fs::copy(&fixture.binary,&target).unwrap();
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&target,std::fs::Permissions::from_mode(0o700)).unwrap();
+    let target=fixture.executable_copy("committed-peerwork");
     let previous=fixture.launch()["pid"].as_u64().unwrap(); fixture.stop();
     let output=Command::new(&target).args(["connect","--local"]).arg(&fixture.directory)
         .args(["--participant","peer","--update","apply"]).output().unwrap();
@@ -283,9 +298,7 @@ async fn every_recovery_entry_resumes_the_recorded_update_before_starting() {
     for (trigger,was_running) in [("automatic",false),("resume",false),("adopt",false),("automatic",true)] {
         eprintln!("interrupted update case: {trigger}, was_running={was_running}");
         let mut fixture=Fixture::new().await;
-        let target=fixture.root.path().join("updated-peerwork");std::fs::copy(&fixture.binary,&target).unwrap();
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&target,std::fs::Permissions::from_mode(0o700)).unwrap();
+        let target=fixture.executable_copy("updated-peerwork");
         let previous=fixture.launch()["pid"].as_u64().unwrap();
         if trigger=="resume" {fixture.stop();}else{fixture.crash();}
         let original=bootstrap::owned_runtime(&Connect::inspect(&fixture.directory).unwrap(),"peer").unwrap();
