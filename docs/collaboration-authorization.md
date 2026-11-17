@@ -20,8 +20,9 @@ other member's client.
 5. Resume the original Setup. Report receiving, host acceptance and an actual
    model response separately. A usable tool profile does not attest PUSH.
 
-A partial setup returns `tools_available: true` and a materialized `profile_path`
-when baseline tools exist. Its blocker still describes the incomplete objective.
+A partial setup returns `tools_available: true` when baseline tools exist. The
+selected ordinary client remains usable without a separate profile file. Its
+blocker still describes the incomplete objective.
 Missing content keys do not prevent shared structural reads, but the SDK cannot
 send or decrypt protected bodies without the appropriate key. It never pretends
 that a role, a key, receiving or host attachment was granted.

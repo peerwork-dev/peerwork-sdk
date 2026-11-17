@@ -188,8 +188,12 @@ async fn workspace_client_uses_current_grants_without_local_role_refresh(){
     connect.refresh_protocol_alias(Some("owner"),Some(&ws),"tickets",None).await.unwrap();
     assert!(!connect.profile_for_scope(Some("owner"),Some(&ws)).unwrap().unwrap().recovery_views.is_empty(),"protocol refresh first must retain old sender recovery");
     let normalized=connect.run(request.clone()).await.unwrap();assert_eq!(normalized["state"],"LOCAL_CONFIGURED","{normalized}");assert_eq!(normalized["client_authority_model"],"SERVICE_CURRENT");
-    let migrated=connect.profile_for_scope(Some("owner"),Some(&ws)).unwrap().unwrap();assert!(!migrated.recovery_views.is_empty());let tools=AgentTools::open(migrated).await.unwrap();
-    let status=call(&tools,"status",json!({"operation_id":"legacy-lost-send"})).await;assert_eq!(status["command_id"],send_command);assert!(status["recovery_arguments"]["recovery_view"].is_string());
+    let migrated=connect.profile_for_scope(Some("owner"),Some(&ws)).unwrap().unwrap();assert!(!migrated.recovery_views.is_empty());
+    let migrated_endpoint=migrated.endpoint_path.clone();
+    let continued_client=ipc::RuntimeClient::connect(migrated_endpoint.clone(),&service.origin,&config.expected_actor).await.unwrap();
+    assert_eq!(continued_client.call(json!({"method":"binding"})).await.unwrap()["namespace"],sender.call(json!({"method":"binding"})).await.unwrap()["namespace"]);
+    let tools=AgentTools::open(migrated).await.unwrap();
+    let status=call(&tools,"status",json!({"operation_id":"legacy-lost-send"})).await;assert_eq!(status["command_id"],send_command);assert_eq!(status["recovery_arguments"]["operation_id"],"legacy-lost-send");
     let retry=tools.call(AgentRequest::parse("send",json!({"workspace":ws,"to":config.expected_actor,"operation_id":"legacy-lost-send","text":"do not duplicate"})).unwrap()).await.unwrap_err();assert_eq!(retry.code,"EXISTING_OPERATION_USE_STATUS_OR_RECOVER");
     assert_eq!(call(&tools,"recover",status["recovery_arguments"].clone()).await["command_id"],send_command);assert_eq!(service.counts().await["actions"]["structure.message.send"],before);
     let update=|id:&str,previous:Value,revision:u64|json!({"protocol":"tickets","operation_id":id,"action":"ticket.update","structure":{"title":"updated","previous":previous},"record_id":previous["record_id"],"exact_input_refs":[previous],"expected_revision":revision,"wait_ms":5000});
@@ -202,7 +206,7 @@ async fn workspace_client_uses_current_grants_without_local_role_refresh(){
     assert_eq!(connect.run(permission_request.clone()).await.unwrap()["state"],"LOCAL_CONFIGURED");
     connect.refresh_protocol_alias(Some("owner"),Some(&ws),"tickets",None).await.unwrap();
     assert_eq!(connect.run(permission_request).await.unwrap()["state"],"LOCAL_CONFIGURED");
-    let current=connect.profile_for_scope(Some("owner"),Some(&ws)).unwrap().unwrap();assert_eq!(current.protocol_endpoints["tickets"],current.endpoint_path);assert_eq!(current.endpoint_path,profile.endpoint_path);
+    let current=connect.profile_for_scope(Some("owner"),Some(&ws)).unwrap().unwrap();assert_eq!(current.protocol_endpoints["tickets"],current.endpoint_path);assert_eq!(current.endpoint_path,migrated_endpoint);
     let current_client=ipc::RuntimeClient::connect(current.endpoint_path.clone(),&service.origin,&config.expected_actor).await.unwrap();assert!(current_client.call(json!({"method":"capabilities"})).await.unwrap()["capability"]["business_actions"].is_null());
     let waiting_registry=root.path().join("host-pending-registry");let mut waiting=Connect::open(&waiting_registry).unwrap();waiting.register("owner",Registration{origin:service.origin.clone(),actor_id:config.expected_actor.clone(),endpoint_path:ready.client_endpoints["owner"].clone()}).await.unwrap();
     let mut host_request=request.clone();host_request.setup_id="remote-actions-host-pending".into();host_request.receive=true;host_request.protocols[0].actions=vec!["ticket.update".into()];
@@ -236,6 +240,6 @@ async fn workspace_client_uses_current_grants_without_local_role_refresh(){
     let revoked=call(&tools,"manage",json!({"mode":"invoke","operation":"grant.revoke","protocol":"tickets","operation_id":"permission-revoke","body":{"actor_id":config.expected_actor,"expected_grant_revision":changed["result"]["structure"]["grant_revision"]},"wait_ms":5000})).await;assert_eq!(revoked["state"],"ACCEPTED","{revoked}");
     let second=json!({"record_id":updated["result"]["produced_record_ids"][0],"revision":2});
     let denied=call(&tools,"act",update("permission-after-revoke",second,3)).await;assert_eq!(denied["state"],"REJECTED_NO_EFFECT","{denied}");assert_eq!(denied["details"]["reason"],"GRANT_REVOKED","{denied}");
-    assert_eq!(connect.profile_for_scope(Some("owner"),Some(&ws)).unwrap().unwrap().endpoint_path,profile.endpoint_path);
+    assert_eq!(connect.profile_for_scope(Some("owner"),Some(&ws)).unwrap().unwrap().endpoint_path,migrated_endpoint);
     drop(tools);drop(connect);stop.cancel();daemon.await.unwrap().unwrap();
 }

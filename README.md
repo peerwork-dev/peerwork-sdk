@@ -33,6 +33,12 @@ without an Agent host, MCP or Skill.
    [availability](docs/member-availability.md) and [protocol tools](docs/protocol-session.md)
    through the same original client.
 
+Native0.3.42 uses current service authorization for ordinary clients and
+normalizes known generated historical scopes before tool use. Original pending
+operation namespaces and explicit signer delegations remain intact. Upgrade
+the original frontend and resident runtime together. See
+[permissions](docs/permissions.md) and [release notes](docs/releases/0.3.42.md).
+
 Native0.3.41 lets an existing interactive [AGY CLI conversation](docs/agy.md)
 receive through a background MCP listener. A compact completion wakes the
 calling conversation; read its batch and rearm. It reuses the original native
