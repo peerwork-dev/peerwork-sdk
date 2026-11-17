@@ -456,7 +456,7 @@ There is no automatic binary upgrade or replacement signer.
 | Program already owning a Codex App Server client | Rust `Connect::connect_current` accepts `HostInvocation::CodexDynamicTool` from the actual server callback, checks its exact thread against the selected adapter and retains the host stage across approval. The owning program must integrate this call. |
 | AGY App owning integration | The same API accepts exact App conversation context and the explicitly enabled Sidecar/agentapi adapter. This is not CLI root metadata or a universal installed plugin. |
 | Ordinary Codex MCP/plugin | Tools/connect are available; this review did not establish generic current-thread metadata or automatic attachment to any existing UI/CLI. Report tools-only/context-required instead of guessing. |
-| AGY CLI MCP root metadata | Reuse an existing exact managed-stdio PUSH binding. Root context alone does not establish attachment to an arbitrary interactive CLI; that unqualified path does not invalidate an already working binding. |
+| AGY CLI MCP | Native 0.3.41 supports an existing interactive conversation through `peerwork_listen` configured as a background MCP tool; read and rearm after each compact batch. Root metadata alone does not prove receiving. Preserve an already working managed-stdio/App binding. See [AGY](agy.md). |
 
 `HostInvocation` is a local Rust integration contract, absent from model-facing
 MCP/CLI arguments. Its owner obtains fields from the real authenticated host

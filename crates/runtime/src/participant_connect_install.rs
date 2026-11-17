@@ -461,12 +461,30 @@ fn entry(directory: &Path, participant: &str, workspace: &str, spec: &Installati
         value["type"]=json!("stdio");
         value["args"].as_array_mut().unwrap().push(json!("--claude-channel"));
     }
+    if spec.host=="agy" {
+        // The host owns this pending call and delivers its completion to the
+        // calling conversation. Native RPC/business operations keep their own
+        // deadlines; an idle listener must not wake the model on a timer.
+        value["tools"]=json!({"peerwork_listen":{"eager":true,"background":"always"}});
+        value["timeoutSeconds"]=json!(-1);
+    }
     if spec.host=="opencode" {
         let mut command=vec![json!(spec.executable)];
         command.extend(value["args"].as_array().unwrap().iter().cloned());
         value=json!({"type":"local","command":command,"protocol":"2026-07-28","codemode":false});
     }
     value
+}
+#[test]
+fn agy_background_configuration_is_scoped_to_the_original_native_entry() {
+    let root=crate::test_support::protected_test_dir();
+    let mut spec=Installation{host:"agy".into(),project:root.path().join("project"),executable:root.path().join("peerwork")};
+    let value=entry(&root.path().join("local"),"original-peer",&"W".repeat(43),&spec);
+    assert_eq!(value["tools"],json!({"peerwork_listen":{"eager":true,"background":"always"}}));
+    assert_eq!(value["timeoutSeconds"],-1);
+    assert_eq!(value["args"][4],"original-peer");
+    assert!(!value.to_string().contains("dangerously"));
+    spec.host="codex".into();assert!(entry(root.path(),"original-peer",&"W".repeat(43),&spec).get("tools").is_none());
 }
 fn skill_root(host:&str)->&str {match host {"claude"=>".claude","opencode"=>".opencode",_=>".agents"}}
 fn config_location(host:&str)->(Option<&str>,&str) {
@@ -832,6 +850,12 @@ impl Connect {
         if spec.host=="opencode" {
             result["supported_host_api"]=json!("OPENCODE_V2");
             result["host_delivery"]=json!("VERIFY_BOUND_OPENCODE_SESSION");
+        }
+        if spec.host=="agy" {
+            result["background_receiving"]=json!({"state":"ARM_IN_CURRENT_CONVERSATION","tool":"peerwork_listen",
+                "arguments":{},"transport":"MCP_BACKGROUND_TOOL","requires_unbound_native_inbox":true,
+                "next_action":"REFRESH_ORIGINAL_MCP_THEN_ARM_LISTENER_AND_READ_SELF_TEST_BATCH",
+                "model_wake":"NOT_ATTESTED","new_agent_process":false});
         }
         Ok(result)
     }

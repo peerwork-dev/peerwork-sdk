@@ -551,3 +551,141 @@ async fn direct_codex_lost_acceptance_retries_compact_batch_and_read_stops_wakes
     assert_eq!(c.service.counts().await["actions"]["structure.message.send"],1);
     cancel.cancel();for host in hosts{host.task.await.unwrap();}c.client.close().await.unwrap();
 }
+
+
+// One synthetic Space on the selected TEST database. The actual receiver must
+// verify the real service stream; cached content never substitutes for that.
+struct BackgroundFixture {
+    cohort:Cohort,
+    scope:Scope,
+    mailbox:Value,
+    profile:crate::agent_tools::AgentProfile,
+    client:crate::communication_runtime::RuntimeClient,
+    stop:crate::KernelCancellationToken,
+    task:tokio::task::JoinHandle<crate::participant::Result<()>>,
+}
+impl BackgroundFixture {
+    async fn start(directory:&std::path::Path)->Self {
+        use crate::communication_runtime as ipc;
+        let cohort=Cohort::start(0).await;
+        let ws=mutate(&cohort.client,"background-space","structure.workspace.create",&Scope::default(),json!({"name":"Background receiving"})).await["workspace_id"].as_str().unwrap().to_owned();
+        let scope=Scope{workspace_id:Some(ws.clone()),..Default::default()};
+        let meta=selected(&cohort.client,"structure.workspace.get",&scope,json!({})).await;
+        let mailbox=mutate(&cohort.client,"background-grant","structure.communication.grant.set",&scope,json!({"actor_id":cohort.client.actor_id(),"membership_id":meta["membership"]["membership_id"],"expected_revision":null,"send":true,"receive":true})).await["mailbox"].clone();
+        let key=install_synthetic_key(&cohort.config,&ws,&[42;32],None);
+        mutate(&cohort.client,"background-key","structure.content-key.set",&scope,json!({"key_id":key,"expected_epoch":0,"expected_head_revision":null})).await;
+        let original=&cohort.config;
+        cohort.client.close().await.unwrap();
+        let config=ipc::RuntimeConfig{format:"peerwork.participant-runtime.v1".into(),state_directory:directory.join("runtime"),hosts:vec![],
+            engines:vec![ipc::EngineConfig{name:"original".into(),origin:original.origin.clone(),expected_actor:original.expected_actor.clone(),identity_path:original.identity_path.clone(),state_directory:original.state_directory.clone(),journal_path:Some(original.journal_path.clone()),authority:original.authority.clone(),allow_loopback_http:true,transport:original.transport.clone(),max_inflight:4,max_pending:32,max_stored_bytes:32*1024*1024,migration_sources:vec![]}],
+            clients:vec![ipc::ClientConfig{name:"creator".into(),engine:"original".into(),capability:Capability::owner()}]};
+        let stop=crate::KernelCancellationToken::new();let(tx,rx)=tokio::sync::oneshot::channel();
+        let task=tokio::spawn(ipc::serve(config,stop.clone(),tx));let ready=rx.await.unwrap().unwrap();
+        let client=ipc::RuntimeClient::connect(ready.client_endpoints["creator"].clone(),&original.origin,&original.expected_actor).await.unwrap();
+        let options=WatchOptions{workspace_id:ws,mailbox_id:mailbox["mailbox_id"].as_str().unwrap().into(),membership_id:mailbox["membership_id"].as_str().unwrap().into(),consumer_id:"background-fixture".into(),host_destination:None};
+        tokio::time::timeout(Duration::from_secs(20),async {
+            loop {let value=client.call(json!({"method":"watch","options":options})).await.unwrap();
+                if value["receiver_link_verified"]==true{break;}
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        }).await.unwrap();
+        let profile:crate::agent_tools::AgentProfile=serde_json::from_value(json!({"format":"peerwork.agent-profile.v1","endpoint_path":ready.client_endpoints["creator"],"expected_origin":original.origin,"expected_actor":original.expected_actor,
+            "scopes":{"main":{"workspace_id":options.workspace_id,"mailbox_id":options.mailbox_id,"membership_id":options.membership_id}}})).unwrap();
+        let tools=crate::agent_tools::AgentTools::open(profile.clone()).await.unwrap();
+        let probe=tools.notification_poll("main").await.unwrap();
+        assert_eq!(tools.call(crate::agent_tools::AgentRequest::parse("inbox",json!({"batch":probe["batch"]})).unwrap()).await.unwrap()["state"],"SELF_TEST_OBSERVED");
+        Self{cohort,scope,mailbox,profile,client,stop,task}
+    }
+    async fn send(&self,text:&str){
+        let request=native_message("native-background-message",&self.scope,&self.mailbox,&self.mailbox,&"v".repeat(43),text);
+        let value=self.client.call(json!({"method":"invoke","request":request,"wait_ms":5000})).await.unwrap();
+        assert_eq!(value["state"],"ACCEPTED","{value}");
+    }
+    async fn finish(self){self.stop.cancel();self.task.await.unwrap().unwrap();}
+}
+/// Real signed product HTTP, native runtime and MCP; no model is used.
+#[tokio::test(flavor="multi_thread",worker_threads=2)]
+#[ignore="requires explicit synthetic PostgreSQL and real product HTTP fixture"]
+async fn background_mcp_wait_keeps_tools_available_and_cancellation_preserves_inbox() {
+    use tokio::io::{AsyncBufReadExt,AsyncWriteExt,BufReader};
+    let root=crate::test_support::protected_test_dir();
+    let setup=BackgroundFixture::start(root.path()).await;
+    let selected=setup.profile.clone();
+    let tools=crate::agent_tools::AgentTools::open(selected.clone()).await.unwrap();
+    let (server,client)=tokio::io::duplex(65536);
+    let (sr,sw)=tokio::io::split(server);let(cr,mut cw)=tokio::io::split(client);let mut cr=BufReader::new(cr);
+    let frontend=tokio::spawn(crate::agent_mcp::serve(selected,BufReader::new(sr),sw));
+    async fn read<R:tokio::io::AsyncBufRead+Unpin>(reader:&mut R)->Value {
+        let mut line=String::new();tokio::time::timeout(Duration::from_secs(15),reader.read_line(&mut line)).await.unwrap().unwrap();serde_json::from_str(&line).unwrap()
+    }
+    async fn send<W:tokio::io::AsyncWrite+Unpin>(writer:&mut W,value:Value){writer.write_all(format!("{value}\n").as_bytes()).await.unwrap();}
+    let call=|id:u64,name:&str,args:Value|json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":format!("peerwork_{name}"),"arguments":args}});
+    send(&mut cw,json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"synthetic-background-host","version":"1"}}})).await;
+    assert_eq!(read(&mut cr).await["id"],1);
+    send(&mut cw,json!({"jsonrpc":"2.0","method":"notifications/initialized"})).await;
+    send(&mut cw,call(2,"listen",json!({}))).await;
+    send(&mut cw,json!({"jsonrpc":"2.0","id":3,"method":"ping"})).await;
+    assert_eq!(read(&mut cr).await["id"],3,"a listener must not block MCP control");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    send(&mut cw,json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":2}})).await;
+    send(&mut cw,json!({"jsonrpc":"2.0","id":4,"method":"ping"})).await;
+    assert_eq!(read(&mut cr).await["id"],4);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    send(&mut cw,call(5,"listen",json!({}))).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    send(&mut cw,call(6,"listen",json!({}))).await;
+    let duplicate=read(&mut cr).await;assert_eq!(duplicate["id"],6);assert_eq!(duplicate["result"]["structuredContent"]["error"]["code"],"BACKGROUND_LISTEN_ALREADY_ARMED");
+    setup.send("new-private-synthetic-content").await;
+    let notice=read(&mut cr).await;assert_eq!(notice["id"],5);
+    let notice=&notice["result"]["structuredContent"];
+    assert_eq!(notice["format"],"peerwork.background-notification.v1");
+    assert!(!notice.to_string().contains("new-private-synthetic-content"));
+    send(&mut cw,call(7,"inbox",json!({"batch":notice["batch"]}))).await;
+    let page=read(&mut cr).await;assert_eq!(page["id"],7);assert!(page.to_string().contains("new-private-synthetic-content"));
+    send(&mut cw,call(8,"listen",json!({}))).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    send(&mut cw,call(9,"context",json!({}))).await;
+    let context=read(&mut cr).await;assert_eq!(context["id"],9);
+    assert_eq!(context["result"]["structuredContent"]["host_channel"]["listener_armed"],true);
+    assert_eq!(context["result"]["structuredContent"]["host_channel"]["scopes"]["main"]["session_receiving"],"VERIFIED");
+    assert_eq!(context["result"]["structuredContent"]["host_channel"]["automatic_model_wake"],"NOT_ATTESTED");
+    let active=tools.call(crate::agent_tools::AgentRequest::parse("inbox",json!({"view":"active","scope":"main","limit":2})).unwrap()).await.unwrap();
+    assert_eq!(active["items"].as_array().unwrap().len(),1);
+    assert_eq!(active["items"][0]["state"],"PENDING");
+    send(&mut cw,call(10,"delivery",json!({"mode":"pause"}))).await;
+    let paused=read(&mut cr).await;assert_eq!(paused["id"],10);
+    assert_eq!(paused["result"]["structuredContent"]["state"],"PAUSED");
+    drop(cw);drop(cr);tokio::time::timeout(Duration::from_secs(2),frontend).await.unwrap().unwrap().unwrap();
+    drop(tools);setup.finish().await;
+}
+
+/// Maintainer fixture for the real interactive AGY background-tool test. The
+/// controller supplies exactly one local trigger after the host is waiting.
+#[tokio::test(flavor="multi_thread",worker_threads=2)]
+#[ignore="requires an explicitly selected real AGY host test controller"]
+async fn selected_real_agy_background_fixture() {
+    let directory=std::path::PathBuf::from(std::env::var("PEERWORK_AGY_BACKGROUND_DIRECTORY").unwrap());
+    assert!(directory.is_absolute()&&!directory.exists());
+    crate::secure_state::create_private_state_directory(&directory).unwrap();
+    let setup=BackgroundFixture::start(&directory).await;
+    let selected=setup.profile.clone();
+    let tools=crate::agent_tools::AgentTools::open(selected.clone()).await.unwrap();
+    crate::communication_host::write_private(&directory.join("profile.json"),&serde_json::to_vec(&selected).unwrap()).unwrap();
+    crate::communication_host::write_private(&directory.join("ready.json"),b"{\"state\":\"SYNTHETIC_NATIVE_INBOX_READY\"}").unwrap();
+    tokio::time::timeout(Duration::from_secs(120),async {
+        while !directory.join("trigger").is_file(){tokio::time::sleep(Duration::from_millis(25)).await;}
+    }).await.unwrap();
+    setup.send("PW-NATIVE-AGY-BACKGROUND-EVENT").await;
+    tokio::time::timeout(Duration::from_secs(100),async {
+        while !directory.join("finish").is_file(){tokio::time::sleep(Duration::from_millis(25)).await;}
+    }).await.unwrap();
+    let active=tools.call(crate::agent_tools::AgentRequest::parse("inbox",json!({"view":"active","scope":"main","limit":2})).unwrap()).await.unwrap();
+    assert_eq!(active["items"].as_array().unwrap().len(),1,"host tool reads must not consume work implicitly");
+    assert!(active["items"].as_array().unwrap().iter().all(|item|item["state"]=="PENDING"));
+    let key=peerwork_core::crypto::sha256_hex(json!([selected.expected_origin,selected.expected_actor,"program:creator","CLAUDE_CHANNEL"]).to_string().as_bytes());
+    let hub=crate::communication_notifications::Hub::open(&directory.join("runtime")).unwrap();
+    assert!(hub.store.status(&key).unwrap()["retained_batches"].as_u64().unwrap()>=2,"the host must actually read the new opaque batch");
+    assert!(hub.store.current(&key).unwrap().is_none(),"host output alone is not notification observation");
+    drop(tools);setup.finish().await;
+    crate::communication_host::write_private(&directory.join("result.json"),b"{\"state\":\"PASS\",\"ingestion\":\"REAL_LOCAL_PRODUCT_HTTP_SYNTHETIC_DATA\",\"application_consumption\":\"UNCHANGED\"}").unwrap();
+}

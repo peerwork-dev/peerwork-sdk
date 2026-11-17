@@ -1,5 +1,13 @@
 # Host bridge recovery
 
+Native0.3.41 adds [interactive AGY background receiving](agy.md) on the existing
+native inbox. Refresh the owned MCP entry, arm `peerwork_listen`, read its compact
+batch on completion, and rearm. This path needs neither an App endpoint nor a
+managed stream-json child. Preserve an existing working App/managed binding.
+Quiet waits do not poll the model. Temporary stream/IPC failures use the same
+original source with backoff; permission, binding or persistent verification
+failures remain explicit. Existing stop/pause and original pending work survive.
+
 ## Installed startup recovery
 
 Native 0.3.35 adds `automatic-runtime-startup-v1`. An installed receiving

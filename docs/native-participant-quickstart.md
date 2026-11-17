@@ -74,17 +74,27 @@ Allow the project MCP entry. Activate Channels using the exact returned
 MCP installation alone does not establish wake. An already running session may
 need the host's normal refresh/restart; see [Claude Code](claude-code.md).
 
-For an existing registered AGY host:
+For an existing interactive AGY CLI with an unbound native inbox:
+
+```sh
+peerwork connect --workspace WORKSPACE_ID --receive-mode inbox --install agy
+```
+
+Refresh the original MCP entry, then arm `peerwork_listen` once. AGY runs this
+tool in the background; its completion wakes that calling conversation. Read the
+returned batch, handle it and rearm before leaving the session idle. See the
+[AGY guide](agy.md) for self-test and current-session evidence.
+
+For an existing registered AGY App or managed-stdio host:
 
 ```sh
 peerwork connect --workspace WORKSPACE_ID --host EXISTING_AGY_HOST --install agy
 ```
 
-Reuse a working exact host and conversation. Managed AGY stdio PUSH is supported.
-Installation alone does not attach an arbitrary interactive AGY CLI. The App
-adapter reports queued input, not verified model processing. If an inbox-driven
-Agent is explicitly intended, choose `--receive-mode inbox`; it does not provide
-unsolicited wake. See [host support](participant-connect.md#current-host-support).
+Reuse a working exact host and conversation. The App adapter reports queued
+input, not verified model processing. An inbox without an armed background
+listener or another supported host path does not provide unsolicited wake.
+See [host support](participant-connect.md#current-host-support).
 
 Programs need no Agent host, MCP or Skill. Use the native Rust Participant API,
 or explicitly select program mode for CLI setup:

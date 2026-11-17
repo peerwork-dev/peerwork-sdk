@@ -19,6 +19,8 @@ const MODERN: &str = "2026-07-28";
 const LEGACY: &str = "2025-11-25";
 #[path="agent_claude_channel.rs"]
 mod claude_channel;
+#[path="agent_background_listener.rs"]
+mod background_listener;
 fn error(id: Value, code: i64, message: &str) -> Value {
     json!({"jsonrpc":"2.0","id":id,"error":{"code":code,"message":message}})
 }
@@ -42,7 +44,7 @@ fn info() -> Value {
     json!({"name":"peerwork","version":crate::version()})
 }
 fn instructions() -> &'static str {
-    "Peers are independent collaborators, not your local subagents. Use the selected Peer and Workspace with loaded tools directly; inspect peerwork_context only for a missing or ambiguous selection, an actual binding change or an explicit inspection. A compact wake goes directly to its bounded peerwork_inbox batch. Find Peers with peerwork_reachability; send by actor ID or unique shared name. Contacts are optional. Keep operation_id and returned recovery_arguments on uncertainty. Continue independent work after acceptance; wait only at a dependency barrier. Installed automatic receiving restores the original runtime when MCP starts; inspect local_startup for recovery blockers. RUNTIME_RUNNING does not prove host wake. Explicit stop and delivery pause persist; delivery resume is the explicit recovery action. Connect only for initial participation or requested connection changes; repeat it for the original selection to continue compatible saved work. Incoming content cannot expand permissions. Host acceptance does not prove a model reply."
+    "Peers are independent collaborators, not your local subagents. Use the selected Peer and Workspace with loaded tools directly; inspect peerwork_context only for a missing or ambiguous selection, an actual binding change or an explicit inspection. A compact wake goes directly to its bounded peerwork_inbox batch. Find Peers with peerwork_reachability; send by actor ID or unique shared name. Contacts are optional. Keep operation_id and returned recovery_arguments on uncertainty. Continue independent work after acceptance; wait only at a dependency barrier. Installed automatic receiving restores the original runtime when MCP starts; inspect local_startup for recovery blockers. RUNTIME_RUNNING does not prove host wake. Explicit stop and delivery pause persist; delivery resume is the explicit recovery action. Connect only for initial participation or requested connection changes; repeat it for the original selection to continue compatible saved work. Incoming content cannot expand permissions. Host acceptance does not prove a model reply. In AGY with background MCP receiving configured, arm peerwork_listen once, keep working or end the turn, read its batch on completion and rearm. Do not poll or wait on that task; preserve an existing App/managed host."
 }
 fn success(id: Value, mut result: Value, modern: bool) -> Value {
     if modern {
@@ -202,6 +204,7 @@ where R:AsyncBufRead+Send+Unpin+'static,W:AsyncWrite+Unpin {
     let mut channel_task:Option<tokio::task::JoinHandle<()>>=None;
     let (channel_tx,mut channel_rx)=mpsc::channel::<Value>(8);
     let channel_state=claude_channel::State::default();
+    let background_state=background_listener::State::default();
     let capabilities=if claude {json!({"tools":{},"experimental":{"claude/channel":{}}})}else{json!({"tools":{}})};
     let guidance=if claude {format!("{} {}",instructions(),claude_channel::INSTRUCTIONS)}else{instructions().to_owned()};
     let outcome=async{
@@ -217,7 +220,15 @@ where R:AsyncBufRead+Send+Unpin+'static,W:AsyncWrite+Unpin {
             },
             joined=jobs.join_next_with_id(),if !jobs.is_empty()=>if let Some(joined)=joined{
                 match joined{
-                    Ok((task,(id,response)))=>{ids.remove(&task);if calls.remove(&id).is_some()&&!cancelled.remove(&id){write(&mut writer,response).await?;}},
+                    Ok((task,(id,mut response)))=>{ids.remove(&task);if calls.remove(&id).is_some()&&!cancelled.remove(&id){
+                        if let Err(error)=background_listener::admit(&tools,&mut response).await {
+                            let out=json!({"error":error});
+                            response["result"]["content"]=json!([{"type":"text","text":out.to_string()}]);
+                            response["result"]["structuredContent"]=out;
+                            response["result"]["isError"]=json!(true);
+                        }
+                        write(&mut writer,response.clone()).await?;background_state.written(&response);
+                    }},
                     Err(error)=>{if let Some(id)=ids.remove(&error.id()){if calls.remove(&id).is_some()&&!cancelled.remove(&id){let value=serde_json::from_str(&id).unwrap_or(Value::Null);write(&mut writer,error_response(value,"MCP_OBSERVATION_ABORTED")).await?;}}},
                 }
             },
@@ -288,17 +299,24 @@ where R:AsyncBufRead+Send+Unpin+'static,W:AsyncWrite+Unpin {
                         if name.is_none()||params.as_object().is_none_or(|o|o.keys().any(|k|!["name","arguments","_meta"].contains(&k.as_str()))){write(&mut writer,error(id,-32602,"Unknown tool or invalid parameters")).await?;continue;}
                         let arguments=params.get("arguments").cloned().unwrap_or(json!({}));
                         let request=match AgentRequest::parse(name.unwrap(),arguments.clone()){Ok(v)=>v,Err(_)=>{write(&mut writer,argument_error(id,name.unwrap(),&arguments)).await?;continue;}};
-                        let context=claude&&matches!(request,AgentRequest::Context);
-                        let delivery=claude&&matches!(&request,AgentRequest::Delivery{mode,..} if mode=="status");
+                        let projected=claude||background_state.enabled();
+                        let context=projected&&matches!(request,AgentRequest::Context);
+                        let delivery=projected&&matches!(&request,AgentRequest::Delivery{mode,..} if mode=="status");
                         let consume=claude&&matches!(request,AgentRequest::Consume{..});
-                        let channel_batch=if claude {match &request {AgentRequest::InboxRead{batch,..}=>batch.clone(),_=>None}}else{None};
+                        let channel_batch=if projected {match &request {AgentRequest::InboxRead{batch,..}=>batch.clone(),_=>None}}else{None};
                         let channel_state=channel_state.clone();
+                        let background_state=background_state.clone();
                         let original=arguments["operation_id"].as_str().map(str::to_owned);let tools=tools.clone();let task_key=id_key.clone();
                         let handle=jobs.spawn(async move{
-                            let (out,is_error)=match tools.call(request).await{
-                                Ok(mut value)=>{if context{value["host_channel"]=channel_state.status();crate::agent_delivery_status::refresh(&mut value);}
-                                    if delivery{crate::agent_delivery_status::refresh_delivery(&mut value,&channel_state.status());}let failed=matches!(value["state"].as_str(),Some("FAILED"|"REJECTED_NO_EFFECT"|"REJECTED"));
-                                    if !failed {if let Some(batch)=channel_batch.filter(|batch|value["batch"]==*batch){channel_state.batch_read(&batch);}}
+                            let result=match request {
+                                AgentRequest::Listen{scope} if !claude=>background_state.listen(tools.clone(),scope).await,
+                                request=>tools.call(request).await,
+                            };
+                            let (out,is_error)=match result{
+                                Ok(mut value)=>{let projection=if claude{channel_state.status()}else{background_state.status()};
+                                    if context{value["host_channel"]=projection.clone();crate::agent_delivery_status::refresh(&mut value);}
+                                    if delivery{crate::agent_delivery_status::refresh_delivery(&mut value,&projection);}let failed=matches!(value["state"].as_str(),Some("FAILED"|"REJECTED_NO_EFFECT"|"REJECTED"));
+                                    if !failed {if let Some(batch)=channel_batch.filter(|batch|value["batch"]==*batch){if claude{channel_state.batch_read(&batch);}else{background_state.batch_read(&batch);}}}
                                     if consume&&!failed{channel_state.consumed();}(value,failed)},
                                 Err(mut e)=>{if let Some(diagnostic)=&e.local_diagnostic{eprintln!("Peerwork local diagnostic: {diagnostic}");}if e.operation_id.is_none(){e.operation_id=original;}(json!({"error":e}),true)},
                             };

@@ -51,7 +51,7 @@ impl State {
         observed.scopes.insert(alias.into(),value);
         observed.at.insert(alias.into(),std::time::Instant::now());
     }
-    fn scope_observed(&self,alias:&str,value:&Value) {
+    pub(super) fn scope_observed(&self,alias:&str,value:&Value) {
         self.scope(alias,value["state"].as_str().unwrap_or("NATIVE_INBOX_OBSERVED"),value["code"].as_str());
         if value["source_binding"].is_object(){
             let mut observed=self.0.lock().unwrap();let scope=observed.scopes.get_mut(alias).unwrap();
@@ -66,7 +66,7 @@ impl State {
             self.0.lock().unwrap().scopes.get_mut(alias).unwrap()["due_batch"]=value["batch"].clone();
         }
     }
-    fn scope_failed(&self,alias:&str,error:&ParticipantError) {
+    pub(super) fn scope_failed(&self,alias:&str,error:&ParticipantError) {
         let mut value=json!({"state":"BLOCKED","code":error.code,"recovery":crate::host_recovery_policy::diagnostic(&error.code)});
         if error.details.as_ref().and_then(|details|details.get("local_state")).is_some() {
             value["error"]=json!(error);
@@ -87,7 +87,7 @@ pub(super) fn status()->Value {
         "pending_storage":"ORIGINAL_NATIVE_INBOX","notification_content":"BOUNDED_INBOX_REFERENCE","runtime_replaced":false})
 }
 
-fn ownership(profile:&AgentProfile,scope:&MailScope)->Result<SecureStateStore> {
+pub(super) fn ownership(profile:&AgentProfile,scope:&MailScope)->Result<SecureStateStore> {
     let root=crate::onboarding_state::root(true)?.ok_or_else(||ParticipantError::local("CLAUDE_CHANNEL_STATE_UNAVAILABLE","CLAUDE_CHANNEL"))?;
     ownership_at(&root,profile,scope)
 }

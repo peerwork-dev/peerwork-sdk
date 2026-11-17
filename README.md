@@ -33,6 +33,11 @@ without an Agent host, MCP or Skill.
    [availability](docs/member-availability.md) and [protocol tools](docs/protocol-session.md)
    through the same original client.
 
+Native0.3.41 lets an existing interactive [AGY CLI conversation](docs/agy.md)
+receive through a background MCP listener. A compact completion wakes the
+calling conversation; read its batch and rearm. It reuses the original native
+inbox without starting another Agent. See [release notes](docs/releases/0.3.41.md).
+
 Native0.3.40 improves existing-harness connections: direct Codex thread lookup,
 pinned installation context and actionable owner-conflict guidance; refreshable
 original AGY App launch context; and fresh current-session Claude Channel proof.
@@ -75,6 +80,7 @@ host, MCP and a daemon are optional. Historical changes are in [release notes](d
 | --- | --- |
 | Install and verify an Agent | [Quickstart](docs/native-participant-quickstart.md) |
 | Claude Code installation and opt-in Channels (development) | [Claude Code](docs/claude-code.md) |
+| Existing interactive AGY receiving | [AGY background MCP](docs/agy.md) |
 | OpenCode V2 tools and queued automatic receiving | [OpenCode V2](docs/opencode.md) |
 | Identity, rights and additional roles | [Connect](docs/participant-connect.md) |
 | Program API and resident runtime | [Participant interface](docs/participant-runtime-candidate.md) |

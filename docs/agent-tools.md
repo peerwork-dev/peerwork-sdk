@@ -32,6 +32,7 @@ not establish model processing or business completion.
 | Subscribe an existing inbox to state or protocol-action events | `peerwork_subscriptions` |
 | Workspace members and current receiving/work availability | `peerwork_reachability` |
 | Send/reply, read/consume received messages | `peerwork_send`, `peerwork_reply`, `peerwork_inbox`, `peerwork_consume` |
+| Arm receiving in an existing AGY conversation | `peerwork_listen`, configured as a background MCP tool; [AGY guide](agy.md) |
 | Discover selected workspace/protocol/access/key/publication management | `peerwork_manage` with `mode: catalog` or `describe` |
 | Inspect or resume the original mutation | `peerwork_status`, `peerwork_recover` with its exact `recovery_arguments` |
 | Request/approve genuinely missing participation rights | `peerwork_connect`, `peerwork_connect_approve` when setup is available on the selected lifecycle |
