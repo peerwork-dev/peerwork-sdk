@@ -706,7 +706,7 @@ impl Connect {
         if binding["client_generation"].is_null() {
             let configured=config.clients.iter().find(|c|c.name==name&&c.engine==matching[0].name).ok_or_else(||local("ORIGINAL_RUNTIME_CONFIG_MISMATCH"))?;
             let capability=client.call(json!({"method":"capabilities"})).await?;
-            if serde_json::to_value(&configured.capability).ok().as_ref()!=Some(&capability["capability"]){return Err(local("ORIGINAL_RUNTIME_CONFIG_MISMATCH"));}
+            if configured.capability!=Capability::from_observation(&capability)?{return Err(local("ORIGINAL_RUNTIME_CONFIG_MISMATCH"));}
         }
         self.runtime_admin(handle,Some(selection)).await?;
         Ok(OwnedRuntime{config,registration,launch:None,config_path:Some(path.clone())})
@@ -731,7 +731,7 @@ impl Connect {
         let configured=config.clients.iter().find(|c|c.name==name&&c.engine==engine.name).ok_or_else(||local("ORIGINAL_RUNTIME_CONFIG_MISMATCH"))?;
         if engine.expected_actor!=registration.actor_id || crate::transport::canonical_lifecycle_origin(&engine.origin,engine.allow_loopback_http).map_err(|_|local("ORIGIN_INVALID"))?!=registration.origin
             || binding["engine_digest"]!=engine.binding_digest()?
-            || serde_json::to_value(&configured.capability).ok().as_ref()!=Some(&capability["capability"])
+            || configured.capability!=Capability::from_observation(&capability)?
             || registration.endpoint_path!=config.state_directory.join(format!("client-{name}.json")) {
             return Err(local("ORIGINAL_RUNTIME_CONFIG_MISMATCH"));
         }

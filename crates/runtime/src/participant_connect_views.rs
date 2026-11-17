@@ -6,25 +6,38 @@ pub(super) const AUTHORITY_REVISION:u64=2;
 impl Connect {
     /// Continue only a sealed native-managed bootstrap through its existing
     /// local owner. Arbitrary configured clients remain explicit delegates.
-    pub(super) async fn scoped_issuer(&self,participant:&str,workspace:&str,client:RuntimeClient,caps:&Value)->Result<RuntimeClient> {
+    pub(super) async fn scoped_issuer(&mut self,participant:&str,workspace:&str,client:RuntimeClient,caps:&Value)->Result<RuntimeClient> {
         let capability=Capability::from_observation(caps)?;
         if capability.operations.contains("*"){return Ok(client);}
-        let native=self.directory.join(format!("runtime-{participant}"));
-        if self.registry.local_runtime_admins.get(participant)!=Some(&native.join("admin.json"))
-            || self.registry.participants.get(participant).is_none_or(|registration|registration.endpoint_path!=native.join("client-bootstrap.json")) {return Ok(client);}
-        let owned=bootstrap::owned_runtime(self,participant)?;
-        if owned.config.clients.len()!=1 || owned.config.clients[0].name!="bootstrap"
-            || capability.workspace_ids.is_some() || !capability.allow_root
-            || capability.instance_ids.is_some() || capability.protocol_digests.is_some()
-            || capability.business_actions.is_some() || capability.mailbox_ids.is_some() {return Ok(client);}
+        let source_owner=self.source_owner_config(participant);
+        let (admin,workspaces)=if let Some(path)=source_owner {
+            if capability.instance_ids.is_some() || capability.protocol_digests.is_some()
+                || capability.business_actions.is_some() || capability.mailbox_ids.is_some() {return Ok(client);}
+            let config:crate::communication_runtime::RuntimeConfig=serde_json::from_value(crate::communication_store::private_json(&path,65536)
+                .map_err(|_|local("RUNTIME_CONFIG_NOT_PRIVATE"))?).map_err(|_|local("RUNTIME_CONFIG_INVALID"))?;
+            let selection=RuntimeSelection{admin_endpoint:config.state_directory.join("admin.json"),config_path:Some(path)};
+            self.runtime_for_source(participant,&selection).await?;
+            let workspaces=capability.workspace_ids.clone().filter(|spaces|spaces.contains(workspace)).ok_or_else(||local("ORIGINAL_ISSUER_BINDING_MISMATCH"))?;
+            (selection.admin_endpoint,workspaces)
+        }else{
+            let native=self.directory.join(format!("runtime-{participant}"));
+            if self.registry.local_runtime_admins.get(participant)!=Some(&native.join("admin.json"))
+                || self.registry.participants.get(participant).is_none_or(|registration|registration.endpoint_path!=native.join("client-bootstrap.json")) {return Ok(client);}
+            let owned=bootstrap::owned_runtime(self,participant)?;
+            if owned.config.clients.len()!=1 || owned.config.clients[0].name!="bootstrap"
+                || capability.workspace_ids.is_some() || !capability.allow_root
+                || capability.instance_ids.is_some() || capability.protocol_digests.is_some()
+                || capability.business_actions.is_some() || capability.mailbox_ids.is_some() {return Ok(client);}
+            (owned.config.state_directory.join("admin.json"),[workspace.to_owned()].into())
+        };
         if !caps["features"].as_array().is_some_and(|values|values.iter().any(|value|value=="service-operation-policy-v1")) {
             let mut error=local("LOCAL_RUNTIME_UPGRADE_REQUIRED");
             error.details=Some(json!({"next_action":"UPGRADE_SELECTED_RUNTIME_PRESERVING_ORIGINAL_STATE","missing_features":["service-operation-policy-v1"],"remote_changes_submitted":false}));
             return Err(error);
         }
         let binding=client.call(json!({"method":"binding"})).await?;
-        let adopted=crate::communication_runtime::call(&owned.config.state_directory.join("admin.json"),json!({"method":"client_adopt","adoption":{
-            "source_binding":binding,"workspace_ids":[workspace],"alias":format!("service-space-{}",&sha256_hex(json!([participant,workspace]).to_string().as_bytes())[..32]),"policy":"INHERIT_ENGINE_FOR_WORKSPACES"}})).await?;
+        let adopted=crate::communication_runtime::call(&admin,json!({"method":"client_adopt","adoption":{
+            "source_binding":binding,"workspace_ids":workspaces,"alias":format!("service-space-{}",&sha256_hex(json!([participant,workspaces]).to_string().as_bytes())[..32]),"policy":"INHERIT_ENGINE_FOR_WORKSPACES"}})).await?;
         if adopted["ok"]!=true{return Err(serde_json::from_value(adopted["error"].clone()).unwrap_or_else(|_|local("LOCAL_OWNER_ADOPTION_FAILED")));}
         let path=adopted["value"]["endpoint_path"].as_str().ok_or_else(||local("DERIVED_ENDPOINT_INVALID"))?;
         RuntimeClient::connect(PathBuf::from(path),client.origin(),client.actor_id()).await
@@ -32,7 +45,7 @@ impl Connect {
     pub(crate) fn authority_refreshes(&self,participant:Option<&str>,workspace:Option<&str>)->Result<Vec<String>> {
         let Some(handle)=self.selected_handle(participant)? else{return Ok(vec![]);};
         Ok(self.registry.active_by_scope.values().filter_map(|id|self.registry.setups.get(id).map(|setup|(id,setup)))
-            .filter(|(_,setup)|setup.desired.participant==handle && workspace.is_none_or(|ws|ws==setup.desired.workspace_id) && Self::generated_authority_candidate(setup))
+            .filter(|(_,setup)|setup.desired.participant==handle && workspace.is_none_or(|ws|ws==setup.desired.workspace_id) && self.generated_authority_candidate(setup))
             .map(|(id,_)|id.clone()).collect())
     }
     pub(crate) async fn normalize_selected_authority(&mut self,ids:&[String])->Result<()> {
@@ -43,12 +56,15 @@ impl Connect {
     pub(crate) fn workspace_profile_refreshable(&self, participant:Option<&str>, workspace:&str)->Result<bool> {
         let Some(handle)=self.selected_handle(participant)? else {return Ok(false);};
         let Some(setup)=self.registry.active_by_scope.get(&format!("{handle}:{workspace}")).and_then(|id|self.registry.setups.get(id)) else {return Ok(false);};
-        Ok(Self::generated_authority_candidate(setup))
+        Ok(self.generated_authority_candidate(setup))
     }
-    fn generated_authority_candidate(setup:&Setup)->bool {
+    fn owner_adopted(&self,setup:&Setup)->bool {
+        setup.result["source_policy"]=="EXPLICIT_LOCAL_ISSUER" && self.source_owner_config(&setup.desired.participant).is_some()
+    }
+    fn generated_authority_candidate(&self,setup:&Setup)->bool {
         setup.result["client_authority_revision"]!=AUTHORITY_REVISION
-            && setup.result.get("source_policy").is_none()
-            && setup.profile.as_ref().is_some_and(|profile|!profile.protocol_endpoints.keys().any(|alias|!setup.protocol_intents.contains_key(alias)&&!setup.desired.protocols.iter().any(|p|p.alias==*alias)))
+            && (setup.result.get("source_policy").is_none() || self.owner_adopted(setup))
+            && setup.profile.as_ref().is_some_and(|profile|self.owner_adopted(setup)||!profile.protocol_endpoints.keys().any(|alias|!setup.protocol_intents.contains_key(alias)&&!setup.desired.protocols.iter().any(|p|p.alias==*alias)))
     }
     pub(super) async fn establish_baseline(&mut self, request:&ConnectRequest, selected:&Registration, parent:&Capability, client:&RuntimeClient, membership:&str)->Result<()> {
         if let Some(profile)=self.registry.setups[&request.setup_id].profile.as_ref() {
@@ -101,10 +117,11 @@ impl Connect {
     }
     pub(super) async fn normalize_cached_authority(&mut self,id:&str)->Result<String>{
         let old=self.registry.setups[id].clone();
-        if !Self::generated_authority_candidate(&old){return Ok(id.into());}
+        if !self.generated_authority_candidate(&old){return Ok(id.into());}
+        let owner_adopted=self.owner_adopted(&old);
         let previous=old.profile.as_ref().unwrap();
         // Unknown/custom aliases are not proof of software-generated ceilings.
-        if previous.protocol_endpoints.keys().any(|alias|!old.protocol_intents.contains_key(alias)&&!old.desired.protocols.iter().any(|p|p.alias==*alias)){return Ok(id.into());}
+        if !owner_adopted && previous.protocol_endpoints.keys().any(|alias|!old.protocol_intents.contains_key(alias)&&!old.desired.protocols.iter().any(|p|p.alias==*alias)){return Ok(id.into());}
         let client=self.original_client(&old.desired.participant).await?;
         let caps=client.call(json!({"method":"capabilities"})).await?;
         if !missing_runtime_features(&caps).is_empty(){let mut e=local("LOCAL_RUNTIME_UPGRADE_REQUIRED");e.details=Some(json!({"tools_available":true,"existing_configuration_preserved":true,"next_actor":"LOCAL_RUNTIME_OWNER","next_action":"UPGRADE_SELECTED_RUNTIME_PRESERVING_ORIGINAL_STATE"}));return Err(e);}
@@ -113,16 +130,21 @@ impl Connect {
         let parent:Capability=Capability::from_observation(&caps)?;
         let source=RuntimeClient::connect(previous.endpoint_path.clone(),&previous.expected_origin,&previous.expected_actor).await?;
         let binding=source.call(json!({"method":"binding"})).await?;
-        let mut cap=parent.clone();cap.allow_root=false;cap.workspace_ids=Some([old.desired.workspace_id.clone()].into());
-        let name=format!("ordinary-{}",&sha256_hex(json!([old.desired.participant,old.desired.workspace_id,binding["namespace"],cap]).to_string().as_bytes())[..40]);
+        let mut cap=parent.clone();cap.allow_root=false;if !owner_adopted {cap.workspace_ids=Some([old.desired.workspace_id.clone()].into());}
+        let name=format!("ordinary-{}",&sha256_hex(json!([old.desired.participant,binding["namespace"],cap]).to_string().as_bytes())[..40]);
         let derived=client.call(json!({"method":"derive","name":name,"capability":cap,"source_binding":binding})).await?;
         let path=PathBuf::from(derived["endpoint_path"].as_str().ok_or_else(||local("DERIVED_ENDPOINT_INVALID"))?);
-        let mut profile=previous.clone();profile.endpoint_path=path.clone();profile.directory_endpoints.insert(old.desired.workspace_id.clone(),path.clone());
-        for(alias,scope)in &profile.protocols{if scope.workspace_id.as_deref()==Some(&old.desired.workspace_id){profile.protocol_endpoints.insert(alias.clone(),path.clone());}}
+        let mut profile=previous.clone();profile.endpoint_path=path.clone();
+        if owner_adopted {for endpoint in profile.directory_endpoints.values_mut(){if *endpoint==previous.endpoint_path {*endpoint=path.clone();}}}
+        profile.directory_endpoints.insert(old.desired.workspace_id.clone(),path.clone());
+        for(alias,scope)in &profile.protocols {
+            let selected=if owner_adopted {scope.workspace_id.as_ref().is_some_and(|ws|cap.workspace_ids.as_ref().is_some_and(|spaces|spaces.contains(ws)))&&profile.protocol_endpoints.get(alias)==Some(&previous.endpoint_path)}else{scope.workspace_id.as_deref()==Some(&old.desired.workspace_id)};
+            if selected {profile.protocol_endpoints.insert(alias.clone(),path.clone());}
+        }
         self.retain_recovery_views(Some(previous),&mut profile).await?;
         self.extend_protocol_views(&old.desired.participant,Some(previous),&mut profile,&parent,&client).await?;
         profile.validate()?;
-        let revision=format!("authority-{}",&sha256_hex(&serde_json::to_vec(&profile).map_err(|_|local("DERIVED_PROFILE_INVALID"))?)[..32]);
+        let revision=format!("authority-{}",&sha256_hex(&serde_json::to_vec(&json!([old.desired.workspace_id,profile])).map_err(|_|local("DERIVED_PROFILE_INVALID"))?)[..32]);
         if !self.registry.setups.contains_key(&revision){
             if self.registry.setups.len()>=64{return Err(local("SETUP_LIMIT"));}
             let mut next=old.clone();next.desired.setup_id=revision.clone();next.digest=sha256_hex(&serde_json::to_vec(&next.desired).map_err(|_|local("CONNECT_ARGUMENT_INVALID"))?);

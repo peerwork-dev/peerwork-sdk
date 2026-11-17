@@ -76,6 +76,9 @@ Context or fresh tool use, including installations previously marked
 `SERVICE_CURRENT`. Historical role-action requests never prove local delegation.
 A sealed native-managed bootstrap can continue its ordinary scope through its
 existing authenticated local owner without rewriting its old credential/config.
+The same continuation covers a saved Owner-authorized source inheritance when
+its original runtime configuration is recorded. It preserves that decision's
+Workspace set and leaves independently delegated alias endpoints unchanged.
 Authenticated continuation reuses the original journal namespace through a new
 scoped credential. It can inspect/resume an original pending ID even when an
 obsolete operation list blocks the old credential. A second credential for the

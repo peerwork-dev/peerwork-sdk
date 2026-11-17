@@ -22,6 +22,9 @@ fn workspaces(profile:&AgentProfile)->std::collections::BTreeSet<String>{
         .chain(profile.protocols.values().filter_map(|s|s.workspace_id.clone())).collect()
 }
 impl Connect {
+    pub(super) fn source_owner_config(&self,participant:&str)->Option<PathBuf> {
+        self.registry.profile_sources.values().find(|source|source.participant==participant).and_then(|source|source.owner_config.clone())
+    }
     pub(crate) fn profile_directory(profile:&AgentProfile)->Result<PathBuf>{
         Ok(profile.endpoint_path.parent().ok_or_else(||local("CLIENT_BINDING_INVALID"))?
             .join(format!("connect-source-{}",&digest(profile)?[..24])))
@@ -131,6 +134,7 @@ impl Connect {
             }
         }
         next.validate()?;
+        let dynamic_issuer=inherit && Capability::from_observation(&original.call(json!({"method":"capabilities"})).await?)?.operations.contains("*");
         for workspace in workspaces(profile) {
             let alias=profile.workspaces.iter().find(|(_,w)|**w==workspace).map(|(a,_)|a.clone()).unwrap_or_else(||"workspace".into());
             let setup_id=format!("source-{}",&sha256_hex(json!([id,handle,workspace]).to_string().as_bytes())[..32]);
@@ -141,6 +145,9 @@ impl Connect {
             // All original endpoint limits are retained unless owner-selected.
             self.record(&request,json!({"state":"LOCAL_ATTACHED","setup_id":setup_id,"client_authority_model":"SERVICE_CURRENT",
                 "source_policy":if inherit{"EXPLICIT_LOCAL_ISSUER"}else{"PRESERVE_ORIGINAL"},"remote_changes_submitted":false}),Some(next.clone()))?;
+            if dynamic_issuer {
+                self.registry.setups.get_mut(&setup_id).unwrap().result["client_authority_revision"]=json!(super::protocol_views::AUTHORITY_REVISION);
+            }
             self.ensure_profile(&setup_id,&next)?;
             self.registry.active_by_scope.insert(format!("{handle}:{workspace}"),setup_id.clone());self.registry.active=Some(setup_id);
         }

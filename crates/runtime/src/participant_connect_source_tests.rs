@@ -114,3 +114,57 @@ async fn raw_profile_owner_adoption_unifies_mcp_local_and_original_operation_rec
     let again=source.call(AgentRequest::parse("status",json!({"workspace":ws,"operation_id":"original-name"})).unwrap()).await.unwrap();assert_eq!(again["command_id"],accepted["command_id"]);
     cancel.cancel();task.await.unwrap().unwrap();
 }
+
+#[tokio::test(flavor="multi_thread",worker_threads=4)]
+#[ignore="requires designated TEST PostgreSQL and real product HTTP"]
+async fn saved_owner_inheritance_continues_its_original_namespace_and_multiple_spaces() {
+    let service=Service::start();let root=crate::test_support::protected_test_dir();
+    let config=configuration(root.path(),&service.origin);
+    let owner=ParticipantClient::open(config.clone()).await.unwrap();
+    let mut spaces=Vec::new();
+    for index in 0..2 {spaces.push(mutate(&owner,&format!("space-{index}"),"structure.workspace.create",&Scope::default(),json!({"name":format!("Inherited {index}")})).await["workspace_id"].as_str().unwrap().to_owned());}
+    let scope=Scope{workspace_id:Some(spaces[0].clone()),..Default::default()};
+    let meta=selected(&owner,"structure.workspace.get",&scope,json!({})).await;
+    owner.close().await.unwrap();
+    let runtime=ipc::RuntimeConfig{format:"peerwork.participant-runtime.v1".into(),state_directory:root.path().join("runtime"),hosts:vec![],
+        engines:vec![ipc::EngineConfig{name:"original".into(),origin:config.origin.clone(),expected_actor:config.expected_actor.clone(),authority:config.authority.clone(),identity_path:config.identity_path.clone(),state_directory:config.state_directory.clone(),journal_path:Some(config.journal_path.clone()),allow_loopback_http:true,transport:config.transport.clone(),max_inflight:4,max_pending:64,max_stored_bytes:32*1024*1024,migration_sources:vec![]}],
+        clients:vec![ipc::ClientConfig{name:"original".into(),engine:"original".into(),capability:Capability::service()}]};
+    let bytes=serde_json::to_vec(&runtime).unwrap();let config_path=root.path().join("original-config.json");write_private(&config_path,&bytes).unwrap();
+    let stop=crate::KernelCancellationToken::new();let(tx,rx)=tokio::sync::oneshot::channel();let task=tokio::spawn(ipc::serve(runtime.clone(),stop.clone(),tx));let ready=rx.await.unwrap().unwrap();
+    let original=RuntimeClient::connect(ready.client_endpoints["original"].clone(),&service.origin,&config.expected_actor).await.unwrap();
+    let mut finite=Capability::owner();finite.allow_root=false;finite.workspace_ids=Some(spaces.iter().cloned().collect());finite.operations.remove("structure.members.read");finite.operations.remove("structure.instance.resolve");
+    let inherited=original.call(json!({"method":"derive","name":"old-owner-inheritance","capability":finite})).await.unwrap();
+    let old_path=PathBuf::from(inherited["endpoint_path"].as_str().unwrap());
+    let old=RuntimeClient::connect(old_path.clone(),&service.origin,&config.expected_actor).await.unwrap();
+    let old_binding=old.call(json!({"method":"binding"})).await.unwrap();
+    let mut request=Invoke::new("inherited-original","structure.member.name.set",scope.clone(),json!({"membership_id":meta["membership"]["membership_id"],"name":"Inherited author"}));request.expected_workspace_revision=meta["workspace_revision"].as_u64();
+    let accepted=old.call(json!({"method":"invoke","request":request,"wait_ms":5000})).await.unwrap();assert_eq!(accepted["state"],"ACCEPTED");
+    let profile:AgentProfile=serde_json::from_value(json!({"format":"peerwork.agent-profile.v1","endpoint_path":ready.client_endpoints["original"],"expected_origin":service.origin,"expected_actor":config.expected_actor,"workspaces":{"one":spaces[0],"two":spaces[1]},"scopes":{}})).unwrap();
+    let directory=Connect::profile_directory(&profile).unwrap();let mut connect=Connect::open(&directory).unwrap();
+    connect.register("configured",Registration{origin:service.origin.clone(),actor_id:config.expected_actor.clone(),endpoint_path:ready.client_endpoints["original"].clone()}).await.unwrap();
+    connect.runtime_for_source("configured",&RuntimeSelection{admin_endpoint:ready.admin_endpoint.clone(),config_path:Some(config_path.clone())}).await.unwrap();
+    // Model the persisted pre-dynamic owner inheritance decision. The owner
+    // config is the original supported adoption receipt, not a guessed issuer.
+    let handle=connect.adopt_profile(&profile,Some(old_path.clone()),true).await.unwrap();
+    connect.registry.profile_sources.get_mut(&digest(&profile).unwrap()).unwrap().owner_config=Some(config_path.clone());connect.save().unwrap();
+    // A configured dynamic client is compared with the authenticated policy,
+    // not the finite metadata projection returned for older observers.
+    connect.runtime_for_source(&handle,&RuntimeSelection{admin_endpoint:ready.admin_endpoint.clone(),config_path:Some(config_path)}).await.unwrap();
+    drop(connect);let before=service.counts().await;
+    let lifecycle=crate::agent_lifecycle::Lifecycle::profile(profile);
+    for ws in &spaces {
+        let result=Box::pin(lifecycle.call(AgentRequest::parse("reachability",json!({"workspace":ws})).unwrap())).await.unwrap();assert_eq!(result["members"].as_array().unwrap().len(),1);
+    }
+    assert_eq!(service.counts().await["commands"],before["commands"],"continuing inherited authority must not submit remote changes");
+    let current=Connect::inspect(&directory).unwrap().profile_for_scope(Some(&handle),None).unwrap().unwrap();
+    let client=RuntimeClient::connect(current.endpoint_path.clone(),&service.origin,&config.expected_actor).await.unwrap();
+    assert_eq!(client.call(json!({"method":"binding"})).await.unwrap()["namespace"],old_binding["namespace"]);
+    assert_eq!(client.call(json!({"method":"capabilities"})).await.unwrap()["operation_policy"],"ALL_SUPPORTED");
+    assert_eq!(old.call(json!({"method":"capabilities"})).await.unwrap()["capability"],json!(finite));
+    let observed=Box::pin(lifecycle.call(AgentRequest::parse("status",json!({"workspace":spaces[0],"operation_id":"inherited-original"})).unwrap())).await.unwrap();assert_eq!(observed["command_id"],accepted["command_id"]);
+    drop(client);drop(old);drop(original);drop(lifecycle);stop.cancel();task.await.unwrap().unwrap();
+    let stop=crate::KernelCancellationToken::new();let(tx,rx)=tokio::sync::oneshot::channel();let task=tokio::spawn(ipc::serve(runtime,stop.clone(),tx));rx.await.unwrap().unwrap();
+    let client=RuntimeClient::connect(current.endpoint_path,&service.origin,&config.expected_actor).await.unwrap();assert_eq!(client.call(json!({"method":"binding"})).await.unwrap()["namespace"],old_binding["namespace"]);assert_eq!(client.call(json!({"method":"capabilities"})).await.unwrap()["operation_policy"],"ALL_SUPPORTED");
+    assert_eq!(std::fs::read(root.path().join("original-config.json")).unwrap(),bytes);
+    drop(client);stop.cancel();task.await.unwrap().unwrap();
+}

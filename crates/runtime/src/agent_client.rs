@@ -60,7 +60,7 @@ impl Client {
                     if let Some(view) = &route.management {
                         let observed = client.call(serde_json::json!({"method":"capabilities"})).await?;
                         let binding = client.call(serde_json::json!({"method":"binding"})).await?;
-                        let capability: crate::participant::Capability = serde_json::from_value(observed["capability"].clone())
+                        let capability: crate::participant::Capability = crate::participant::Capability::from_observation(&observed)
                             .map_err(|_| crate::participant::ParticipantError::local("MANAGEMENT_VIEW_BINDING_INVALID", "AGENT_TOOLS"))?;
                         if binding["client_generation"] != view.client_generation || capability.allow_root || capability.operations != view.operations
                             || capability.workspace_ids.as_ref() != Some(&[view.workspace_id.clone()].into()) {
