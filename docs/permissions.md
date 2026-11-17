@@ -24,6 +24,15 @@ or operating-system process. Programs sharing a credential share its authority.
 Separate accounts/sandboxes and file access controls are needed to isolate
 mutually untrusted credential holders.
 
+Receiving activation is separate from client authority. Native0.3.43 preserves
+the original identity, namespace, inbox and pending IDs when a compatible
+receiving activation replaces its predecessor. Ordinary frontend attachment or
+RPC reconnect does not select a new receiver or expand a delegated ceiling.
+The latest committed activation owns only its selected original receiving source;
+the superseded activation cannot reclaim it by retrying. Exact host selection,
+service custody and explicit pause/stop still apply. See
+[activation recovery](host-bridge-recovery.md#receiving-activation-replacement).
+
 ## One business authority
 
 The service checks membership, expiry, execution-specific grants, protocol roles,

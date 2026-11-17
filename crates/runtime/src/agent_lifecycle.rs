@@ -6,6 +6,8 @@ use tokio::sync::{OnceCell,Mutex};
 use std::sync::Arc;
 #[path = "agent_startup.rs"]
 mod startup;
+#[path = "agent_presentation.rs"]
+mod presentation;
 pub(crate) struct Lifecycle {
     startup: startup::State,
     pub(crate) profile: Option<AgentProfile>,
@@ -18,19 +20,21 @@ pub(crate) struct Lifecycle {
     source_directory:std::sync::Mutex<Option<std::path::PathBuf>>,
     registry_directory:std::sync::Mutex<Option<crate::onboarding_project::Directory>>,
     identity:std::sync::OnceLock<(String,String)>,
+    presentation:Mutex<presentation::State>,
+    presentation_transport:std::sync::OnceLock<String>,
 }
 impl Lifecycle {
     pub(crate) fn startup_observation(&self) -> Value {
         self.startup.peek().unwrap_or_else(|| json!({"state":"STARTING","model_wake":"NOT_ATTESTED"}))
     }
     pub(crate) fn profile(profile:AgentProfile)->Self {
-        Self{startup:startup::State::default(),profile:Some(profile),local:None,handle:None,workspace:None,client:OnceCell::new(),selected:Mutex::new(None),source_guard:Mutex::new(None),source_directory:std::sync::Mutex::new(None),registry_directory:std::sync::Mutex::new(None),identity:std::sync::OnceLock::new()}
+        Self{startup:startup::State::default(),profile:Some(profile),local:None,handle:None,workspace:None,client:OnceCell::new(),selected:Mutex::new(None),source_guard:Mutex::new(None),source_directory:std::sync::Mutex::new(None),registry_directory:std::sync::Mutex::new(None),identity:std::sync::OnceLock::new(),presentation:Mutex::new(presentation::State::default()),presentation_transport:std::sync::OnceLock::new()}
     }
     pub(crate) fn local(directory:std::path::PathBuf,handle:Option<String>,workspace:Option<String>)->Self {
-        Self{startup:startup::State::default(),profile:None,local:Some(directory),handle,workspace,client:OnceCell::new(),selected:Mutex::new(None),source_guard:Mutex::new(None),source_directory:std::sync::Mutex::new(None),registry_directory:std::sync::Mutex::new(None),identity:std::sync::OnceLock::new()}
+        Self{startup:startup::State::default(),profile:None,local:Some(directory),handle,workspace,client:OnceCell::new(),selected:Mutex::new(None),source_guard:Mutex::new(None),source_directory:std::sync::Mutex::new(None),registry_directory:std::sync::Mutex::new(None),identity:std::sync::OnceLock::new(),presentation:Mutex::new(presentation::State::default()),presentation_transport:std::sync::OnceLock::new()}
     }
     pub(crate) fn attached(tools:AgentTools)->Self {
-        Self{startup:startup::State::default(),profile:None,local:None,handle:None,workspace:None,client:OnceCell::new_with(Some(tools)),selected:Mutex::new(None),source_guard:Mutex::new(None),source_directory:std::sync::Mutex::new(None),registry_directory:std::sync::Mutex::new(None),identity:std::sync::OnceLock::new()}
+        Self{startup:startup::State::default(),profile:None,local:None,handle:None,workspace:None,client:OnceCell::new_with(Some(tools)),selected:Mutex::new(None),source_guard:Mutex::new(None),source_directory:std::sync::Mutex::new(None),registry_directory:std::sync::Mutex::new(None),identity:std::sync::OnceLock::new(),presentation:Mutex::new(presentation::State::default()),presentation_transport:std::sync::OnceLock::new()}
     }
     fn inspect(&self,path:&std::path::Path)->Result<crate::participant_connect::Connect> {
         let mut selected=self.registry_directory.lock().map_err(|_|ParticipantError::local("CONNECT_RECOVERY_REQUIRED","CONNECT"))?;

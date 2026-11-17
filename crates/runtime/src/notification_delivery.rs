@@ -4,6 +4,8 @@ use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{collections::BTreeMap, path::Path, sync::Mutex};
+#[path = "notification_activation.rs"]
+pub(crate) mod activation;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SourceHead {
@@ -91,9 +93,13 @@ impl Store {
         )
         .map_err(error)?;
         db.execute_batch("CREATE TABLE IF NOT EXISTS notification_owners(owner TEXT PRIMARY KEY,state TEXT NOT NULL);").map_err(db_error)?;
+        activation::initialize(&db)?;
         Ok(Self { db: Mutex::new(db) })
     }
     fn transaction<T>(&self, owner: &str, f: impl FnOnce(&mut State) -> Result<T>) -> Result<T> {
+        self.transaction_checked(owner, |_|Ok(()), f)
+    }
+    fn transaction_checked<T>(&self, owner:&str, check:impl FnOnce(&Connection)->Result<()>, f:impl FnOnce(&mut State)->Result<T>)->Result<T> {
         valid(owner)?;
         let mut db = self
             .db
@@ -102,6 +108,7 @@ impl Store {
         let tx = db
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(db_error)?;
+        check(&tx)?;
         let saved: Option<String> = tx
             .query_row(
                 "SELECT state FROM notification_owners WHERE owner=?1",
@@ -264,7 +271,10 @@ impl Store {
         })
     }
     pub fn due(&self, owner: &str, heads: &[SourceHead], now: i64) -> Result<Option<Wake>> {
-        self.transaction(owner, |s| {
+        self.due_checked(owner,heads,now,None)
+    }
+    pub(crate) fn due_checked(&self,owner:&str,heads:&[SourceHead],now:i64,admission:Option<&activation::Admission>)->Result<Option<Wake>> {
+        self.transaction_checked(owner, |db|match admission {Some(admission)=>admission.check(db),None=>Ok(())}, |s| {
             if heads.len() > 8 {
                 return Err(error("NOTIFICATION_SOURCE_LIMIT"));
             }

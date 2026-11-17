@@ -59,9 +59,12 @@ execution must not treat this indefinitely waiting tool as a foreground call.
 The native receiver stores new messages while the model is busy or the listener
 is being rearmed. Ordinary send/read/reply and pause tools remain available
 during a wait. Cancelling a background task preserves pending work. Manual
-pause/stop remains authoritative. The same receiving binding is exclusively
-projected by its original MCP connection, sharing exclusion with Claude Channels;
-two conversations cannot silently claim that binding at the same time.
+pause/stop remains authoritative. With compatible0.3.43 components, arming the
+listener opts this connection into receiving for its selected original source.
+The latest committed activation receives; a superseded listener cannot reclaim
+ownership by rearming or retrying. Ordinary tool calls do not replace receiving.
+Claude Channels shares this source ownership. Legacy frontends need their normal
+refresh or drain before replacement; the original inbox and pending work remain.
 
 ## Verify this conversation
 

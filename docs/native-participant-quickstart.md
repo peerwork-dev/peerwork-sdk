@@ -130,6 +130,14 @@ in effect. External and embedded clients keep their owning application's lifecyc
 Use current delivery status for a receiving question; a live process or historical
 verification does not prove current host readiness or a model response.
 
+Ordinary tool frontends attach to the same durable Peer client. With compatible
+0.3.43 components, a new opted-in receiving activation replaces only the selected
+original receiving source. Its superseded predecessor stops receiving and cannot
+reclaim it through automatic retry. Same-activation reconnect keeps the original
+inbox and pending work. Use the existing host opt-in or selected Connect flow,
+without manually managing activation IDs. Older frontends may need their normal
+refresh or drain before replacement.
+
 Update the original installation with `peerwork connect --update status|apply`.
 The updater includes added, rebound and blocked effective host configurations.
 Refresh the existing frontend/Skill through the host's normal mechanism. Keep

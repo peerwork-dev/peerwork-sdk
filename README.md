@@ -33,6 +33,13 @@ without an Agent host, MCP or Skill.
    [availability](docs/member-availability.md) and [protocol tools](docs/protocol-session.md)
    through the same original client.
 
+Native0.3.43 preserves the original Peer client while replacing opted-in
+receiving activations for the selected source group. Superseded frontends cannot
+reclaim receiving through retry. Healthy endpoint authentication is independent
+of historical launch records; pause/stop and actual launch ownership checks stay
+in force. See [recovery](docs/host-bridge-recovery.md#receiving-activation-replacement)
+and [release notes](docs/releases/0.3.43.md).
+
 Native0.3.42 uses current service authorization for ordinary clients and
 normalizes known generated historical scopes before tool use. Original pending
 operation namespaces and explicit signer delegations remain intact. Upgrade

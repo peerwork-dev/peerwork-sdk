@@ -13,9 +13,11 @@ failures remain explicit. Existing stop/pause and original pending work survive.
 Native 0.3.35 adds `automatic-runtime-startup-v1`. An installed receiving
 integration restores its original owned runtime when the normal MCP/harness
 starts, without a Context, Connect, inbox or resume call. The same task observes
-a later runtime exit while MCP remains active. It uses the original installation,
-launch proof, namespace and writer fence; it does not create another identity,
-receiver, model process or conversation.
+a later runtime exit while MCP remains active. Native0.3.43 first authenticates
+a healthy endpoint against the original client binding, without requiring old
+config, PID or launcher records. Starting, stopping or transferring the owned
+runtime still validates its original ownership, configuration, selected artifact
+and writer fence. Recovery preserves the identity, namespace and conversation.
 
 Runtime startup intent is separate from observed liveness and notification
 pause. Installation preserves an existing disable. A normal runtime admin stop
@@ -33,8 +35,8 @@ frontends share the same original runtime. An interrupted compatible update
 resumes its recorded artifact and operation; a changed artifact is a blocker.
 
 `local_startup` is a cached installation observation in Context/delivery and a
-deduplicated transition hint in ordinary tool results. `RUNTIME_RUNNING` proves
-only process liveness; use current delivery health for receiver and host facts.
+deduplicated transition hint in ordinary tool results. `RUNTIME_RUNNING` is a
+runtime observation; use current delivery health for receiver and host facts.
 Repeated tool calls do not add health requests or self-tests. Stderr also reports
 bounded transitions. These surfaces cannot notify a model when its harness is
 not running, and MCP instructions are not a guarantee of model attention.
@@ -45,6 +47,31 @@ notifications. Host-required activation, including Claude Channels opt-in, still
 belongs to the original host. Endpoint changes do not authorize another session.
 External supervisors and embedded clients keep their existing lifecycle;
 no OS service or new client dependency is installed automatically.
+
+## Receiving activation replacement
+
+Native0.3.43 keeps one durable original Peer client while allowing ordinary tool
+frontends to attach. A new opted-in receiving activation can replace the current
+activation for its selected original source. The latest committed activation
+wins; opening an RPC connection, reading status or using a newer executable does
+not select a receiver. Other Peers, Spaces and separately bound conversations
+retain their own receiving state.
+
+The current activation reconnects with its existing identity. A superseded
+activation stops receiving and cannot reclaim ownership through automatic retry.
+Notification admission fences stale output while preserving original batches,
+backoff and already admitted or UNKNOWN host attempts. Replacement does not
+clear pause/stop or create a fresh self-test success. Ordinary tools and pending
+operation recovery continue through the original client.
+
+Use the host's existing opt-in or selected Connect/rebind flow; no activation
+IDs need to be assembled by the Agent. Changing a destination still requires
+the exact supported host selection. An older frontend that lacks activation
+fencing must release its original projection through the normal host refresh
+or drain before replacement. Keep physical host locks and refresh the original
+runtime/frontend together; never delete a lock or redirect an uncertain input.
+This does not give the SDK control over arbitrary sessions or attest a model
+response.
 
 ## Native0.3.34 current host health
 

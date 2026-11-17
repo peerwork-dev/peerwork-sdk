@@ -99,14 +99,19 @@ async fn write<W: AsyncWrite + Unpin>(writer: &mut W, value: Value) -> Result<()
     .map_err(|_| ParticipantError::local("MCP_OUTPUT_TIMEOUT", "MCP"))?
     .map_err(|_| ParticipantError::local("MCP_OUTPUT_CLOSED", "MCP"))
 }
-async fn write_channel<W,F>(writer:&mut W,notification:Value,state:&claude_channel::State,admission:F)->Result<()>
+async fn write_channel<W,F>(writer:&mut W,mut notification:Value,state:&claude_channel::State,admission:F)->Result<()>
 where W:AsyncWrite+Unpin,F:std::future::Future<Output=Result<bool>> {
+    let presentation=notification.as_object_mut().and_then(|value|value.remove("_presentation"));
     match admission.await {
         // Fence immediately before writing. Bytes already being written cannot
         // be recalled by a concurrent pause.
         Ok(true)=>{write(writer,notification.clone()).await?;state.written(&notification);},
         Ok(false)=>{},
-        Err(error)=>{state.validation_failed(&error.code);eprintln!("Peerwork Claude channel validation: {}",error.code);},
+        Err(error)=>{
+            state.validation_failed(&error.code);
+            if let Some(alias)=presentation.as_ref().and_then(|value|value["scope"].as_str()){state.scope_failed(alias,&error);}
+            eprintln!("Peerwork Claude channel validation: {}",error.code);
+        },
     }
     Ok(())
 }
@@ -177,6 +182,7 @@ where R:AsyncBufRead+Send+Unpin+'static,W:AsyncWrite+Unpin {
 async fn serve_tools_mode<R,W>(tools:Tools,mut reader:R,mut writer:W,claude:bool)->Result<()>
 where R:AsyncBufRead+Send+Unpin+'static,W:AsyncWrite+Unpin {
     let tools = Arc::new(tools);
+    if claude {tools.presentation_transport("MCP_STDIO_CHANNEL")?;}
     let startup_task = tokio::spawn(tools.clone().recover_startup());
     let (tx, mut rx) = mpsc::channel(8);
     let reading = tokio::spawn(async move {
@@ -213,7 +219,7 @@ where R:AsyncBufRead+Send+Unpin+'static,W:AsyncWrite+Unpin {
             notification=channel_rx.recv(),if channel_task.is_some()=>if let Some(notification)=notification {
                 let meta=&notification["params"]["meta"];
                 let allowed=match (meta["batch"].as_str(),meta["revision"].as_u64()) {
-                    (Some(batch),Some(revision))=>tools.notification_allowed(batch,revision).await,
+                    (Some(batch),Some(revision))=>claude_channel::presentation_allowed(&tools,notification.get("_presentation"),batch,revision).await,
                     _=>Err(ParticipantError::local("CLAUDE_CHANNEL_BATCH_INVALID","CLAUDE_CHANNEL")),
                 };
                 write_channel(&mut writer,notification,&channel_state,async {allowed}).await?;
@@ -221,7 +227,7 @@ where R:AsyncBufRead+Send+Unpin+'static,W:AsyncWrite+Unpin {
             joined=jobs.join_next_with_id(),if !jobs.is_empty()=>if let Some(joined)=joined{
                 match joined{
                     Ok((task,(id,mut response)))=>{ids.remove(&task);if calls.remove(&id).is_some()&&!cancelled.remove(&id){
-                        if let Err(error)=background_listener::admit(&tools,&mut response).await {
+                        if let Err(error)=background_listener::admit(&tools,&background_state,&mut response).await {
                             let out=json!({"error":error});
                             response["result"]["content"]=json!([{"type":"text","text":out.to_string()}]);
                             response["result"]["structuredContent"]=out;
@@ -355,6 +361,17 @@ mod tests {
         assert!(wire.is_empty());assert_eq!(state.status()["validation_error"],"SYNTHETIC_VALIDATION_UNAVAILABLE");
         super::write_channel(&mut wire,notice,&state,async {Ok(true)}).await.unwrap();
         assert!(!wire.is_empty());assert_eq!(state.status()["notifications_written"],1);
+    }
+    #[tokio::test]
+    async fn successor_fences_queued_channel_output_and_keeps_activation_private() {
+        let state=super::claude_channel::State::default();let mut wire=Vec::new();
+        let notice=serde_json::json!({"method":"notifications/claude/channel","params":{"meta":{"batch":"original","revision":1}},"_presentation":{"scope":"space","activation":{"operation_id":"private-decision","generation":1,"target":{"route":"private-host"}}}});
+        super::write_channel(&mut wire,notice.clone(),&state,async {Err(crate::participant::ParticipantError::local("PRESENTATION_ACTIVATION_SUPERSEDED","TEST"))}).await.unwrap();
+        assert!(wire.is_empty());assert_eq!(state.status()["scopes"]["space"]["state"],"SUPERSEDED");
+        let current=super::claude_channel::State::default();
+        super::write_channel(&mut wire,notice,&current,async {Ok(true)}).await.unwrap();
+        let output=String::from_utf8(wire).unwrap();
+        assert!(output.contains("original"));assert!(!output.contains("_presentation"));assert!(!output.contains("private-decision"));assert!(!output.contains("private-host"));
     }
     use super::*;
     use tokio::io::{AsyncBufReadExt, BufReader};

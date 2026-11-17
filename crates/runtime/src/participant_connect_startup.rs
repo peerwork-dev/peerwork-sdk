@@ -12,6 +12,49 @@ fn original(connect:&Connect,handle:&str,trigger:Trigger)->Result<Option<bootstr
         Err(error)=>Err(error),
     }
 }
+fn installed_receiver(connect:&Connect,handle:&str)->bool {
+    connect.registry.installations.values().any(|i|i.committed&&i.participant==handle)
+        && connect.registry.setups.values().any(|s|s.desired.participant==handle&&s.desired.receive)
+}
+/// Locate intent from the registered owned layout without importing historical
+/// config/PID proofs. This permits observation only, never lifecycle authority.
+fn observation_directory(connect:&Connect,handle:&str,trigger:Trigger)->Option<PathBuf> {
+    if trigger==Trigger::Automatic&&!installed_receiver(connect,handle) {return None;}
+    let selected=connect.registry.participants.get(handle)?;
+    let directory=connect.directory.join(format!("runtime-{handle}"));
+    (selected.endpoint_path==directory.join("client-bootstrap.json")
+        && connect.registry.local_runtime_admins.get(handle)==Some(&directory.join("admin.json")))
+        .then_some(directory)
+}
+async fn healthy_original(connect:&Connect,handle:&str,trigger:Trigger)->Result<Option<Value>> {
+    let Some(directory)=observation_directory(connect,handle,trigger) else {return Ok(None);};
+    let policy=crate::runtime_startup::read(&directory)?;
+    // Enabling a stopped/unenrolled installation remains an ownership mutation.
+    if trigger==Trigger::Resume&&policy.as_ref().is_none_or(|p|!p.automatic) {return Ok(None);}
+    if policy.as_ref().is_some_and(|p|!p.automatic) {
+        return Ok(Some(observation("DISABLED","USER_DISABLED_AUTOMATIC_START")));
+    }
+    if connect.startup_update(Some(handle))?.is_some() {return Ok(None);}
+    match connect.original_client(handle).await {
+        Ok(_)=>(),
+        Err(error) if matches!(error.code.as_str(),"RUNTIME_UNAVAILABLE"|"ENDPOINT_NOT_FOUND"|"ORIGINAL_BINDING_VERIFICATION_REQUIRED")=>return Ok(None),
+        Err(error)=>return Err(error),
+    }
+    // Recheck current intent/selection after IPC. No registry or maintenance
+    // lock is held across endpoint waits; an updater cannot be bypassed here.
+    let _maintenance=crate::runtime_startup::recovery_fence(&directory)?;
+    let current=Connect::inspect(&connect.directory)?;
+    if observation_directory(&current,handle,trigger).as_ref()!=Some(&directory)
+        || current.registry.participants.get(handle)!=connect.registry.participants.get(handle)
+        || current.registry.verified_bindings.get(handle)!=connect.registry.verified_bindings.get(handle) {
+        return Err(local("ORIGINAL_RUNTIME_BINDING_CHANGED"));
+    }
+    if crate::runtime_startup::read(&directory)?.is_some_and(|p|!p.automatic) {
+        return Ok(Some(observation("DISABLED","USER_DISABLED_AUTOMATIC_START")));
+    }
+    if current.startup_update(Some(handle))?.is_some() {return Err(local("ORIGINAL_UPDATE_RECOVERY_REQUIRED"));}
+    Ok(Some(observation("RUNTIME_RUNNING","CHECK_CURRENT_DELIVERY_FOR_HOST_READINESS")))
+}
 /// The single ordinary recovery interpreter. Callers must release the registry
 /// writer before entering; the updater reacquires its original operation locks.
 /// Maintenance executors use the lower-level launch primitives, never recurse.
@@ -21,6 +64,7 @@ pub(crate) async fn recover(directory:&Path,handle:Option<&str>,trigger:Trigger)
 pub(crate) async fn recover_opened(mut connect:Connect,handle:Option<&str>,trigger:Trigger)->Result<Value> {
     let directory=connect.directory.clone();
     let Some(handle)=connect.selected_handle(handle)? else {return Ok(observation("NOT_CONFIGURED","LOCAL_SELECTION_REQUIRED"));};
+    if let Some(observation)=healthy_original(&connect,&handle,trigger).await? {return Ok(observation);}
     let Some(runtime)=original(&connect,&handle,trigger)? else {return Ok(observation("NOT_MANAGED","EXTERNAL_OR_MANUAL_LIFECYCLE"));};
     if trigger==Trigger::Resume {
         crate::runtime_startup::enroll(&runtime.config.state_directory)?;
@@ -75,8 +119,7 @@ impl Connect {
         let Some(handle) = self.selected_handle(handle)? else { return Ok(None); };
         // An installed receiving setup is the authority to auto-restore. An
         // arbitrary endpoint/profile is not an installation ownership record.
-        if !self.registry.installations.values().any(|i| i.committed && i.participant == handle)
-            || !self.registry.setups.values().any(|s| s.desired.participant == handle && s.desired.receive) {
+        if !installed_receiver(self,&handle) {
             return Ok(None);
         }
         match bootstrap::owned_runtime(self, &handle) {

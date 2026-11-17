@@ -437,6 +437,18 @@ pub(super) struct Installed {
     #[serde(default,skip_serializing_if="Option::is_none")]
     project_identity: Option<Value>,
 }
+/// A Channel/background launch may use only its already committed original
+/// host installation. Directory context disambiguates installations, never a
+/// model conversation or a new receiving destination.
+pub(super) fn presentation_registration(connect:&Connect,participant:&str,workspace:&str,kind:&str)->Result<Option<String>> {
+    let host=match kind {"MCP_STDIO_CHANNEL"=>"claude","MCP_BACKGROUND_TOOL"=>"agy",_=>return Err(local("PRESENTATION_TARGET_INVALID"))};
+    let candidates=connect.registry.installations.iter().filter(|(_,entry)|entry.committed&&entry.participant==participant&&entry.workspace_id==workspace&&entry.spec.host==host).collect::<Vec<_>>();
+    if candidates.len()<=1 {return Ok(candidates.first().map(|(id,_)|(*id).clone()));}
+    let cwd=std::env::current_dir().ok().and_then(|path|std::fs::canonicalize(path).ok());
+    let exact=candidates.iter().filter(|(_,entry)|cwd.as_ref()==Some(&entry.spec.project)).collect::<Vec<_>>();
+    if exact.len()==1 {return Ok(Some(exact[0].0.clone()));}
+    Err(local("PRESENTATION_ORIGINAL_INSTALLATION_SELECTION_REQUIRED"))
+}
 fn id(participant: &str, workspace: &str, spec: &Installation) -> String {
     sha256_hex(
         json!([participant, workspace, spec.host, spec.project])

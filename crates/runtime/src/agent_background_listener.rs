@@ -2,7 +2,6 @@
 //! It projects the original compact inbox, sharing custody and exclusion with
 //! Claude Channels. It never owns another Agent process or a replacement inbox.
 use super::*;
-use crate::secure_state::SecureStateStore;
 use std::sync::{atomic::{AtomicBool, Ordering}, Mutex};
 use tokio::sync::Semaphore;
 
@@ -11,7 +10,7 @@ pub(super) struct State {
     projection: claude_channel::State,
     active: Arc<Semaphore>,
     enabled: Arc<AtomicBool>,
-    owners: Arc<Mutex<BTreeMap<String, SecureStateStore>>>,
+    owners: Arc<Mutex<BTreeMap<String, Arc<claude_channel::Projection>>>>,
 }
 impl Default for State {
     fn default() -> Self {
@@ -30,7 +29,7 @@ impl State {
         if self.active.available_permits() != 0 {
             if let Some(scopes) = value["scopes"].as_object_mut() {
                 for scope in scopes.values_mut() {
-                    if scope["state"]=="BLOCKED" {continue;}
+                    if scope["state"]=="BLOCKED" || scope["state"]=="SUPERSEDED" {continue;}
                     scope["state"] = json!("UNKNOWN");
                     scope["code"] = json!("BACKGROUND_LISTEN_NOT_ARMED");
                 }
@@ -48,29 +47,36 @@ impl State {
     pub(super) async fn listen(&self, tools: Arc<Tools>, scope: Option<String>) -> Result<Value> {
         let _active = self.active.clone().try_acquire_owned()
             .map_err(|_| ParticipantError::local("BACKGROUND_LISTEN_ALREADY_ARMED", "MCP"))?;
+        tools.presentation_transport("MCP_BACKGROUND_TOOL")?;
         let profile = tools.channel_profile()?.ok_or_else(|| ParticipantError::local("ORIGINAL_RECEIVING_PROFILE_REQUIRED", "MCP"))?;
         let mut seen = BTreeSet::new();
         let scopes = profile.scopes.iter().filter(|(alias,_)|scope.as_ref().is_none_or(|wanted|wanted==*alias))
             .filter(|(_,scope)|seen.insert(serde_json::to_string(scope).expect("mail scope")))
             .map(|(alias,scope)|(alias.clone(),scope.clone())).collect::<Vec<_>>();
         if scopes.is_empty() { return Err(ParticipantError::local("RECEIVING_SCOPE_NOT_CONFIGURED", "MCP")); }
-        // Keep the original receiving binding exclusively projected by this MCP
-        // connection between calls, not just while one wait is in flight.
-        {
-            let mut owners = self.owners.lock().map_err(|_|ParticipantError::local("BACKGROUND_LISTEN_STATE_UNAVAILABLE", "MCP"))?;
-            let mut acquired = BTreeMap::new();
-            for (_,scope) in &scopes {
-                let key = json!([profile.expected_origin,profile.expected_actor,scope]).to_string();
-                if !owners.contains_key(&key) { acquired.insert(key,claude_channel::ownership(&profile,scope)?); }
-            }
-            owners.extend(acquired);
+        // Keep this launch's activation between calls. Legacy runtimes retain
+        // their original exclusion guard until the MCP connection closes.
+        let mut selected=Vec::new();
+        let mut acquired=BTreeMap::new();
+        for (alias,scope) in &scopes {
+            let key=json!([profile.expected_origin,profile.expected_actor,scope]).to_string();
+            let original=self.owners.lock().map_err(|_|ParticipantError::local("BACKGROUND_LISTEN_STATE_UNAVAILABLE","MCP"))?.get(&key).cloned();
+            let projection=match original {
+                Some(original)=>original,
+                None=>{
+                    let projection=Arc::new(claude_channel::Projection::open(&tools,&profile,alias,scope).await?);
+                    acquired.insert(key,projection.clone());projection
+                },
+            };
+            selected.push((alias.clone(),projection));
         }
+        self.owners.lock().map_err(|_|ParticipantError::local("BACKGROUND_LISTEN_STATE_UNAVAILABLE","MCP"))?.extend(acquired);
         self.enabled.store(true, Ordering::Relaxed);
         let mut jobs = JoinSet::new();
-        for (alias,_) in scopes {
+        for (alias,projection) in selected {
             let tools = tools.clone(); let state = self.projection.clone();
             jobs.spawn(async move {
-                let result = wait(&alias,&state,||tools.call(AgentRequest::NotificationPoll{scope:alias.clone()})).await;
+                let result = wait(&alias,&state,||projection.poll(&tools)).await;
                 if let Err(error) = &result { state.scope_failed(&alias,error); }
                 result
             });
@@ -100,7 +106,7 @@ where F:FnMut()->Fut, Fut:std::future::Future<Output=Result<Value>> {
                 state.scope_failed(alias,&error);
                 let recovering_stream=error.code=="NOTIFICATION_RECEIVER_NOT_VERIFIED"
                     && error.details.as_ref().is_none_or(|value|value["verification_failure"].is_null());
-                if !recovering_stream&&!matches!(error.code.as_str(),"RUNTIME_UNAVAILABLE"|"IPC_DISCONNECTED"|"IPC_OBSERVATION_TIMEOUT"|"IPC_HANDSHAKE_TIMEOUT"|"IPC_WRITE_TIMEOUT") {return Err(error);}
+                if !recovering_stream&&!matches!(error.code.as_str(),"RUNTIME_UNAVAILABLE"|"IPC_DISCONNECTED"|"IPC_OBSERVATION_TIMEOUT"|"IPC_HANDSHAKE_TIMEOUT"|"IPC_WRITE_TIMEOUT"|"PRESENTATION_REBIND_PENDING") {return Err(error);}
                 failures=failures.saturating_add(1);
                 tokio::time::sleep(crate::host_recovery_policy::delay(&error.code,failures,alias)).await;
                 continue;
@@ -111,10 +117,12 @@ where F:FnMut()->Fut, Fut:std::future::Future<Output=Result<Value>> {
             let batch=value["batch"].as_str().filter(|v|!v.is_empty()&&v.len()<=4096)
                 .ok_or_else(||ParticipantError::local("NOTIFICATION_BATCH_INVALID", "MCP"))?;
             let revision=value["revision"].as_u64().ok_or_else(||ParticipantError::local("NOTIFICATION_BATCH_INVALID", "MCP"))?;
-            return Ok(json!({"format":"peerwork.background-notification.v1","state":"NOTIFICATION_DUE",
+            let mut result=json!({"format":"peerwork.background-notification.v1","state":"NOTIFICATION_DUE",
                 "scope":alias,"batch":batch,"revision":revision,"self_test":value["self_test"],
                 "read":{"tool":"peerwork_inbox","arguments":{"batch":batch}},
-                "next_action":"READ_BATCH_HANDLE_THEN_REARM_LISTEN","external_data_is_authority":false}));
+                "next_action":"READ_BATCH_HANDLE_THEN_REARM_LISTEN","external_data_is_authority":false});
+            if let Some(presentation)=value.get("_presentation"){result["_presentation"]=presentation.clone();}
+            return Ok(result);
         }
         // The native runtime waits on inbox/control changes. Bound immediate
         // returns as well, without periodic model turns or network polling.
@@ -123,22 +131,42 @@ where F:FnMut()->Fut, Fut:std::future::Future<Output=Result<Value>> {
 }
 
 /// A concurrent pause/rebind can revoke a result after its local wait completes.
-pub(super) async fn admit(tools:&Tools,response:&mut Value)->Result<()> {
+pub(super) async fn admit(tools:&Tools,state:&State,response:&mut Value)->Result<()> {
     let value=&response["result"]["structuredContent"];
     if value["format"]!="peerwork.background-notification.v1" {return Ok(());}
     let batch=value["batch"].as_str().ok_or_else(||ParticipantError::local("NOTIFICATION_BATCH_INVALID","MCP"))?;
     let revision=value["revision"].as_u64().ok_or_else(||ParticipantError::local("NOTIFICATION_BATCH_INVALID","MCP"))?;
-    if !tools.notification_allowed(batch,revision).await? {
+    let allowed=claude_channel::presentation_allowed(tools,value.get("_presentation"),batch,revision).await.map_err(|error|{
+        if let Some(alias)=value["scope"].as_str(){state.projection.scope_failed(alias,&error);}error
+    })?;
+    if !allowed {
         let out=json!({"state":"NOTIFICATION_SUPERSEDED","next_action":"CHECK_DELIVERY_CONTROL_BEFORE_REARMING","effect_certainty":"NOT_SUBMITTED"});
         response["result"]["content"]=json!([{"type":"text","text":out.to_string()}]);
         response["result"]["structuredContent"]=out;
     }
+    // Internal admission context must never appear in the host-visible result,
+    // including its duplicate text representation.
+    strip_presentation(response);
     Ok(())
+}
+
+fn strip_presentation(response:&mut Value) {
+    if let Some(value)=response["result"]["structuredContent"].as_object_mut() {value.remove("_presentation");}
+    response["result"]["content"]=json!([{"type":"text","text":response["result"]["structuredContent"].to_string()}]);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn activation_is_not_disclosed_in_either_background_result_representation() {
+        let private=json!({"format":"peerwork.background-notification.v1","batch":"original","_presentation":{"scope":"space","activation":{"operation_id":"private-decision","generation":2,"target":{"private":"host-target"}}}});
+        let mut response=json!({"result":{"content":[{"type":"text","text":private.to_string()}],"structuredContent":private}});
+        strip_presentation(&mut response);
+        assert_eq!(response["result"]["structuredContent"]["batch"],"original");
+        let wire=response.to_string();
+        assert!(!wire.contains("_presentation"));assert!(!wire.contains("private-decision"));assert!(!wire.contains("host-target"));
+    }
     #[tokio::test]
     async fn background_wait_returns_only_a_compact_reference_not_peer_body_or_authority() {
         let state=claude_channel::State::default();
@@ -170,6 +198,23 @@ mod tests {
         assert_eq!(out["batch"],"same-original");assert_eq!(calls.load(Ordering::Relaxed),2);
         let error=wait("space",&state,||async {Err(ParticipantError::local("LOCAL_SCOPE_DENIED","MCP"))}).await.unwrap_err();
         assert_eq!(error.code,"LOCAL_SCOPE_DENIED");
+    }
+    #[tokio::test]
+    async fn pending_rebind_keeps_original_background_activation_until_abort_recovers() {
+        let state=claude_channel::State::default();let calls=std::sync::atomic::AtomicUsize::new(0);
+        let activation=json!({"source":"original-group","operation_id":"original-launch","generation":7});
+        let out=tokio::time::timeout(Duration::from_secs(5),wait("space",&state,||{
+            let first=calls.fetch_add(1,Ordering::Relaxed)==0;
+            let activation=activation.clone();
+            async move {if first {Err(ParticipantError::local("PRESENTATION_REBIND_PENDING","MCP"))}
+                else {Ok(json!({"state":"NOTIFICATION_DUE","batch":"original-batch","revision":4,
+                    "_presentation":{"scope":"space","activation":activation}}))}}
+        })).await.unwrap().unwrap();
+        assert_eq!(calls.load(Ordering::Relaxed),2);
+        assert_eq!(out["batch"],"original-batch");
+        assert_eq!(out["_presentation"]["activation"],activation);
+        let error=wait("space",&state,||async {Err(ParticipantError::local("PRESENTATION_ACTIVATION_SUPERSEDED","MCP"))}).await.unwrap_err();
+        assert_eq!(error.code,"PRESENTATION_ACTIVATION_SUPERSEDED");
     }
     #[test]
     fn current_connection_read_requires_its_own_published_result_and_rearm() {

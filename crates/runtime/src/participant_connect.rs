@@ -45,6 +45,9 @@ pub use discovery::Discovery;
 mod intent;
 #[path="participant_connect_opencode.rs"]
 mod opencode;
+#[cfg(test)]
+#[path="participant_connect_presentation_tests.rs"]
+mod presentation_tests;
 pub use intent::ConnectIntent;
 
 fn local(code: &str) -> ParticipantError {
@@ -279,6 +282,12 @@ fn receiving_observation(observed:&Value)->Value {
     json!({"state":observed["state"],"code":observed["code"],"verification_failure":observed["verification_failure"],"notification_delivery":observed["notification_delivery"],"presence":observed["presence"],"receiver_link_verified":observed["receiver_link_verified"],"checkpoint":observed["checkpoint"],"current_delivery":observed["current_delivery"],"transport":observed["transport"],"transport_health":observed["transport_health"],"model_response":"NOT_ATTESTED"})
 }
 impl Connect {
+    pub(crate) fn presentation_issuer(&self,handle:Option<&str>,workspace:&str,kind:&str)->Result<Option<(PathBuf,String)>> {
+        let Some(handle)=self.selected_handle(handle)? else{return Ok(None);};
+        let Some(admin)=self.registry.local_runtime_admins.get(&handle) else{return Ok(None);};
+        let Some(registration)=install::presentation_registration(self,&handle,workspace,kind)? else{return Ok(None);};
+        Ok(Some((admin.clone(),registration)))
+    }
     pub fn selection_required(setup_id: &str) -> Value {
         json!({"state":"PENDING","setup_id":setup_id,"blocker":{"stage":"LOCAL_SELECTION","code":"LOCAL_SELECTION_REQUIRED","next_actor":"LOCAL_RUNTIME_OWNER","next_action":"RUN_NATIVE_CONNECT_WITH_AUTHORIZED_PROJECT_CONTEXT"}})
     }

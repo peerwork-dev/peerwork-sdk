@@ -119,6 +119,76 @@ impl Drop for Fixture { fn drop(&mut self) {
     let _ = &self.root;
 } }
 
+#[tokio::test]
+async fn disabled_observation_does_not_require_launch_provenance_or_enable_resume() {
+    let root=crate::test_support::protected_test_dir();
+    let directory=root.path().join("registry");let mut connect=Connect::open(&directory).unwrap();
+    let runtime=directory.join("runtime-peer");create_private_state_directory(&runtime).unwrap();
+    connect.registry.participants.insert("peer".into(),Registration {origin:"http://127.0.0.1:1".into(),
+        actor_id:"A".repeat(43),endpoint_path:runtime.join("client-bootstrap.json")});
+    connect.registry.local_runtime_admins.insert("peer".into(),runtime.join("admin.json"));
+    connect.save().unwrap();drop(connect);
+    crate::runtime_startup::enroll(&runtime).unwrap();crate::runtime_startup::disable(&runtime).unwrap();
+    write_private(&runtime.join("config.json"),b"invalid historical config").unwrap();
+    let before=crate::runtime_startup::read(&runtime).unwrap().unwrap();
+    let observed=recover(&directory,Some("peer"),Trigger::Adopt).await.unwrap();
+    assert_eq!(observed["state"],"DISABLED");
+    assert_eq!(recover(&directory,Some("peer"),Trigger::Resume).await.unwrap_err().code,"RUNTIME_CONFIG_INVALID");
+    assert_eq!(crate::runtime_startup::read(&runtime).unwrap().unwrap(),before);
+    // A registration alone never authorizes automatic installation recovery.
+    assert_eq!(recover(&directory,Some("peer"),Trigger::Automatic).await.unwrap()["state"],"NOT_MANAGED");
+}
+
+#[tokio::test(flavor="multi_thread",worker_threads=2)]
+#[ignore="requires exact candidate CLI and synthetic process/loopback IPC"]
+async fn healthy_endpoint_observation_preserves_binding_intent_and_update_barriers() {
+    let fixture=Fixture::new().await;
+    let runtime=&fixture.config.state_directory;
+    let config=std::fs::read(runtime.join("config.json")).unwrap();
+    let launch=fixture.launch();
+    let original=bootstrap::owned_runtime(&Connect::inspect(&fixture.directory).unwrap(),"peer").unwrap();
+    // Healthy authentication must not depend on an old config/PID/artifact.
+    crate::onboarding_files::replace(&runtime.join("config.json"),b"obsolete config").unwrap();
+    std::fs::remove_file(runtime.join("bootstrap.state")).unwrap();
+    std::fs::remove_file(runtime.join("startup.state")).unwrap();
+    let observed=recover(&fixture.directory,Some("peer"),Trigger::Automatic).await.unwrap();
+    assert_eq!(observed["state"],"RUNTIME_RUNNING");
+    assert!(!runtime.join("bootstrap.state").exists());
+    assert!(crate::runtime_startup::read(runtime).unwrap().is_none());
+
+    let maintenance=crate::runtime_startup::recovery_fence(runtime).unwrap();
+    assert_eq!(recover(&fixture.directory,Some("peer"),Trigger::Automatic).await.unwrap_err().code,"RUNTIME_RECOVERY_ALREADY_OWNED");
+    drop(maintenance);
+    let update=fixture.directory.join("update-peer.state");
+    let store=SecureStateStore::open(&update).unwrap();store.write_exact(b"invalid update").unwrap();drop(store);
+    assert_eq!(recover(&fixture.directory,Some("peer"),Trigger::Automatic).await.unwrap_err().code,"UPDATE_STATE_INVALID");
+    let store=SecureStateStore::open(&update).unwrap();
+    store.write_exact(&serde_json::to_vec(&json!({"format":"peerwork.owned-update.v1","participant":"peer",
+        "registration":fixture.registration,"executable":fixture.binary,
+        "executable_digest":crate::runtime_startup::Launcher::capture(fixture.binary.clone()).unwrap().sha256,
+        "required_features":["automatic-runtime-startup-v1"],"original":original,"was_running":true,"phase":"RUNTIME_READY"})).unwrap()).unwrap();
+    assert_eq!(recover(&fixture.directory,Some("peer"),Trigger::Automatic).await.unwrap_err().code,"UPDATE_ALREADY_OWNED_OR_UNSAFE");
+    drop(store);
+    std::fs::remove_file(update).unwrap();
+
+    let mut connect=Connect::open(&fixture.directory).unwrap();
+    connect.registry.verified_bindings.get_mut("peer").unwrap()["namespace"]=json!("another-original-namespace");
+    connect.save().unwrap();drop(connect);
+    assert_eq!(recover(&fixture.directory,Some("peer"),Trigger::Automatic).await.unwrap_err().code,"ORIGINAL_RUNTIME_BINDING_CHANGED");
+    let mut connect=Connect::open(&fixture.directory).unwrap();
+    connect.registry.verified_bindings.insert("peer".into(),fixture.binding.clone());connect.save().unwrap();drop(connect);
+
+    crate::runtime_startup::enroll(runtime).unwrap();crate::runtime_startup::disable(runtime).unwrap();
+    let stopped=crate::runtime_startup::read(runtime).unwrap().unwrap();
+    assert_eq!(recover(&fixture.directory,Some("peer"),Trigger::Automatic).await.unwrap()["state"],"DISABLED");
+    assert_eq!(recover(&fixture.directory,Some("peer"),Trigger::Resume).await.unwrap_err().code,"RUNTIME_CONFIG_INVALID");
+    assert_eq!(crate::runtime_startup::read(runtime).unwrap().unwrap(),stopped);
+    // Restore fixture provenance solely for its normal explicit cleanup path.
+    crate::onboarding_files::replace(&runtime.join("config.json"),&config).unwrap();
+    let store=SecureStateStore::open(&runtime.join("bootstrap.state")).unwrap();
+    store.write_exact(&serde_json::to_vec(&launch).unwrap()).unwrap();
+}
+
 #[tokio::test(flavor="multi_thread",worker_threads=2)]
 #[ignore="requires exact candidate CLI and synthetic process/loopback IPC"]
 async fn mcp_startup_and_runtime_crash_restore_without_any_tool_call() {

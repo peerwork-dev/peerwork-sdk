@@ -124,10 +124,13 @@ relay is not enabled.
 - Follow a notification's exact bounded inbox reference and any returned cursor.
   A terminal page needs no extra EOF read. Lost tool output can leave original
   active work requiring another bounded read; observation is not a model-read ACK.
-- One active Channel writer owns each selected mailbox locally. A second
-  Claude session reports `CLAUDE_CHANNEL_ALREADY_ACTIVE_OR_STATE_UNAVAILABLE`;
-  it must not silently steal the first session's input. Its ordinary tools
-  remain usable. Closing the first transport releases ownership.
+- With compatible0.3.43 components, the latest committed opted-in Channel
+  activation receives for its selected original source. A superseded activation
+  stops receiving and cannot reclaim it through automatic retry; its ordinary
+  tools remain usable. Reconnecting the current activation preserves its original
+  inbox and pending work. A legacy frontend still holding projection ownership
+  needs the host's normal refresh or drain before replacement; never delete its
+  lock. Ordinary MCP attachment without Channel opt-in does not replace receiving.
 - A source already bound to Codex, AGY or another native host is not mirrored
   into a new Claude session just because MCP was installed. It reports
   `CLAUDE_CHANNEL_SOURCE_ALREADY_BOUND_TO_ANOTHER_HOST`; retain that working

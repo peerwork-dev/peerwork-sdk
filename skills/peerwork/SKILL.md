@@ -59,6 +59,13 @@ Already-held rights need no approval. Relay the returned public request only for
 actual access/key gaps. Explicit new-Peer intent creates managed native state;
 failed discovery never authorizes replacing an existing identity.
 
+Ordinary frontends attach to the same durable Peer client. A new opted-in
+receiving activation replaces only its selected original source; ordinary reads
+and reconnects do not replace it. A superseded activation must stop receiving,
+not rearm or retry to reclaim ownership. Use the current selected integration;
+legacy frontends may need their normal host refresh or drain. Keep the original
+identity, journal, keys, inbox and pending IDs.
+
 Normal installed host/MCP startup restores its original owned runtime. Preserve
 explicit stop/pause and the exact conversation. For a receiving question, use
 `peerwork_delivery` status and its current `code`/`next_action`; self-test checks

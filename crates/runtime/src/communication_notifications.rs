@@ -155,6 +155,10 @@ impl Hub {
         self.channel_observations.lock().ok().and_then(|items|items.get(key).map(|at|json!({"state":"POLLING","observation_age_ms":at.elapsed().as_millis().min(u64::MAX as u128) as u64})))
             .unwrap_or_else(||json!({"state":"UNKNOWN","reason":"CHANNEL_NOT_OBSERVED"}))
     }
+    pub(crate) fn forget_channel_observation(&self, key:&str)->Result<()> {
+        self.channel_observations.lock().map_err(|_|error("NOTIFICATION_STATE_FAILED"))?.remove(key);
+        Ok(())
+    }
     pub(crate) fn note_channel(&self, key:&str)->Result<()> {
         let mut items=self.channel_observations.lock().map_err(|_|error("NOTIFICATION_STATE_FAILED"))?;
         if items.len()>=128&&!items.contains_key(key){return Err(error("NOTIFICATION_HOST_LIMIT"));}
@@ -269,12 +273,20 @@ impl Hub {
         }
         Ok(bindings)
     }
-    pub(crate) async fn poll(
+    pub(crate) async fn poll(&self,client:&ParticipantClient,selected:&WatchOptions)->Result<Option<(String,Wake)>> {
+        let bindings=Self::bindings(client,Some(selected)).await?;
+        let admission=crate::notification_delivery::activation::Admission::for_bindings(client,&bindings);
+        self.poll_admitted(client,selected,&admission).await
+    }
+    async fn poll_admitted(
         &self,
         client: &ParticipantClient,
         selected: &WatchOptions,
+        admission:&crate::notification_delivery::activation::Admission,
     ) -> Result<Option<(String, Wake)>> {
         let bindings = Self::bindings(client, Some(selected)).await?;
+        let current=crate::notification_delivery::activation::Admission::for_bindings(client,&bindings);
+        if current.source!=admission.source || current.members!=admission.members {return Err(error("PRESENTATION_SOURCE_CHANGED"));}
         let key = owner(client, selected);
         let state = self.store.status(&key)?;
         if state["state"] == "PAUSED"
@@ -302,7 +314,7 @@ impl Hub {
         }
         Ok(self
             .store
-            .due(&key, &heads, crate::participant_store::now())?
+            .due_checked(&key, &heads, crate::participant_store::now(),Some(admission))?
             .map(|wake| (key, wake)))
     }
     pub(crate) async fn wait_poll(
@@ -310,12 +322,13 @@ impl Hub {
         client: &ParticipantClient,
         options: &WatchOptions,
         wait_ms: u64,
+        admission:&crate::notification_delivery::activation::Admission,
     ) -> Result<Option<(String, Wake)>> {
         if wait_ms > 30000 {
             return Err(error("NOTIFICATION_WAIT_BUDGET_INVALID"));
         }
         if wait_ms == 0 {
-            return self.poll(client, options).await;
+            return self.poll_admitted(client, options,admission).await;
         }
         let mut watch = client.watch(options.clone()).await?;
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(wait_ms);
@@ -323,7 +336,7 @@ impl Hub {
             let changed = self.changed.notified();
             tokio::pin!(changed);
             changed.as_mut().enable();
-            if let Some(wake) = self.poll(client, options).await? {
+            if let Some(wake) = self.poll_admitted(client, options,admission).await? {
                 return Ok(Some(wake));
             }
             if tokio::time::Instant::now() >= deadline {

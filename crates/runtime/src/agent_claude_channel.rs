@@ -38,7 +38,7 @@ impl State {
     /// independently of historical native-inbox self-tests in earlier sessions.
     pub(super) fn batch_read(&self,batch:&str) {
         let mut value=self.0.lock().unwrap();
-        for scope in value.scopes.values_mut().filter(|scope|scope["published_batches"].as_array().is_some_and(|items|items.iter().any(|item|item==batch))) {
+        for scope in value.scopes.values_mut().filter(|scope|scope["state"]!="SUPERSEDED" && scope["published_batches"].as_array().is_some_and(|items|items.iter().any(|item|item==batch))) {
             scope["session_receiving"]=json!("VERIFIED");
         }
     }
@@ -67,7 +67,7 @@ impl State {
         }
     }
     pub(super) fn scope_failed(&self,alias:&str,error:&ParticipantError) {
-        let mut value=json!({"state":"BLOCKED","code":error.code,"recovery":crate::host_recovery_policy::diagnostic(&error.code)});
+        let mut value=json!({"state":if superseded(error){"SUPERSEDED"}else{"BLOCKED"},"code":error.code,"recovery":crate::host_recovery_policy::diagnostic(&error.code),"session_receiving":"UNCONFIRMED"});
         if error.details.as_ref().and_then(|details|details.get("local_state")).is_some() {
             value["error"]=json!(error);
         }
@@ -75,6 +75,54 @@ impl State {
         value["binding"]=observed.scopes.get(alias).map(|v|v["binding"].clone()).unwrap_or(Value::Null);
         observed.scopes.insert(alias.into(),value);
         observed.at.insert(alias.into(),std::time::Instant::now());
+    }
+}
+
+pub(super) fn superseded(error:&ParticipantError)->bool {
+    matches!(error.code.as_str(),"PRESENTATION_ACTIVATION_SUPERSEDED"|"PRESENTATION_SOURCE_CHANGED"|"PRESENTATION_GENERATION_CONFLICT")
+}
+fn activation_blocked(code:&str)->bool {
+    matches!(code,"PRESENTATION_ACTIVATION_SUPERSEDED"|"PRESENTATION_SOURCE_CHANGED"|"PRESENTATION_GENERATION_CONFLICT"|
+        "PRESENTATION_ACTIVATION_REQUIRED"|"PRESENTATION_ACTIVATION_UNKNOWN"|"PRESENTATION_ACTIVATION_MISMATCH")
+}
+
+/// A presentation keeps its own activation through reconnects. The lifecycle
+/// supplies only an authorized launch decision; this reader never elects itself.
+pub(super) struct Projection {
+    scope:String,
+    activation:Option<Value>,
+    _legacy_owner:Option<SecureStateStore>,
+    retired:std::sync::atomic::AtomicBool,
+}
+impl Projection {
+    pub(super) async fn open(tools:&Tools,profile:&AgentProfile,alias:&str,scope:&MailScope)->Result<Self> {
+        // Check legacy exclusion before entering managed presentation. Compatible
+        // projections release this guard; old frontends retain it until reload.
+        let owner=ownership(profile,scope)?;
+        let activation=tools.presentation_selection(alias).await?;
+        Ok(Self{scope:alias.into(),_legacy_owner:activation.is_none().then_some(owner),activation,retired:std::sync::atomic::AtomicBool::new(false)})
+    }
+    pub(super) async fn poll(&self,tools:&Tools)->Result<Value> {
+        if self.retired.load(std::sync::atomic::Ordering::Relaxed) {return Err(ParticipantError::local("PRESENTATION_ACTIVATION_SUPERSEDED","MCP"));}
+        let result=match &self.activation {
+            Some(activation)=>tools.presentation_poll(&self.scope,activation).await,
+            None=>tools.call(AgentRequest::NotificationPoll{scope:self.scope.clone()}).await,
+        };
+        let mut value=result.map_err(|error|{if superseded(&error){self.retired.store(true,std::sync::atomic::Ordering::Relaxed);}error})?;
+        if let Some(activation)=&self.activation {
+            value["_presentation"]=json!({"scope":self.scope,"activation":activation});
+        }
+        Ok(value)
+    }
+}
+
+pub(super) async fn presentation_allowed(tools:&Tools,presentation:Option<&Value>,batch:&str,revision:u64)->Result<bool> {
+    match presentation {
+        Some(value)=>{
+            let scope=value["scope"].as_str().ok_or_else(||ParticipantError::local("PRESENTATION_ACTIVATION_INVALID","MCP"))?;
+            tools.presentation_allowed(scope,&value["activation"],batch,revision).await
+        },
+        None=>tools.notification_allowed(batch,revision).await,
     }
 }
 
@@ -107,9 +155,11 @@ fn notification(value:&Value)->Result<Value> {
     let revision=value["revision"].as_u64().ok_or_else(||ParticipantError::local("CLAUDE_CHANNEL_BATCH_INVALID","CLAUDE_CHANNEL"))?;
     if value["state"]!="NOTIFICATION_DUE" {return Err(ParticipantError::local("CLAUDE_CHANNEL_BATCH_NOT_DUE","CLAUDE_CHANNEL"));}
     let reference=json!({"tool":"peerwork_inbox","arguments":{"batch":batch}});
-    Ok(json!({"jsonrpc":"2.0","method":"notifications/claude/channel","params":{
+    let mut notification=json!({"jsonrpc":"2.0","method":"notifications/claude/channel","params":{
         "content":format!("Peerwork external data is ready. Read this bounded inbox batch: {reference}"),
-        "meta":{"batch":batch,"revision":revision}}}))
+        "meta":{"batch":batch,"revision":revision}}});
+    if let Some(presentation)=value.get("_presentation"){notification["_presentation"]=presentation.clone();}
+    Ok(notification)
 }
 
 /// Refresh only local selected profile metadata. Native waits are notification
@@ -119,11 +169,13 @@ pub(super) async fn watch(tools:Arc<Tools>,output:mpsc::Sender<Value>,state:Stat
     let mut active:BTreeMap<String,AbortHandle>=BTreeMap::new();
     let mut previous=String::new();
     let mut retries:BTreeMap<String,(u32,std::time::Instant)>=BTreeMap::new();
+    let mut retired=BTreeSet::new();
     loop {
         while let Some(result)=jobs.try_join_next(){
             if let Ok((key,code))=result {
                 active.remove(&key);
                 if let Some(code)=code {
+                    if activation_blocked(&code) {retired.insert(key);continue;}
                     let attempt=retries.get(&key).map_or(1,|(n,_)|n.saturating_add(1));
                     retries.insert(key.clone(),(attempt,std::time::Instant::now()+crate::host_recovery_policy::delay(&code,attempt,&key)));
                 }
@@ -144,7 +196,7 @@ pub(super) async fn watch(tools:Arc<Tools>,output:mpsc::Sender<Value>,state:Stat
         active.retain(|key,handle|if wanted.contains_key(key)&&!handle.is_finished(){true}else{handle.abort();false});
         retries.retain(|key,_|wanted.contains_key(key));
         for (key,(profile,alias,scope)) in wanted {
-            if active.contains_key(&key)||retries.get(&key).is_some_and(|(_,until)|*until>std::time::Instant::now()){continue}
+            if retired.contains(&key)||active.contains_key(&key)||retries.get(&key).is_some_and(|(_,until)|*until>std::time::Instant::now()){continue}
             let out=output.clone();let observed=state.clone();let selected=tools.clone();
             let selected_key=key.clone();
             active.insert(key,jobs.spawn(async move {
@@ -165,12 +217,12 @@ pub(super) async fn watch(tools:Arc<Tools>,output:mpsc::Sender<Value>,state:Stat
 }
 
 async fn watch_scope(client:Arc<Tools>,profile:AgentProfile,alias:String,scope:MailScope,output:mpsc::Sender<Value>,observed:State)->Result<()> {
-    let _owner=ownership(&profile,&scope)?;
     let context=client.call(AgentRequest::Context).await?;
     validate_source(&context,&scope)?;
+    let projection=Projection::open(&client,&profile,&alias,&scope).await?;
     let binding=crate::agent_delivery_status::binding(&context,&serde_json::to_value(&scope).unwrap());
     observed.0.lock().unwrap().scopes.insert(alias.clone(),json!({"state":"STARTING","binding":binding,"session_receiving":"UNCONFIRMED"}));
-    project_scope(&alias,output,observed,||client.call(AgentRequest::NotificationPoll{scope:alias.clone()})).await
+    project_scope(&alias,output,observed,||projection.poll(&client)).await
 }
 
 fn validate_source(context:&Value,scope:&MailScope)->Result<()> {
@@ -229,6 +281,24 @@ mod tests {
         state.written(&notice);state.batch_read("current");
         assert_eq!(state.status()["scopes"]["space"]["session_receiving"],"UNCONFIRMED");
         assert!(State::default().status()["scopes"].as_object().unwrap().is_empty());
+    }
+    #[test]
+    fn superseded_projection_cannot_be_verified_by_a_late_original_batch_read() {
+        let state=State::default();
+        state.scope_observed("space",&json!({"state":"NOTIFICATION_DUE","batch":"original","source_binding":{"client_generation":1}}));
+        state.written(&json!({"params":{"meta":{"batch":"original"}}}));
+        state.batch_read("original");
+        assert_eq!(state.status()["scopes"]["space"]["session_receiving"],"VERIFIED");
+        let error=ParticipantError::local("PRESENTATION_ACTIVATION_SUPERSEDED","TEST");
+        state.scope_failed("space",&error);
+        state.batch_read("original");
+        let scope=&state.status()["scopes"]["space"];
+        assert_eq!(scope["state"],"SUPERSEDED");
+        assert_eq!(scope["session_receiving"],"UNCONFIRMED");
+        assert!(activation_blocked(&error.code));
+        assert!(activation_blocked("PRESENTATION_SOURCE_CHANGED"));
+        assert!(activation_blocked("PRESENTATION_GENERATION_CONFLICT"));
+        assert!(!activation_blocked("IPC_DISCONNECTED"));
     }
     #[test]
     fn running_projection_uses_current_authenticated_source_generation() {

@@ -12,6 +12,20 @@ Check the actual components and required capabilities, retaining their original
 state and destination; a newly installed binary alone does not establish that
 the live stack was upgraded.
 
+Native0.3.43 separates the durable Peer client from its receiving activation.
+Normal frontend attachment and same-activation reconnect preserve the original
+identity, journal, keys, inbox and pending IDs. An opted-in successor replaces
+only its selected original receiving source. A superseded activation is terminal:
+do not repeatedly rearm or reconnect it to reclaim ownership. Continue through
+the selected current integration. Legacy frontends need their normal refresh or
+drain before replacement; see
+[receiving activation replacement](host-bridge-recovery.md#receiving-activation-replacement).
+
+A healthy endpoint is authenticated against the original binding independently
+of historical process/config proofs. Actual runtime launch still requires its
+original ownership and writer checks. Stop intent, pending updates, maintenance
+barriers and notification pause remain effective in both cases.
+
 ## Original local component failures
 
 `ONBOARDING_PATH_UNSAFE` and endpoint errors concern the selected local

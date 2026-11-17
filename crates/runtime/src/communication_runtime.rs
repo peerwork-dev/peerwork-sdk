@@ -13,6 +13,8 @@ mod derived;
 mod hosts;
 #[path = "communication_runtime_rebind.rs"]
 mod resident_rebind;
+#[path = "communication_runtime_activation.rs"]
+mod activation;
 use crate::{
     communication_host::{random_token, write_private},
     communication_store::{identifier, private_json},
@@ -24,6 +26,7 @@ use crate::{
     KernelCancellationToken,
 };
 pub use client::RuntimeClient;
+pub use crate::notification_delivery::activation::Activation as PresentationActivation;
 pub(crate) use hosts::configuration_snapshot as host_configuration_snapshot;
 pub(crate) use client::{canonical_binding,validate_binding};
 use serde::{Deserialize, Serialize};
@@ -61,7 +64,7 @@ pub(crate) const CONNECT_FEATURES: [&str; 15] = [
 ];
 fn runtime_features() -> Vec<&'static str> {
     CONNECT_FEATURES.into_iter().chain([
-        "host-observation-upload-deadline-v1", "current-delivery-observation-v1", "current-host-delivery-health-v1", "opencode-v2-host-v1", "harness-connection-context-v1",
+        "host-observation-upload-deadline-v1", "current-delivery-observation-v1", "current-host-delivery-health-v1", "opencode-v2-host-v1", "harness-connection-context-v1", "presentation-activation-v1",
     ]).collect()
 }
 const REQUEST_FORMAT: &str = "peerwork.participant-request.v1";
@@ -242,8 +245,10 @@ struct Runtime {
 #[serde(tag = "method", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ClientRequest {
     Delivery { mode:String, #[serde(default)] options:Option<WatchOptions> },
-    NotificationPoll { options:WatchOptions, #[serde(default)] wait_ms:u64 },
-    NotificationValidate { batch:String, revision:u64 },
+    PresentationStatus { options:WatchOptions },
+    PresentationResume { options:WatchOptions, activation:PresentationActivation },
+    NotificationPoll { options:WatchOptions, #[serde(default)] wait_ms:u64, #[serde(default)] activation:Option<PresentationActivation> },
+    NotificationValidate { batch:String, revision:u64, #[serde(default)] options:Option<WatchOptions>, #[serde(default)] activation:Option<PresentationActivation> },
     NotificationObserve { batch:String },
     NotificationRead {
         #[serde(default)] batch:String,
@@ -362,7 +367,7 @@ struct Endpoint {
     #[serde(default,skip_serializing_if="Option::is_none")]
     control_address:Option<SocketAddr>,
 }
-fn control_method(method:&str)->bool{matches!(method,"capabilities"|"binding"|"delivery"|"notification_validate"|"notification_observe"|"stop")}
+fn control_method(method:&str)->bool{matches!(method,"capabilities"|"binding"|"delivery"|"notification_validate"|"notification_observe"|"presentation_status"|"presentation_resume"|"presentation_activate"|"stop")}
 fn equal(a: &str, b: &str) -> bool {
     a.len() == b.len() && a.bytes().zip(b.bytes()).fold(0, |v, (a, b)| v | (a ^ b)) == 0
 }
@@ -446,8 +451,14 @@ impl Runtime {
                 recovery:Option<crate::participant_rebind::HostRebindRecoveryRequest>,
                 #[serde(default)]
                 adoption:Option<AdoptClient>,
+                #[serde(default)]
+                activation:Option<activation::Intent>,
             }
             let value=async{match serde_json::from_value::<AdminRequest>(frame.request){
+                Ok(request)if request.method=="presentation_activate" && request.activation.is_some() && request.config.is_none() && request.rebind.is_none() && request.recovery.is_none() && request.adoption.is_none()=>{
+                    self.presentation_activate(request.activation.unwrap()).await
+                },
+                Ok(request)if request.activation.is_some()=>Err(local("ADMIN_COMMAND_INVALID")),
                 Ok(request)if request.method=="client_adopt" && request.config.is_none() && request.rebind.is_none() && request.recovery.is_none() && request.adoption.is_some()=>{
                     self.adopt_client(request.adoption.unwrap())
                 },
@@ -465,7 +476,7 @@ impl Runtime {
                     let mut receivers=Vec::new();
                     for (name,client) in clients {let bindings=client.watch_bindings().await?;if !bindings.is_empty(){receivers.push(json!({"client":name,"client_generation":generations.get(&name),"actor_id":client.actor_id(),"origin":client.origin(),"state_binding":client.state_binding(),"engine_digest":self.engine_bindings.get(client.state_binding()),"bindings":bindings}));}}
                     let (hosts, host_configurations) = { let hosts = self.hosts.lock().await; (hosts.statuses(), hosts.configurations()) };
-                    Ok(json!({"state":"LOCAL_READY","sdk_version":env!("CARGO_PKG_VERSION"),"optional_features":["resident-scope-rebind-v1","source-client-adoption-v1","host-observation-upload-deadline-v1","current-delivery-observation-v1","current-host-delivery-health-v1","automatic-runtime-startup-v1","opencode-v2-host-v1","harness-connection-context-v1"],"engines":engines,"receivers":receivers,"hosts":hosts,"host_configurations":host_configurations,"pending_client_revocations":self.pending_revocation_status()?,"network_or_host_readiness":"NOT_ATTESTED"}))
+                    Ok(json!({"state":"LOCAL_READY","sdk_version":env!("CARGO_PKG_VERSION"),"optional_features":["resident-scope-rebind-v1","source-client-adoption-v1","host-observation-upload-deadline-v1","current-delivery-observation-v1","current-host-delivery-health-v1","automatic-runtime-startup-v1","opencode-v2-host-v1","harness-connection-context-v1","presentation-activation-v1"],"engines":engines,"receivers":receivers,"hosts":hosts,"host_configurations":host_configurations,"pending_client_revocations":self.pending_revocation_status()?,"network_or_host_readiness":"NOT_ATTESTED"}))
                 },
                 Ok(request)if request.method=="host_ensure"&&request.config.is_some()&&request.rebind.is_none()&&request.recovery.is_none()=>{
                     let (clients,generations)=self.client_snapshot()?;
@@ -517,16 +528,24 @@ impl Runtime {
                     if mode=="status"{crate::delivery_health::summarize(&mut value);}
                     Ok(value)
                 },
-                ClientRequest::NotificationPoll{options,wait_ms}=>{
+                ClientRequest::PresentationStatus{options}=>self.presentation_status(client,&options).await,
+                ClientRequest::PresentationResume{options,activation}=>self.presentation_resume(client,&options,&activation).await,
+                ClientRequest::NotificationPoll{options,wait_ms,activation}=>{
                     if options.host_destination.is_some(){return Err(local("CLAUDE_CHANNEL_SOURCE_ALREADY_BOUND_TO_ANOTHER_HOST"));}
-                    let wake=self.notifications.wait_poll(client,&options,wait_ms).await?;
+                    let admission=self.presentation_admit(client,&options,activation.as_ref()).await?;
+                    let wake=self.notifications.wait_poll(client,&options,wait_ms,&admission).await?;
+                    self.presentation_admit(client,&options,activation.as_ref()).await?;
                     let key=crate::communication_notifications::channel_key(&crate::communication_notifications::owner(client,&options),&options,session.generation);
                     self.notifications.note_channel(&key)?;
                     let mut value=match wake{Some((_,wake))=>json!({"state":"NOTIFICATION_DUE","batch":wake.batch,"revision":wake.revision,"attempt":wake.attempt,"self_test":wake.self_test}),None=>json!({"state":"WAITING_NATIVE_INBOX"})};
                     value["source_binding"]=crate::agent_delivery_status::binding(&json!({"actor_id":client.actor_id(),"origin":client.origin(),"receiving_binding":{"client_name":session.name,"client_generation":session.generation,"namespace":client.local_namespace(),"engine_digest":self.engine_bindings.get(client.state_binding()),"state_binding":client.state_binding()}}),&serde_json::to_value(&options).unwrap());
                     Ok(value)
                 },
-                ClientRequest::NotificationValidate{batch,revision}=>Ok(json!({"allowed":self.notifications.validate(client,&batch,revision).await?})),
+                ClientRequest::NotificationValidate{batch,revision,options,activation}=>{
+                    let allowed=if let Some(options)=options.as_ref() {self.presentation_validate(client,options,activation.as_ref(),&batch,revision).await?}
+                    else {if activation.is_some(){return Err(local("PRESENTATION_SOURCE_REQUIRED"));}let allowed=self.notifications.validate(client,&batch,revision).await?;self.presentation_legacy_validate(client).await?;allowed};
+                    Ok(json!({"allowed":allowed}))
+                },
                 ClientRequest::NotificationObserve{batch}=>{
                     let mut value=self.notifications.observe(client,&batch).await?;
                     let options:WatchOptions=serde_json::from_value(value["binding"].clone()).map_err(|_|local("NOTIFICATION_BINDING_CHANGED"))?;

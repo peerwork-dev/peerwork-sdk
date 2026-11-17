@@ -30,6 +30,14 @@ a deliberate tools-only, manual, stopped or paused choice is not widened.
 Ambiguity returns choices; an explicit different intent is separate work. Setup
 IDs and exact low-level resume selectors remain advanced recovery inputs.
 
+Ordinary frontend attachment reuses the durable original client. With compatible
+0.3.43 components, a new opted-in receiving activation replaces only the selected
+original source; ordinary reads and reconnects do not compete for ownership.
+The superseded activation stops retrying ownership. Continue through the normal
+host opt-in or selected Connect/rebind flow, preserving pending work, explicit
+pause/stop and exact destinations. Legacy frontends may require their normal
+refresh or drain; see [activation recovery](host-bridge-recovery.md#receiving-activation-replacement).
+
 New ordinary Agent connections include sending, receiving, membership and
 required body keys. Existing grants need no approval. Missing rights/keys produce
 one consolidated public request for the responsible authority. For loaded MCP,

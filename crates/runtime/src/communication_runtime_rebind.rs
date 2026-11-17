@@ -4,6 +4,30 @@ use super::*;
 use crate::participant_rebind::{HostRebindRequest,resident::{Request,Selection,Snapshot,Source}};
 
 impl Runtime {
+    fn presentation_rebind_selection(&self,snapshot:&Snapshot)->Result<(String,Vec<String>)> {
+        let owner=self.owners.get(&snapshot.request.engine).ok_or_else(||local("HOST_REBIND_ENGINE_NOT_FOUND"))?;
+        if snapshot.subscriptions.len()!=snapshot.access_scopes.len() {return Err(local("HOST_REBIND_STATE_INVALID"));}
+        let mut members=Vec::new();
+        for (subscription,scope) in snapshot.subscriptions.iter().zip(&snapshot.access_scopes) {
+            let watch=&subscription.watch;
+            if scope["workspace_id"]!=watch.workspace_id || scope["mailbox_id"]!=watch.mailbox_id || scope["membership_id"]!=watch.membership_id {return Err(local("HOST_REBIND_STATE_INVALID"));}
+            let namespace=scope["namespace"].as_str().ok_or_else(||local("HOST_REBIND_STATE_INVALID"))?;
+            members.push(activation::member_key(owner,namespace,watch));
+        }
+        members.sort();members.dedup();
+        let operation=peerwork_core::crypto::sha256_hex(json!(["peerwork.presentation-rebind.v1",owner.state_binding(),snapshot.request.operation_id]).to_string().as_bytes());
+        Ok((operation,members))
+    }
+    fn reserve_presentation_rebind(&self,snapshot:&Snapshot)->Result<()> {
+        let (operation,members)=self.presentation_rebind_selection(snapshot)?;
+        self.notifications.store.presentation_rebind_reserve(&operation,&members)
+    }
+    fn finish_presentation_rebind(&self,snapshot:&Snapshot,committed:bool)->Result<()> {
+        let (operation,members)=self.presentation_rebind_selection(snapshot)?;
+        self.notifications.store.presentation_rebind_finish(&operation,&members,committed)?;
+        self.notifications.changed.notify_waiters();
+        Ok(())
+    }
     fn rebind_sources(&self,engine:&str,subscriptions:&[crate::participant_dispatch::HostSubscription])->Result<Vec<Source>>{
         let owner=self.owners.get(engine).ok_or_else(||local("HOST_REBIND_ENGINE_NOT_FOUND"))?;
         let(clients,generations)=self.client_snapshot()?;
@@ -29,6 +53,9 @@ impl Runtime {
             let mut config=self.config.clone();
             let subscriptions={let hosts=self.hosts.lock().await;config.hosts=hosts.configurations();hosts.preflight_rebind(&request)?};
             let sources=self.rebind_sources(&request.engine,&subscriptions)?;
+            let mut members=sources.iter().map(|source|activation::member_key(&source.client,source.client.local_namespace(),&source.subscription.watch)).collect::<Vec<_>>();
+            members.sort();members.dedup();
+            self.notifications.store.presentation_rebind_check(&members)?;
             // An explicit Codex session pin is a requested target, not proof
             // of attachment. Verify it only after the original selected host
             // owner has drained; opening a second physical owner is forbidden.
@@ -47,6 +74,7 @@ impl Runtime {
                 .ok_or_else(||local("HOST_REBIND_STATE_INVALID"))?
         };
         if !snapshot.finished&&!snapshot.aborted {
+            self.reserve_presentation_rebind(&snapshot)?;
             self.hosts.lock().await.reserve_rebind(&snapshot)?;
             self.spawn_resident_rebind(&snapshot.request.engine).await;
         }
@@ -62,6 +90,9 @@ impl Runtime {
     pub(super) async fn resume_resident_rebinds(self:&Arc<Self>)->Result<()>{
         for (engine,owner) in &self.owners {
             if let Some(snapshot)=owner.resident_rebind(Request::Status).await? {
+                if let Err(problem)=self.reserve_presentation_rebind(&snapshot) {
+                    let _=owner.resident_rebind(Request::Problem{operation:snapshot.request.operation_id.clone(),problem}).await;
+                }
                 if let Err(problem)=self.hosts.lock().await.reserve_rebind(&snapshot) {
                     // Conflicting recovered maintenance stays scoped and waits
                     // for the existing reservation. It cannot authorize claim
@@ -103,6 +134,9 @@ impl Runtime {
             };
             let operation=snapshot.request.operation_id.clone();
             let work=async{
+                // The original sealed job remains the sole recovery authority.
+                // Fence presentation before authorizing or publishing its move.
+                self.reserve_presentation_rebind(&snapshot)?;
                 if !authorized {
                     if !self.hosts.lock().await.drain_rebind(&snapshot)? {return Ok(false);}
                     if !snapshot.aborting {
@@ -123,12 +157,14 @@ impl Runtime {
                 if snapshot.rollback_ready {
                     let(clients,generations)=self.client_snapshot()?;
                     self.hosts.lock().await.restore_rebind(&snapshot,&clients,&generations,&self.directory,self.cancel.clone())?;
+                    self.finish_presentation_rebind(&snapshot,false)?;
                     owner.resident_rebind(Request::Published{operation:operation.clone()}).await?;
                     self.hosts.lock().await.finish_rebind(&snapshot);return Ok(true);
                 }
                 if snapshot.local_committed {
                     let(clients,generations)=self.client_snapshot()?;
                     self.hosts.lock().await.publish_rebind(&snapshot,&clients,&generations,&self.directory,self.cancel.clone()).await?;
+                    self.finish_presentation_rebind(&snapshot,true)?;
                     owner.resident_rebind(Request::Published{operation:operation.clone()}).await?;
                     self.hosts.lock().await.finish_rebind(&snapshot);
                     return Ok(true);
