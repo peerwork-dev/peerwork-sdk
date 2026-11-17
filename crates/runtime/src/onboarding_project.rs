@@ -185,7 +185,13 @@ mod platform {
             if opened.file_type().is_symlink() || !opened.is_file() || opened.file_type().is_fifo() { return Err(failure(&path, "READ", "REGULAR_FILE_REQUIRED")); }
             if opened.uid() != unsafe { libc::geteuid() } { return Err(failure(&path, "READ", "OWNER_MISMATCH")); }
             if opened.nlink() != 1 { return Err(failure(&path, "READ", "HARDLINK")); }
-            if opened.mode() & if private { 0o077 } else { 0o022 } != 0 { return Err(failure(&path, "READ", "FILE_PERMISSIONS")); }
+            if opened.mode() & if private { 0o077 } else { 0o022 } != 0 {
+                let mut error=crate::onboarding_files::path_error(&path,if private{"PRIVATE_STATE"}else{"PROJECT_CONFIGURATION"},"READ","FILE_PERMISSIONS");
+                for value in error.local_diagnostic.iter_mut().chain(error.details.iter_mut().filter_map(|d|d.get_mut("local_diagnostic"))) {
+                    value["expected_mode"]=serde_json::json!(if private{"0600"}else{"0644"});
+                }
+                return Err(error);
+            }
             if opened.len() > limit as u64 { return Err(failure(&path, "READ", "FILE_TOO_LARGE")); }
             if before.st_dev as u64 != opened.dev() || before.st_ino as u64 != opened.ino() { return Err(failure(&path, "READ", "PATH_CHANGED")); }
             let mut bytes = Vec::new(); (&mut file).take(limit as u64 + 1).read_to_end(&mut bytes).map_err(|e| io_error(&path, "READ", &e))?;

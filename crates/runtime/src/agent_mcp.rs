@@ -504,6 +504,8 @@ mod tests {
         let list=receive(&mut cr).await;
         assert!(list["result"]["tools"].as_array().unwrap().iter().any(|tool|tool["name"]=="peerwork_context"));
         assert_eq!(list["result"]["_meta"]["peerwork/local_error"]["details"]["local_diagnostic"]["reason"],"FILE_PERMISSIONS");
+        assert_eq!(list["result"]["_meta"]["peerwork/local_error"]["details"]["local_diagnostic"]["expected_mode"],"0600");
+        assert_eq!(list["result"]["_meta"]["peerwork/local_error"]["details"]["local_diagnostic"]["permission_requirement"],"OWNER_ONLY_FOR_PRIVATE_COMPONENTS");
         assert!(!list.to_string().contains(temp.path().to_str().unwrap()));
         send(&mut cw,modern(2,"tools/call",json!({"name":"peerwork_context","arguments":{}}))).await;
         let denied=receive(&mut cr).await;assert_eq!(denied["result"]["isError"],true);
