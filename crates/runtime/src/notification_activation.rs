@@ -258,7 +258,7 @@ mod tests {
     use super::*;
     #[test]
     fn stale_waiter_cannot_advance_batch_attempt_or_retry_deadline() {
-        let root=crate::test_support::protected_test_dir();let store=Store::open(root.path()).unwrap();
+        let root=crate::test_support::protected_test_dir();let store=Store::open(&root.path().join("state")).unwrap();
         let members=vec!["member".into()];let target=json!({"kind":"channel"});
         let first=store.presentation_replace("source",&members,"first",0,&target).unwrap();
         let old=Admission{source:"source".into(),members:members.clone(),activation:Some(serde_json::from_value(first["activation"].clone()).unwrap())};
@@ -278,7 +278,7 @@ mod tests {
     }
     #[test]
     fn thousand_successors_prune_receipts_without_resurrecting_old_tokens() {
-        let root=crate::test_support::protected_test_dir();let store=Store::open(root.path()).unwrap();
+        let root=crate::test_support::protected_test_dir();let store=Store::open(&root.path().join("state")).unwrap();
         let members=vec!["member".into()];let target=json!({"kind":"channel"});
         let first=store.presentation_replace("source",&members,"first",0,&target).unwrap();
         let old:Activation=serde_json::from_value(first["activation"].clone()).unwrap();
@@ -291,12 +291,12 @@ mod tests {
         assert_eq!(db.query_row("SELECT count(*) FROM presentation_decisions",[],|r|r.get::<_,u64>(0)).unwrap(),32);
         assert_eq!(db.query_row("SELECT count(*) FROM presentation_sources",[],|r|r.get::<_,u64>(0)).unwrap(),1);
         assert_eq!(db.query_row("SELECT count(*) FROM presentation_group_members",[],|r|r.get::<_,u64>(0)).unwrap(),1);
-        drop(db);drop(store);let store=Store::open(root.path()).unwrap();
+        drop(db);drop(store);let store=Store::open(&root.path().join("state")).unwrap();
         assert_eq!(store.presentation_resume("source",&old).unwrap()["state"],"SUPERSEDED");
     }
     #[test]
     fn group_overlap_is_rejected_and_rebind_fence_replays_without_retiring_a_successor() {
-        let root=crate::test_support::protected_test_dir();let store=Store::open(root.path()).unwrap();
+        let root=crate::test_support::protected_test_dir();let store=Store::open(&root.path().join("state")).unwrap();
         let members=vec!["a".into(),"b".into()];let target=json!({"kind":"channel"});
         let selected=store.presentation_replace("group",&members,"first",0,&target).unwrap();
         let old:Activation=serde_json::from_value(selected["activation"].clone()).unwrap();
@@ -308,7 +308,7 @@ mod tests {
         store.presentation_rebind_finish("abort",&members,false).unwrap();
         assert_eq!(store.presentation_resume("group",&old).unwrap()["state"],"ACTIVE");
         store.presentation_rebind_reserve("commit",&members).unwrap();
-        drop(store);let store=Store::open(root.path()).unwrap();
+        drop(store);let store=Store::open(&root.path().join("state")).unwrap();
         assert!(store.presentation_pending("group",&members).unwrap());
         store.presentation_rebind_finish("commit",&members,true).unwrap();
         assert_eq!(store.presentation_resume("group",&old).unwrap()["state"],"SUPERSEDED");
@@ -337,7 +337,7 @@ mod tests {
     #[test]
     fn successor_is_cas_idempotent_and_old_resume_cannot_reclaim() {
         let root=crate::test_support::protected_test_dir();
-        let store=Store::open(root.path()).unwrap();let target=json!({"kind":"channel","thread":"exact"});
+        let store=Store::open(&root.path().join("state")).unwrap();let target=json!({"kind":"channel","thread":"exact"});
         let first=store.presentation_replace("source",&["member".into()],"first",0,&target).unwrap();
         let old:Activation=serde_json::from_value(first["activation"].clone()).unwrap();
         assert_eq!(store.presentation_replace("source",&["member".into()],"first",0,&target).unwrap(),first);
@@ -348,13 +348,13 @@ mod tests {
         assert_eq!(store.presentation_replace("source",&["member".into()],"first",0,&target).unwrap()["state"],"SUPERSEDED");
         assert_eq!(store.presentation_replace("source",&["member".into()],"first",2,&target).unwrap_err().code,"PRESENTATION_ORIGINAL_OPERATION_REQUIRED");
         assert_eq!(store.presentation_generation("unrelated").unwrap(),0);
-        drop(store);let store=Store::open(root.path()).unwrap();
+        drop(store);let store=Store::open(&root.path().join("state")).unwrap();
         assert_eq!(store.presentation_generation("source").unwrap(),2);
         assert_eq!(store.presentation_resume("source",&old).unwrap()["state"],"SUPERSEDED");
     }
     #[test]
     fn activation_does_not_reset_notification_pause_or_batches() {
-        let root=crate::test_support::protected_test_dir();let store=Store::open(root.path()).unwrap();
+        let root=crate::test_support::protected_test_dir();let store=Store::open(&root.path().join("state")).unwrap();
         store.control("destination","pause").unwrap();let before=store.status("destination").unwrap();
         store.presentation_replace("source",&["member".into()],"one",0,&json!({"kind":"channel"})).unwrap();
         store.presentation_replace("source",&["member".into()],"two",1,&json!({"kind":"channel"})).unwrap();
@@ -363,7 +363,7 @@ mod tests {
     #[test]
     fn racing_successors_commit_once_and_forged_resume_cannot_select_another_source() {
         let root=crate::test_support::protected_test_dir();
-        let store=std::sync::Arc::new(Store::open(root.path()).unwrap());
+        let store=std::sync::Arc::new(Store::open(&root.path().join("state")).unwrap());
         let barrier=std::sync::Arc::new(std::sync::Barrier::new(2));
         let handles=["left","right"].map(|operation| {
             let store=store.clone();let barrier=barrier.clone();
@@ -380,7 +380,7 @@ mod tests {
     }
     #[test]
     fn successor_fences_queued_output_without_resetting_the_original_batch() {
-        let root=crate::test_support::protected_test_dir();let store=Store::open(root.path()).unwrap();
+        let root=crate::test_support::protected_test_dir();let store=Store::open(&root.path().join("state")).unwrap();
         let target=json!({"kind":"channel"});
         let first=store.presentation_replace("source",&["member".into()],"first",0,&target).unwrap();
         let old:Activation=serde_json::from_value(first["activation"].clone()).unwrap();

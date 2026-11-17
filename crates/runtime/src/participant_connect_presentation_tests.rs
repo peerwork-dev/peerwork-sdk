@@ -133,19 +133,30 @@ async fn original_two_space_presentations_replace_without_reclaim_or_pending_ope
     let activation_c=current.presentation_selection("one").await.unwrap().unwrap();
     assert_eq!(current.presentation_selection("two").await.unwrap().unwrap(),activation_c);
     let status=tool(&current,"delivery",json!({"mode":"status"})).await;
-    assert_eq!(status["destinations"][0]["state"],"PAUSED","{status}");
+    assert_eq!(status["destinations"][0]["control_state"],"PAUSED","{status}");
     let paused_batch=paused_probe["batch"].as_str().unwrap();let paused_revision=paused_probe["revision"].as_u64().unwrap();
     assert!(current.presentation_allowed("one",&activation_c,paused_batch,paused_revision).await.unwrap());
     assert_eq!(tool(&ordinary,"inbox",json!({"batch":paused_batch})).await["state"],"SELF_TEST_OBSERVED");
-    assert_eq!(tool(&current,"delivery",json!({"mode":"status"})).await["destinations"][0]["state"],"PAUSED");
+    assert_eq!(tool(&current,"delivery",json!({"mode":"status"})).await["destinations"][0]["control_state"],"PAUSED");
 
-    // Freeze a genuinely uncompleted signed operation, then keep HTTP offline.
+    // Lose the acceptance reply after the real signed operation commits. The
+    // fixture then goes offline, keeping the original outcome UNKNOWN locally.
     // Replacement/restart must not create another namespace or command ID.
-    service.config(json!({"offline":true})).await;
-    let pending=original.call(json!({"method":"invoke","wait_ms":50,"request":Invoke::new("presentation-original-pending",
+    service.config(json!({"drop_action":"structure.workspace.create"})).await;
+    let pending=original.call(json!({"method":"invoke","wait_ms":200,"request":Invoke::new("presentation-original-pending",
         "structure.workspace.create",Scope::default(),json!({"name":"Pending original presentation work"}))})).await.unwrap();
-    assert_eq!(pending["operation_id"],"presentation-original-pending");assert!(pending["command_id"].is_string());assert_ne!(pending["state"],"ACCEPTED");
-    let snapshot=original.call(json!({"method":"operation","operation_id":"presentation-original-pending"})).await.unwrap();
+    assert_eq!(pending["operation_id"],"presentation-original-pending");
+    assert!(!matches!(pending["state"].as_str(),Some("ACCEPTED"|"REJECTED_NO_EFFECT")),"{pending}");
+    tokio::time::timeout(Duration::from_secs(10),async {
+        while service.counts().await["dropped"]!=1 {tokio::time::sleep(Duration::from_millis(20)).await;}
+    }).await.expect("fixture did not drop the original signed acceptance reply");
+    let snapshot=tokio::time::timeout(Duration::from_secs(10),async {loop {
+        let operation=original.call(json!({"method":"operation","operation_id":"presentation-original-pending"})).await.unwrap();
+        assert!(!matches!(operation["state"].as_str(),Some("ACCEPTED"|"REJECTED_NO_EFFECT")),"{operation}");
+        if operation["command_id"].is_string() {break operation;}
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }}).await.expect("original signed command ID was not frozen after lost acceptance");
+    assert_eq!(snapshot["effect_certainty"],"UNKNOWN","{snapshot}");
     let old_identity=std::fs::read(&config.identity_path).unwrap();assert_eq!(old_identity,identity);
     stop.cancel();task.await.unwrap().unwrap();
     let(_,stop,task)=start(runtime).await;
@@ -158,7 +169,7 @@ async fn original_two_space_presentations_replace_without_reclaim_or_pending_ope
     let after=tool(&old,"status",json!({"operation_id":"presentation-original-pending"})).await;
     assert_eq!(after["command_id"],snapshot["command_id"]);assert_eq!(after["operation_id"],snapshot["operation_id"]);
     assert_eq!(tool(&ordinary,"status",json!({"operation_id":"presentation-original-message"})).await["command_id"],message["command_id"]);
-    assert_eq!(tool(&current,"delivery",json!({"mode":"status"})).await["destinations"][0]["state"],"PAUSED");
+    assert_eq!(tool(&current,"delivery",json!({"mode":"status"})).await["destinations"][0]["control_state"],"PAUSED");
     assert_eq!(std::fs::read(&config.identity_path).unwrap(),identity);
 
     // Exercise the actual Channel transport and final output gate over duplex
@@ -188,6 +199,6 @@ async fn original_two_space_presentations_replace_without_reclaim_or_pending_ope
     assert_eq!(observed["result"]["isError"],false,"{observed}");
     assert_eq!(observed["result"]["structuredContent"]["state"],"SELF_TEST_OBSERVED","{observed}");
     drop(hw);drop(hr);tokio::time::timeout(Duration::from_secs(10),channel).await.unwrap().unwrap().unwrap();
-    assert_eq!(tool(&ordinary,"delivery",json!({"mode":"status"})).await["destinations"][0]["state"],"PAUSED");
+    assert_eq!(tool(&ordinary,"delivery",json!({"mode":"status"})).await["destinations"][0]["control_state"],"PAUSED");
     stop.cancel();task.await.unwrap().unwrap();
 }

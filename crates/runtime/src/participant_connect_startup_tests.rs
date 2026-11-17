@@ -129,7 +129,9 @@ async fn disabled_observation_does_not_require_launch_provenance_or_enable_resum
     connect.registry.local_runtime_admins.insert("peer".into(),runtime.join("admin.json"));
     connect.save().unwrap();drop(connect);
     crate::runtime_startup::enroll(&runtime).unwrap();crate::runtime_startup::disable(&runtime).unwrap();
-    write_private(&runtime.join("config.json"),b"invalid historical config").unwrap();
+    // Valid private JSON with an invalid RuntimeConfig reaches config decoding;
+    // malformed JSON is rejected earlier by the protected JSON reader.
+    write_private(&runtime.join("config.json"),b"{}").unwrap();
     let before=crate::runtime_startup::read(&runtime).unwrap().unwrap();
     let observed=recover(&directory,Some("peer"),Trigger::Adopt).await.unwrap();
     assert_eq!(observed["state"],"DISABLED");
@@ -148,7 +150,7 @@ async fn healthy_endpoint_observation_preserves_binding_intent_and_update_barrie
     let launch=fixture.launch();
     let original=bootstrap::owned_runtime(&Connect::inspect(&fixture.directory).unwrap(),"peer").unwrap();
     // Healthy authentication must not depend on an old config/PID/artifact.
-    crate::onboarding_files::replace(&runtime.join("config.json"),b"obsolete config").unwrap();
+    crate::onboarding_files::replace(&runtime.join("config.json"),b"{}").unwrap();
     std::fs::remove_file(runtime.join("bootstrap.state")).unwrap();
     std::fs::remove_file(runtime.join("startup.state")).unwrap();
     let observed=recover(&fixture.directory,Some("peer"),Trigger::Automatic).await.unwrap();
