@@ -22,8 +22,8 @@ fn key(client: &Client) -> ClientKey {
 /// original journal namespace. An owner-issued view does not create new work.
 pub(super) fn operation_namespace(binding:&str)->String {
     let Ok(value)=serde_json::from_str::<Value>(binding) else{return binding.into();};
-    if value.is_object() && ["actor_id","origin","state_binding","namespace"].iter().all(|key|value[*key].is_string()) {
-        json!([value["actor_id"],value["origin"],value["state_binding"],value["namespace"]]).to_string()
+    if value.is_object() && ["actor_id","origin","state_binding","engine_digest","namespace"].iter().all(|key|value[*key].is_string()) {
+        json!([value["actor_id"],value["origin"],value["state_binding"],value["engine_digest"],value["namespace"]]).to_string()
     }else{binding.into()}
 }
 #[derive(Default)]

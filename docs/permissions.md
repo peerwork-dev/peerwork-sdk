@@ -76,12 +76,14 @@ Context or fresh tool use, including installations previously marked
 `SERVICE_CURRENT`. Historical role-action requests never prove local delegation.
 A sealed native-managed bootstrap can continue its ordinary scope through its
 existing authenticated local owner without rewriting its old credential/config.
-Owner-issued continuation reuses the original journal namespace through a new
+Authenticated continuation reuses the original journal namespace through a new
 scoped credential. It can inspect/resume an original pending ID even when an
 obsolete operation list blocks the old credential. A second credential for the
 same journal namespace is not a second operation; route generation pins still
 authenticate each endpoint. An ordinary scope holder cannot select arbitrary
-namespaces; only the local runtime owner can issue this continuation.
+namespaces. An issuer can continue its own or a descendant's authenticated
+namespace within its actual authority; adopting another namespace requires the
+local runtime owner.
 Arbitrary external endpoints retain their actual parent limits. Already usable
 cached status and original recovery routes do not wait for unrelated normalization.
 

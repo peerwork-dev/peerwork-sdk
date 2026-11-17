@@ -2,6 +2,15 @@ use super::*;
 use crate::{kernel_identity::KernelIdentity, participant::{Capability, ParticipantConfig}, participant_store::Store};
 use std::sync::atomic::Ordering;
 
+#[test]
+fn credential_generations_share_operation_identity_but_distinct_engines_do_not() {
+    let binding=json!({"actor_id":"actor","origin":"https://example.invalid","state_binding":"state","engine_digest":"engine","namespace":"program:original","client_generation":1});
+    let mut continued=binding.clone();continued["client_generation"]=json!(2);
+    assert_eq!(operation_observations::operation_namespace(&binding.to_string()),operation_observations::operation_namespace(&continued.to_string()));
+    continued["engine_digest"]=json!("other-engine");
+    assert_ne!(operation_observations::operation_namespace(&binding.to_string()),operation_observations::operation_namespace(&continued.to_string()));
+}
+
 fn configuration(directory: &Path) -> ParticipantConfig {
     let identity_path = directory.join("identity");
     let identity = KernelIdentity::create(&identity_path).unwrap();
