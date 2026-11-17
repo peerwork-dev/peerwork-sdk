@@ -177,7 +177,9 @@ async fn workspace_client_uses_current_grants_without_local_role_refresh(){
     let store=crate::secure_state::SecureStateStore::open(&registry.join("connect.state")).unwrap();let mut state:Value=serde_json::from_slice(&store.read_exact().unwrap().unwrap()).unwrap();let active=state["active"].as_str().unwrap().to_owned();
     state["setups"][&active]["profile"]=json!(historical);state["setups"][&active]["sender_capability"]=json!(legacy_cap);state["setups"][&active]["result"].as_object_mut().unwrap().remove("client_authority_model");
     state["setups"][&active]["result"].as_object_mut().unwrap().remove("client_authority_revision");
-    let old_path=PathBuf::from(state["setups"][&active]["result"]["profile_path"].as_str().unwrap());crate::onboarding_files::replace(&old_path,&serde_json::to_vec(&historical).unwrap()).unwrap();
+    let old_path=registry.join(format!("profile-{active}.json"));
+    state["setups"][&active]["result"]["profile_path"]=json!(old_path);
+    crate::onboarding_files::replace(&old_path,&serde_json::to_vec(&historical).unwrap()).unwrap();
     store.write_exact(&serde_json::to_vec(&state).unwrap()).unwrap();drop(store);
     let mut connect=Connect::open(&registry).unwrap();
     let mut continuation=request.clone();continuation.setup_id="continue-old-generated-active".into();
