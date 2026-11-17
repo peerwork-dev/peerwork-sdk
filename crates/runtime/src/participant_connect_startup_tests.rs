@@ -186,8 +186,7 @@ async fn healthy_endpoint_observation_preserves_binding_intent_and_update_barrie
         "registration":fixture.registration,"executable":fixture.binary,
         "executable_digest":crate::runtime_startup::Launcher::capture(fixture.binary.clone()).unwrap().sha256,
         "required_features":["automatic-runtime-startup-v1"],"original":original,"was_running":true,"phase":"RUNTIME_READY"})).unwrap()).unwrap();
-    // The observing test process is not the recorded updater artifact; healthy
-    // IPC must not bypass the original update selection barrier.
+    // An unresolved original update must not be bypassed by healthy IPC.
     assert_eq!(recover(&fixture.directory,Some("peer"),Trigger::Automatic).await.unwrap_err().code,"UPDATE_RESUME_ORIGINAL_ARTIFACT_AND_SELECTION");
     drop(store);
     std::fs::remove_file(update).unwrap();
@@ -304,7 +303,7 @@ async fn every_recovery_entry_resumes_the_recorded_update_before_starting() {
         let original=bootstrap::owned_runtime(&Connect::inspect(&fixture.directory).unwrap(),"peer").unwrap();
         let update=json!({"format":"peerwork.owned-update.v1","participant":"peer","registration":original.registration,
             "executable":target,"executable_digest":crate::runtime_startup::Launcher::capture(target.clone()).unwrap().sha256,
-            "required_features":["host-observation-upload-deadline-v1","current-host-delivery-health-v1","automatic-runtime-startup-v1"],
+            "required_features":["host-observation-upload-deadline-v1","current-host-delivery-health-v1","automatic-runtime-startup-v1","harness-connection-context-v1"],
             "original":original,"was_running":was_running,"phase":"RUNTIME_READY"});
         let path=fixture.directory.join("update-peer.state");let store=SecureStateStore::open(&path).unwrap();
         store.write_exact(&serde_json::to_vec(&update).unwrap()).unwrap();drop(store);
