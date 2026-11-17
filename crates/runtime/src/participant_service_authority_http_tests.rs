@@ -20,7 +20,7 @@ async fn ordinary_native_authority_normalizes_before_context_and_survives_restar
     let identity=KernelIdentity::open(&config.identity_path).unwrap();
     let origin=crate::transport::canonical_lifecycle_origin(&config.origin,true).unwrap();
     let mut store=crate::participant_store::Store::open(&config.state_directory,&identity,&origin).unwrap();
-    let pending=Invoke::new("original-unknown","structure.member.name.set",scope.clone(),json!({"membership_id":"M".repeat(43),"name":"Original"}));
+    let mut pending=Invoke::new("original-unknown","structure.action",Scope{workspace_id:Some(ws.clone()),instance_id:adopted["instance_id"].as_str().map(str::to_owned),protocol_digest:adopted["protocol_digest"].as_str().map(str::to_owned)},json!({"action_id":"claim","structure":{"ttl_ms":100}}));pending.expected_instance_revision=Some(1);
     store.reserve("program:bootstrap",&pending,&identity,64,32*1024*1024).unwrap();
     store.finish("program:bootstrap","original-unknown",&identity,&json!({"state":"PENDING","retryable":false,"effect_certainty":"UNKNOWN","command_id":"C".repeat(43)})).unwrap();drop(store);
     let registry=root.path().join("registry");let mut connect=Connect::open(&registry).unwrap();
@@ -67,6 +67,8 @@ async fn ordinary_native_authority_normalizes_before_context_and_survives_restar
     let role=tools.call(AgentRequest::parse("protocol",json!({"protocol":"tasks","role":"WORKER"})).unwrap()).await.unwrap();assert_eq!(role["runtime"]["role"],"WORKER");
     assert!(tools.call(AgentRequest::parse("reachability",json!({"workspace":"project"})).unwrap()).await.unwrap()["members"].is_array());
     let pending=lifecycle.call(AgentRequest::parse("status",json!({"workspace":"project","operation_id":"original-unknown"})).unwrap()).await.unwrap();assert_eq!(pending["command_id"],"C".repeat(43));
+    let repeated=lifecycle.call(AgentRequest::parse("act",json!({"protocol":"tasks","operation_id":"original-unknown","action":"claim","structure":{"ttl_ms":100},"expected_revision":1})).unwrap()).await.unwrap_err();
+    assert_eq!(repeated.code,"EXISTING_OPERATION_USE_STATUS_OR_RECOVER");
     let original=ipc::RuntimeClient::connect(profile.endpoint_path.clone(),&service.origin,&config.expected_actor).await.unwrap();assert_eq!(original.call(json!({"method":"capabilities"})).await.unwrap()["capability"],json!(old_cap));
     let selected=ipc::RuntimeClient::connect(fixed.endpoint_path.clone(),&service.origin,&config.expected_actor).await.unwrap();let binding=crate::communication_runtime::canonical_binding(&selected.call(json!({"method":"binding"})).await.unwrap());
     drop(tools);drop(original);drop(selected);drop(lifecycle);stop.cancel();daemon.await.unwrap().unwrap();
@@ -75,6 +77,6 @@ async fn ordinary_native_authority_normalizes_before_context_and_survives_restar
     assert!(Capability::from_observation(&restored.call(json!({"method":"capabilities"})).await.unwrap()).unwrap().operations.contains("*"));
     let tools=AgentTools::open(fixed).await.unwrap();assert_eq!(tools.call(AgentRequest::parse("protocol",json!({"protocol":"tasks","role":"WORKER"})).unwrap()).await.unwrap()["runtime"]["role"],"WORKER");
     assert_eq!(std::fs::read(runtime_directory.join("config.json")).unwrap(),original_config);
-    assert!(service.counts().await["actions"]["structure.member.name.set"].is_null(),"the original unknown intent must not be replayed");
+    assert!(service.counts().await["actions"]["structure.action"].is_null(),"the original unknown intent must not be replayed");
     drop(tools);drop(restored);stop.cancel();daemon.await.unwrap().unwrap();
 }

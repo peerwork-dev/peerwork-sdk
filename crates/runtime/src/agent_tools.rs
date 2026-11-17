@@ -602,7 +602,7 @@ impl AgentTools {
         let mut seen=std::collections::BTreeSet::new();let mut found=None;
         for(client,route)in clients {
             let binding=self.observed_binding(client).await?;
-            if !seen.insert(binding.clone()){continue;}
+            if !seen.insert(operation_observations::operation_namespace(&binding)){continue;}
             let original=match self.observed_operation(client,&binding,id).await {Ok(value)=>value,Err(e)if e.code=="OPERATION_NOT_FOUND"=>continue,Err(e)=>return Err(e)};
             if found.is_some(){return Err(invalid("OPERATION_SCOPE_AMBIGUOUS_USE_RECOVERY_VIEW"));}
             let mut arguments=json!({"operation_id":id});if let Some((key,value))=route{arguments[key]=json!(value);}

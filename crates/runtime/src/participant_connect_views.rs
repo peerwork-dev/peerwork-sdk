@@ -111,7 +111,12 @@ impl Connect {
         let client=self.scoped_issuer(&old.desired.participant,&old.desired.workspace_id,client,&caps).await?;
         let caps=client.call(json!({"method":"capabilities"})).await?;
         let parent:Capability=Capability::from_observation(&caps)?;
-        let (cap,path)=self.workspace_client(&old.desired.participant,&old.desired.workspace_id,&parent,&client).await?;
+        let source=RuntimeClient::connect(previous.endpoint_path.clone(),&previous.expected_origin,&previous.expected_actor).await?;
+        let binding=source.call(json!({"method":"binding"})).await?;
+        let mut cap=parent.clone();cap.allow_root=false;cap.workspace_ids=Some([old.desired.workspace_id.clone()].into());
+        let name=format!("ordinary-{}",&sha256_hex(json!([old.desired.participant,old.desired.workspace_id,binding["namespace"],cap]).to_string().as_bytes())[..40]);
+        let derived=client.call(json!({"method":"derive","name":name,"capability":cap,"source_binding":binding})).await?;
+        let path=PathBuf::from(derived["endpoint_path"].as_str().ok_or_else(||local("DERIVED_ENDPOINT_INVALID"))?);
         let mut profile=previous.clone();profile.endpoint_path=path.clone();profile.directory_endpoints.insert(old.desired.workspace_id.clone(),path.clone());
         for(alias,scope)in &profile.protocols{if scope.workspace_id.as_deref()==Some(&old.desired.workspace_id){profile.protocol_endpoints.insert(alias.clone(),path.clone());}}
         self.retain_recovery_views(Some(previous),&mut profile).await?;
@@ -147,6 +152,7 @@ impl Connect {
     }
     pub(super) async fn workspace_client(&self,participant:&str,workspace:&str,parent:&Capability,client:&RuntimeClient)->Result<(Capability,PathBuf)>{
         let mut cap=parent.clone();cap.allow_root=false;cap.workspace_ids=Some([workspace.to_owned()].into());
+        if &cap==parent {return Ok((cap,client.endpoint_path().to_owned()));}
         let name=format!("workspace-{}",&sha256_hex(json!([participant,workspace,cap]).to_string().as_bytes())[..40]);
         let derived=client.call(json!({"method":"derive","name":name,"capability":cap})).await?;
         let path=PathBuf::from(derived["endpoint_path"].as_str().ok_or_else(||local("DERIVED_ENDPOINT_INVALID"))?);

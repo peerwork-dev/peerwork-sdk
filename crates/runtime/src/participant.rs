@@ -887,6 +887,25 @@ impl ParticipantClient {
             local_live: Arc::new(std::sync::atomic::AtomicBool::new(true)),
         })
     }
+    pub(crate) fn namespace_view(&self,namespace:&str,capability:Capability)->Result<Self> {
+        if !self.locally_live() || !self.capability.operations.contains("*") || !self.capability.allow_root
+            || self.capability.workspace_ids.is_some() || self.capability.instance_ids.is_some()
+            || self.capability.protocol_digests.is_some() || self.capability.business_actions.is_some()
+            || self.capability.mailbox_ids.is_some() {return Err(ParticipantError::local("RUNTIME_OWNER_REQUIRED","AUTHORIZATION"));}
+        self.scoped_namespace_view(namespace,capability)
+    }
+    pub(crate) fn descendant_view(&self,namespace:&str,capability:Capability)->Result<Self> {
+        if namespace!=self.namespace && !namespace.starts_with(&format!("{}:",self.namespace)) {return Err(ParticipantError::local("CAPABILITY_ESCALATION","AUTHORIZATION"));}
+        self.scoped_namespace_view(namespace,capability)
+    }
+    fn scoped_namespace_view(&self,namespace:&str,capability:Capability)->Result<Self> {
+        if !self.locally_live(){return Err(ParticipantError::local("LOCAL_CLIENT_REVOKED","AUTHORIZATION"));}
+        capability.validate()?;
+        if !capability.is_subset_of(&self.capability) || namespace.len()>256
+            || namespace.split(':').next()!=Some("program")
+            || !namespace.split(':').all(crate::communication_store::identifier) {return Err(ParticipantError::local("SESSION_INVALID","AUTHORIZATION"));}
+        Ok(Self{shared:self.shared.clone(),namespace:namespace.into(),capability,local_live:Arc::new(std::sync::atomic::AtomicBool::new(true))})
+    }
     fn context(&self) -> ReplyContext {
         ReplyContext {
             namespace: self.namespace.clone(),

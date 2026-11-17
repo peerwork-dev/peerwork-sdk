@@ -32,7 +32,7 @@ impl AgentTools {
         let mut seen=std::collections::BTreeSet::new();let mut found=None;
         for(client,view)in clients {
             let binding=self.observed_binding(client).await?;
-            if !seen.insert(binding.clone()){continue;}
+            if !seen.insert(operation_observations::operation_namespace(&binding)){continue;}
             let value=match self.observed_operation(client,&binding,id).await {Ok(value)=>value,Err(e)if e.code=="OPERATION_NOT_FOUND"=>continue,Err(e)=>return Err(e)};
             let original:Scope=serde_json::from_value(value["scope"].clone()).map_err(|_|invalid("ORIGINAL_OPERATION_SCOPE_INVALID"))?;
             if workspace.is_some_and(|ws|original.workspace_id.as_deref()!=Some(ws))||scope.is_some_and(|s|s.workspace_id!=original.workspace_id||s.instance_id!=original.instance_id){continue;}

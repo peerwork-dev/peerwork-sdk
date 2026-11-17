@@ -21,6 +21,24 @@ fn config(directory: &std::path::Path) -> ParticipantConfig {
 }
 
 #[tokio::test]
+async fn owner_namespace_views_preserve_original_work_and_reject_delegated_issuers() {
+    let root=crate::test_support::protected_test_dir();let cfg=config(root.path());
+    let identity=KernelIdentity::open(&cfg.identity_path).unwrap();
+    let request=Invoke::new("original","structure.member.name.set",Scope{workspace_id:Some("W".repeat(43)),..Default::default()},json!({"membership_id":"M".repeat(43),"name":"Original"}));
+    let mut store=Store::open(&cfg.state_directory,&identity,&cfg.origin).unwrap();
+    store.reserve("program:original",&request,&identity,64,32*1024*1024).unwrap();
+    store.finish("program:original","original",&identity,&json!({"state":"PENDING","retryable":false,"effect_certainty":"UNKNOWN"})).unwrap();drop(store);
+    let owner=ParticipantClient::open(cfg).await.unwrap();let mut limited=Capability::owner();limited.operations.remove("structure.member.name.set");
+    let old=owner.restrict("original",limited.clone()).unwrap();assert_eq!(old.operation("original").await.unwrap_err().code,"LOCAL_SCOPE_DENIED");
+    let mut ordinary=Capability::service();ordinary.allow_root=false;ordinary.workspace_ids=Some(["W".repeat(43)].into());
+    let current=owner.namespace_view(old.local_namespace(),ordinary.clone()).unwrap();
+    assert_eq!(current.operation("original").await.unwrap().operation_id,"original");assert_eq!(old.capability(),&limited);
+    assert_eq!(old.namespace_view("program:other",ordinary.clone()).err().unwrap().code,"RUNTIME_OWNER_REQUIRED");
+    assert_eq!(current.namespace_view("program:other",ordinary).err().unwrap().code,"RUNTIME_OWNER_REQUIRED");
+    assert_eq!(current.local_namespace(),old.local_namespace());owner.close().await.unwrap();
+}
+
+#[tokio::test]
 async fn attached_tools_keep_original_namespace_permissions_and_client_lifecycle() {
     let root = crate::test_support::protected_test_dir();
     let owner = ParticipantClient::open(config(root.path())).await.unwrap();

@@ -18,6 +18,14 @@ fn key(client: &Client) -> ClientKey {
         Client::Attached { .. } => ClientKey::Attached(client.attached_namespace_binding().unwrap()),
     }
 }
+/// Credentials/generations fence routes; durable operation identity is the
+/// original journal namespace. An owner-issued view does not create new work.
+pub(super) fn operation_namespace(binding:&str)->String {
+    let Ok(value)=serde_json::from_str::<Value>(binding) else{return binding.into();};
+    if value.is_object() && ["actor_id","origin","state_binding","namespace"].iter().all(|key|value[*key].is_string()) {
+        json!([value["actor_id"],value["origin"],value["state_binding"],value["namespace"]]).to_string()
+    }else{binding.into()}
+}
 #[derive(Default)]
 pub(super) struct Observations {
     // Retain each handle until this call ends, so pointer keys cannot be reused.

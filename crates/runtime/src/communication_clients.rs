@@ -10,8 +10,20 @@ struct Entry {
     alias: String,
     name: String,
     capability: Capability,
+    #[serde(default,skip_serializing_if="Option::is_none")]
+    namespace: Option<String>,
     #[serde(default)]
     generation: u64,
+}
+fn valid_namespace(value:&str)->bool {
+    value.len()<=256 && value.split(':').next()==Some("program") && value.split(':').all(identifier)
+}
+fn restore_client(parent:&ParticipantClient,entry:&Entry)->Result<ParticipantClient> {
+    match &entry.namespace {
+        Some(namespace)if namespace==parent.local_namespace()||namespace.starts_with(&format!("{}:",parent.local_namespace()))=>parent.descendant_view(namespace,entry.capability.clone()),
+        Some(namespace)=>parent.namespace_view(namespace,entry.capability.clone()),
+        None=>parent.restrict(&entry.alias,entry.capability.clone()),
+    }
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -119,6 +131,7 @@ impl Clients {
                         || e.generation > data.generation
                         || !identifier(&e.alias)
                         || e.name != name(&e.parent, &e.alias)
+                        || e.namespace.as_deref().is_some_and(|value|!valid_namespace(value))
                 })
         {
             return Err(local("CLIENT_REGISTRY_RECOVERY_REQUIRED"));
@@ -143,9 +156,7 @@ impl Clients {
                 .ok_or_else(|| local("CLIENT_PARENT_RECOVERY_REQUIRED"))?;
             sessions.push(Session {
                 name: entry.name.clone(),
-                client: parent
-                    .client
-                    .restrict(&entry.alias, entry.capability.clone())?,
+                client: restore_client(&parent.client,entry)?,
                 token: random_token().map_err(|_| local("ENTROPY_UNAVAILABLE"))?,
                 generation: Some(entry.generation),
                 watches: Default::default(),
@@ -182,7 +193,7 @@ impl Clients {
             let parent = available
                 .get(&entry.parent)
                 .ok_or_else(|| local("CLIENT_PARENT_RECOVERY_REQUIRED"))?;
-            let client = parent.restrict(&entry.alias, entry.capability.clone())?;
+            let client = restore_client(parent,entry)?;
             available.insert(entry.name.clone(), client.clone());
             if job.removed.iter().any(|removed| removed.name == entry.name) {
                 revoked.push(client);
@@ -198,6 +209,17 @@ impl Clients {
     }
 }
 impl Runtime {
+    pub(super) fn namespace_source(&self,parent:&Session,binding:&Value)->Result<String> {
+        let sessions=self.sessions.read().map_err(|_|local("CLIENT_REGISTRY_UNAVAILABLE"))?;
+        let source=sessions.iter().find(|session|binding["actor_id"]==session.client.actor_id() && binding["origin"]==session.client.origin()
+            && binding["state_binding"]==session.client.state_binding() && binding["namespace"]==session.client.local_namespace()
+            && binding["client_generation"]==json!(session.generation)
+            && binding["engine_digest"]==json!(self.engine_bindings.get(session.client.state_binding())))
+            .ok_or_else(||local("ORIGINAL_RUNTIME_BINDING_CHANGED"))?;
+        let namespace=source.client.local_namespace();let selected=parent.client.local_namespace();
+        if source.client.state_binding()!=parent.client.state_binding() || namespace!=selected&&!namespace.starts_with(&format!("{selected}:")){return Err(local("CLIENT_NAMESPACE_OUTSIDE_PARENT"));}
+        Ok(namespace.into())
+    }
     pub(super) fn pending_revocation_status(&self) -> Result<Value> {
         let registry = self
             .derived
@@ -490,10 +512,16 @@ impl Runtime {
         capability: Capability,
         expected_capability: Option<Capability>,
     ) -> Result<Value> {
+        self.derive_client_at(parent,alias,capability,expected_capability,None)
+    }
+    pub(super) fn derive_client_at(&self,parent:&Session,alias:&str,capability:Capability,expected_capability:Option<Capability>,namespace:Option<String>)->Result<Value> {
         if !identifier(alias) {
             return Err(local("CLIENT_ALIAS_INVALID"));
         }
-        let mut client = parent.client.restrict(alias, capability.clone())?;
+        let mut client = if let Some(namespace)=&namespace {
+            if namespace==parent.client.local_namespace()||namespace.starts_with(&format!("{}:",parent.client.local_namespace())) {parent.client.descendant_view(namespace,capability.clone())?}
+            else{parent.client.namespace_view(namespace,capability.clone())?}
+        }else{parent.client.restrict(alias,capability.clone())?};
         let name = name(&parent.name, alias);
         let path = self.directory.join(format!("client-{name}.json"));
         let mut registry = self
@@ -519,6 +547,7 @@ impl Runtime {
         }
         if let Some(index) = registry.data.entries.iter().position(|e| e.name == name) {
             let entry = registry.data.entries[index].clone();
+            if entry.namespace!=namespace {return Err(local("CLIENT_BINDING_CONFLICT"));}
             if entry.capability != capability {
                 if !entry.capability.is_subset_of(&capability) {
                     return Err(local("CLIENT_NARROWING_REQUIRES_REVOCATION"));
@@ -595,6 +624,7 @@ impl Runtime {
                 alias: alias.into(),
                 name: name.clone(),
                 capability: capability.clone(),
+                namespace,
                 generation: data.generation,
             });
             registry.save(data)?;
@@ -636,7 +666,9 @@ pub(super) fn resolve_rebind_client(directory:&Path,roots:&[ClientConfig],name:&
             let entry=derived[0];let parent=walk(&entry.parent,roots,entries,revocations,seen)?;
             entry.capability.validate()?;
             if !entry.capability.is_subset_of(&parent.capability){return Err(local("HOST_REBIND_CLIENT_CAPABILITY_CHANGED"));}
-            RebindClient{engine:parent.engine,namespace:format!("{}:{}",parent.namespace,entry.alias),capability:entry.capability.clone(),generation:Some(entry.generation)}
+            if entry.namespace.as_ref().is_some_and(|namespace|namespace!=&parent.namespace&&!namespace.starts_with(&format!("{}:",parent.namespace))) && (!parent.capability.operations.contains("*") || !parent.capability.allow_root || parent.capability.workspace_ids.is_some()
+                || parent.capability.instance_ids.is_some() || parent.capability.protocol_digests.is_some() || parent.capability.business_actions.is_some() || parent.capability.mailbox_ids.is_some()) {return Err(local("HOST_REBIND_CLIENT_CAPABILITY_CHANGED"));}
+            RebindClient{engine:parent.engine,namespace:entry.namespace.clone().unwrap_or_else(||format!("{}:{}",parent.namespace,entry.alias)),capability:entry.capability.clone(),generation:Some(entry.generation)}
         };
         if resolved.namespace.len()>256{return Err(local("HOST_REBIND_CLIENT_LINEAGE_INVALID"));}
         Ok(resolved)

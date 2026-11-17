@@ -224,7 +224,13 @@ impl Lifecycle {
                 let mut selected=selected.for_request(&request);
                 // Cross-namespace mutations consult retained original routes
                 // using this same cached client, before any fresh resolution.
-                if has_recovery || !authority_refreshes.is_empty() {if let Some(original)=selected.original_request(&request).await?{return Ok(original);}}
+                if has_recovery || !authority_refreshes.is_empty() {
+                    match selected.original_request(&request).await {
+                        Ok(Some(original))=>return Ok(original),Ok(None)=>(),
+                        Err(error)if !authority_refreshes.is_empty()&&agent_tools::refresh_workspace_error(&error).is_some()=>(),
+                        Err(error)=>return Err(error),
+                    }
+                }
                 // Normalize a proven generated installation once on selection,
                 // before any new work, rather than waiting for a denied API.
                 // Exact saved outcomes remain readable without opening an issuer.
@@ -235,6 +241,7 @@ impl Lifecycle {
                     let binding=current.selected_profile_binding(handle_pin,&next)?;
                     context=current.context_for(handle.as_deref(),workspace_pin);
                     selected=std::borrow::Cow::Owned(self.selected_tools(next,binding).await?.for_request(&request).into_owned());
+                    if let Some(original)=selected.original_request(&request).await?{return Ok(original);}
                 }
                 let result=selected.call_observed(request).await;
                 let mut value=match result {

@@ -42,7 +42,7 @@ use tokio::{
     task::JoinSet,
 };
 
-pub(crate) const CONNECT_FEATURES: [&str; 13] = [
+pub(crate) const CONNECT_FEATURES: [&str; 15] = [
     "compact-notifications-v1",
     "participant-connect-v1",
     "derived-client-generation-v1",
@@ -56,10 +56,12 @@ pub(crate) const CONNECT_FEATURES: [&str; 13] = [
     "host-recovery-diagnostics-v1",
     "notification-redelivery-v1",
     "space-conversation-v1",
+    "service-operation-policy-v1",
+    "original-namespace-view-v1",
 ];
 fn runtime_features() -> Vec<&'static str> {
     CONNECT_FEATURES.into_iter().chain([
-        "host-observation-upload-deadline-v1", "current-delivery-observation-v1", "current-host-delivery-health-v1", "opencode-v2-host-v1", "harness-connection-context-v1", "service-operation-policy-v1",
+        "host-observation-upload-deadline-v1", "current-delivery-observation-v1", "current-host-delivery-health-v1", "opencode-v2-host-v1", "harness-connection-context-v1",
     ]).collect()
 }
 const REQUEST_FORMAT: &str = "peerwork.participant-request.v1";
@@ -258,6 +260,8 @@ pub enum ClientRequest {
         capability: Capability,
         #[serde(default)]
         expected_capability: Option<Capability>,
+        #[serde(default)]
+        source_binding: Option<Value>,
     },
     RevokeDerived {
         name: String,
@@ -411,11 +415,12 @@ impl Runtime {
         }).ok_or_else(||local("ORIGINAL_RUNTIME_BINDING_CHANGED"))?;
         let engine=self.owners.iter().find(|(_,owner)|owner.state_binding()==source.client.state_binding()).map(|(name,_)|name)
             .ok_or_else(||local("HOST_RUNTIME_BINDING_MISMATCH"))?;
+        let namespace=source.client.local_namespace().to_owned();
         let parent=sessions.iter().find(|session|session.name==owner_name(engine)).cloned().ok_or_else(||local("LOCAL_OWNER_ISSUER_UNAVAILABLE"))?;
         drop(sessions);
         let mut capability=parent.client.capability().clone();capability.allow_root=false;
         capability.workspace_ids=Some(request.workspace_ids);
-        self.derive_client(&parent,&request.alias,capability,None)
+        self.derive_client_at(&parent,&request.alias,capability,None,Some(namespace))
     }
     async fn request(self: &Arc<Self>, frame: Frame, credential: &str) -> Value {
         let id = &frame.request_id;
@@ -539,9 +544,14 @@ impl Runtime {
                     self.project_delivery(&session,&mut observation,&self.hosts.lock().await.statuses());
                     value=observation["receiver"].take();value["current_delivery"]=observation["current_delivery"].take();value["transport"]=observation["transport"].take();value["transport_health"]=observation["transport_health"].take();value["notification_delivery"]=observation["notification"].take();Ok(value)
                 },
-                ClientRequest::Derive{name,capability,expected_capability}=>{
+                ClientRequest::Derive{name,capability,expected_capability,source_binding}=>{
                     let runtime=self.clone();let parent=session.clone();
-                    tokio::task::spawn_blocking(move||runtime.derive_client(&parent,&name,capability,expected_capability)).await.map_err(|_|local("CLIENT_DERIVATION_TASK_FAILED"))?
+                    tokio::task::spawn_blocking(move||{
+                        if let Some(binding)=source_binding {
+                            let namespace=runtime.namespace_source(&parent,&binding)?;
+                            runtime.derive_client_at(&parent,&name,capability,expected_capability,Some(namespace))
+                        }else{runtime.derive_client(&parent,&name,capability,expected_capability)}
+                    }).await.map_err(|_|local("CLIENT_DERIVATION_TASK_FAILED"))?
                 },
                 ClientRequest::RevokeDerived{name,expected_binding}=>{
                     let runtime=self.clone();let parent=session.clone();

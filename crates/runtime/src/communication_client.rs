@@ -27,6 +27,7 @@ pub struct RuntimeClient {
     compact_notifications:std::sync::atomic::AtomicBool,
 }
 impl RuntimeClient {
+    pub(crate) fn endpoint_path(&self)->&Path {&self.endpoint_path}
     pub async fn connect(
         endpoint_path: PathBuf,
         expected_origin: &str,
