@@ -44,6 +44,17 @@ async fn attached_tools_keep_original_namespace_permissions_and_client_lifecycle
     assert_eq!(original.local_namespace(), "program:old-worker");
     assert!(original.operations("", 32).await.unwrap()["items"].as_array().unwrap().is_empty());
     assert_eq!(original.invoke(Invoke::new("forbidden", "structure.workspace.create", Scope::default(), json!({"name":"bad"})), Duration::ZERO).await.unwrap_err().code, "LOCAL_SCOPE_DENIED");
+    // An intentional delegate is not a generated installation projection.
+    // Protocol lookup cannot borrow a broader signer or create a registry.
+    let mut protocol_selection=AgentSelection::for_client(&original);
+    protocol_selection.workspaces.insert("project".into(),"W".repeat(43));
+    let protocol_tools=AgentTools::from_client(original.clone(),protocol_selection).unwrap();
+    let protocol_lifecycle=crate::agent_lifecycle::Lifecycle::attached(protocol_tools);
+    let error=protocol_lifecycle.call(AgentRequest::parse("protocol",json!({"protocol":"I".repeat(43)})).unwrap()).await.unwrap_err();
+    assert_eq!(error.code,"LOCAL_SCOPE_DENIED");
+    assert_eq!(error.details.as_ref().unwrap()["action"],"structure.instance.resolve");
+    assert_eq!(error.details.as_ref().unwrap()["restricted_by"],json!(["operations"]));
+    assert!(!root.path().join("connect.state").exists());
     let mut wrong = AgentSelection::for_client(&original);
     wrong.expected_actor = "A".repeat(43);
     assert!(matches!(AgentTools::from_client(original.clone(), wrong), Err(e) if e.code == "CLIENT_IDENTITY_OR_ORIGIN_MISMATCH"));

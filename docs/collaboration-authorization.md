@@ -65,6 +65,13 @@ cannot become an alternate executor. An existing explicit alias delegate keeps
 its boundary when the same instance is spelled as an ID. Distinct delegates
 remain an explicit selection; multiple aliases of one client are not ambiguous.
 
+Protocol lookup starts with `structure.instance.resolve` for an exact instance,
+then uses `structure.protocol.resolve` or `structure.protocol.resource.get`.
+A local `operations` denial at any of these stages is not a service rejection
+or evidence about the protocol's rules. Known historical generated scopes use
+the same original-issuer repair as member discovery. Explicit parent limits
+remain enforced; a new Workspace approval does not repair a local credential.
+
 Original operation lookup precedes fresh metadata selection. Status, recovery
 and unchanged retries retain the original namespace, inputs and selected
 execution even when current metadata is unavailable. An unavailable relevant

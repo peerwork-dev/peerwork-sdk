@@ -514,12 +514,14 @@ pub(crate) fn refresh_protocol_error(error:&ParticipantError)->bool{matches!(err
 pub(crate) fn refresh_workspace_error(error:&ParticipantError)->Option<&str>{
     if error.code!="LOCAL_SCOPE_DENIED"||error.effect_certainty!="NOT_SUBMITTED" {return None;}
     let details=error.details.as_ref()?;
-    let action=details["action"].as_str()?;
-    if (action!="structure.members.read"&&!peerwork_core::structure_execution::is_communication_action(action))||details["remote_permission_checked"]!=false {return None;}
+    // Proven generated projections share one repair path, regardless of which
+    // operation first exposes them. The lifecycle authenticates the original
+    // issuer and preserves actual parent restrictions before deriving a client.
+    if details["remote_permission_checked"]!=false {return None;}
     details["scope"]["workspace_id"].as_str()
 }
 #[test]
-fn workspace_profile_repair_requires_an_unsubmitted_local_directory_denial(){
+fn workspace_profile_repair_requires_an_unsubmitted_local_denial_not_an_action_allowlist(){
     let mut error=ParticipantError::local("LOCAL_SCOPE_DENIED","AUTHORIZATION");
     error.details=Some(json!({"action":"structure.members.read","remote_permission_checked":false,"scope":{"workspace_id":"W".repeat(43)}}));
     assert_eq!(refresh_workspace_error(&error),Some("W".repeat(43).as_str()));
@@ -527,7 +529,13 @@ fn workspace_profile_repair_requires_an_unsubmitted_local_directory_denial(){
     error.effect_certainty="NOT_SUBMITTED".into();
     error.details.as_mut().unwrap()["remote_permission_checked"]=json!(true);assert!(refresh_workspace_error(&error).is_none());
     error.details.as_mut().unwrap()["remote_permission_checked"]=json!(false);
-    error.details.as_mut().unwrap()["action"]=json!("structure.action");assert!(refresh_workspace_error(&error).is_none());
+    for action in ["structure.instance.resolve","structure.protocol.resolve","structure.protocol.resource.get","structure.action"] {
+        error.details.as_mut().unwrap()["action"]=json!(action);
+        assert_eq!(refresh_workspace_error(&error),Some("W".repeat(43).as_str()));
+    }
+    error.details.as_mut().unwrap()["scope"]=json!({});assert!(refresh_workspace_error(&error).is_none());
+    error.details.as_mut().unwrap()["scope"]=json!({"workspace_id":"W".repeat(43)});
+    error.code="FORBIDDEN".into();assert!(refresh_workspace_error(&error).is_none());
 }
 pub(crate) fn refresh_nonblocking(error:&ParticipantError,request:&AgentRequest)->bool{
     error.code=="PROTOCOL_TARGET_ROLE_OR_ACTION_GRANT_REQUIRED"&&!matches!(request,AgentRequest::Act{..})
