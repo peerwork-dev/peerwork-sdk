@@ -23,7 +23,9 @@ pub(crate) fn evaluate(receiver: &Value, notification: &Value, transport: &str, 
         else if !keys {("BLOCKED","BODY_KEYS_NOT_READY")}
         else if blocked {("BLOCKED",host_code.unwrap_or("HOST_NOT_READY"))}
         else if !capable {("UNKNOWN",host_code.unwrap_or("CURRENT_TRANSPORT_OBSERVATION_UNAVAILABLE"))}
-        else if transport=="MCP_STDIO_CHANNEL" && health["session_receiving"]!="VERIFIED" {("VERIFYING","CURRENT_CHANNEL_READ_NOT_OBSERVED")}
+        // Only the active Channel frontend can qualify its own session. Native
+        // setup observations still describe their original local inbox proof.
+        else if transport=="MCP_STDIO_CHANNEL" && health.get("session_receiving").is_some() && health["session_receiving"]!="VERIFIED" {("VERIFYING","CURRENT_CHANNEL_READ_NOT_OBSERVED")}
         else if !verified {("VERIFYING","DELIVERY_SELF_TEST_PENDING")}
         else {("READY","READY")};
     json!({"state":state,"code":code,"receiver_link_verified":linked,"body_keys_ready":keys,

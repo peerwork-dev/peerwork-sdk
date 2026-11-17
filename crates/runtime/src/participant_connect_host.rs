@@ -189,14 +189,13 @@ impl Connect {
             if old != &selected {
                 return Err(local("HOST_SELECTION_CHANGED_REBIND_REQUIRED"));
             }
+        } else if self.registry.hosts.len() >= 8 {
+            return Err(local("HOST_SELECTION_LIMIT"));
         }
         // Refresh only after original runtime identity and unchanged selection
         // are checked. The selected App host supplies its current environment.
         let refreshed=crate::communication_host::refresh_agy_registration(&selected.adapter).map_err(local)?;
         if !self.registry.hosts.contains_key(name) {
-            if self.registry.hosts.len() >= 8 {
-                return Err(local("HOST_SELECTION_LIMIT"));
-            }
             self.registry.hosts.insert(name.into(), selected);
             self.save()?;
         }

@@ -97,6 +97,23 @@ fn codex_exact_selection_bypasses_listing_and_picker_pages_are_bounded() {
 
 #[cfg(unix)]
 #[test]
+fn codex_proxy_child_receives_pinned_home_without_starting_another_host() {
+    let root=crate::test_support::protected_test_dir();
+    let (executable,fixture)=codex_proxy_fixture(root.path());fixture.emit_events.store(false,Ordering::SeqCst);
+    let home=root.path().join("original-codex-home");
+    let code=std::fs::read_to_string(&executable).unwrap();
+    std::fs::write(&executable,code.replacen("connection=socket.socket",&format!("assert os.environ.get('CODEX_HOME')=={}\nconnection=socket.socket",serde_json::to_string(home.to_str().unwrap()).unwrap()),1)).unwrap();
+    let runtime=tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build().unwrap();
+    let config=json!({"endpoint":"codex-proxy://local","codex_executable":executable,"codex_home":home,"codex_uid":unsafe{libc::geteuid()}});
+    assert_eq!(codex_session(config.clone(),"existing-thread",runtime.handle().clone()).unwrap()["sessions"][0]["session_id"],fixture.session);
+    assert_eq!(fixture.calls().iter().map(|call|call["method"].as_str().unwrap()).collect::<Vec<_>>(),vec!["initialize","initialized","thread/read"]);
+    let before=fixture.calls().len();let mut wrong=config;wrong["codex_uid"]=json!(u64::MAX);
+    assert_eq!(codex_session(wrong,"existing-thread",runtime.handle().clone()).unwrap_err(),"CODEX_HOST_USER_MISMATCH");
+    assert_eq!(fixture.calls().len(),before);
+}
+
+#[cfg(unix)]
+#[test]
 fn agy_inline_queue_preserves_session_and_does_not_accumulate_message_files() {
     use std::os::unix::fs::PermissionsExt;
     let directory = crate::test_support::protected_test_dir();

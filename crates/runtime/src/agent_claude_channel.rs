@@ -15,6 +15,7 @@ impl State {
         value["notifications_written"]=json!(observed.written);
         value["validation_error"]=json!(observed.validation_error);
         value["scopes"]=json!(observed.scopes);
+        if let Some(scopes)=value["scopes"].as_object_mut(){for scope in scopes.values_mut(){if let Some(object)=scope.as_object_mut(){object.remove("published_batches");object.remove("due_batch");}}}
         for (alias,at) in &observed.at { if value["scopes"][alias].is_object() {
             value["scopes"][alias]["observation_age_ms"]=json!(at.elapsed().as_millis().min(u64::MAX as u128) as u64);
         }}
@@ -25,14 +26,19 @@ impl State {
         let batch=&notice["params"]["meta"]["batch"];
         if !batch.is_string(){return;}
         for scope in value.scopes.values_mut().filter(|scope|scope["due_batch"]==*batch) {
-            scope["published_batch"]=batch.clone();
+            let mut receipts=scope["published_batches"].as_array().cloned().unwrap_or_default();
+            if !receipts.contains(batch){receipts.push(batch.clone());}
+            // Match the native token-retention bound. Keep only references so
+            // a newer batch cannot race an earlier in-flight tool read.
+            if receipts.len()>64 {receipts.remove(0);}
+            scope["published_batches"]=json!(receipts);
         }
     }
     /// Successful reads through this MCP connection establish this projection,
     /// independently of historical native-inbox self-tests in earlier sessions.
     pub(super) fn batch_read(&self,batch:&str) {
         let mut value=self.0.lock().unwrap();
-        for scope in value.scopes.values_mut().filter(|scope|scope["published_batch"]==batch) {
+        for scope in value.scopes.values_mut().filter(|scope|scope["published_batches"].as_array().is_some_and(|items|items.iter().any(|item|item==batch))) {
             scope["session_receiving"]=json!("VERIFIED");
         }
     }
@@ -51,7 +57,7 @@ impl State {
             let mut observed=self.0.lock().unwrap();let scope=observed.scopes.get_mut(alias).unwrap();
             if scope["binding"]!=value["source_binding"] {
                 scope["session_receiving"]=json!("UNCONFIRMED");
-                scope.as_object_mut().unwrap().remove("published_batch");
+                scope.as_object_mut().unwrap().remove("published_batches");
                 scope.as_object_mut().unwrap().remove("due_batch");
             }
             scope["binding"]=value["source_binding"].clone();
@@ -209,9 +215,12 @@ mod tests {
         let notice=json!({"params":{"meta":{"batch":"current"}}});
         state.written(&notice);state.batch_read("old");
         assert_eq!(state.status()["scopes"]["space"]["session_receiving"],"UNCONFIRMED");
+        state.scope_observed("space",&json!({"state":"NOTIFICATION_DUE","batch":"newer","source_binding":{"client_generation":1}}));
+        state.written(&json!({"params":{"meta":{"batch":"newer"}}}));
         state.batch_read("current");
         state.scope_observed("space",&json!({"state":"WAITING_NATIVE_INBOX","source_binding":{"client_generation":1}}));
         assert_eq!(state.status()["scopes"]["space"]["session_receiving"],"VERIFIED");
+        assert!(state.status()["scopes"]["space"].get("published_batches").is_none());
         state.scope_observed("space",&json!({"state":"WAITING_NATIVE_INBOX","source_binding":{"client_generation":2}}));
         state.written(&notice);state.batch_read("current");
         assert_eq!(state.status()["scopes"]["space"]["session_receiving"],"UNCONFIRMED");
