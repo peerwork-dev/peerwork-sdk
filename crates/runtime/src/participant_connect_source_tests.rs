@@ -152,10 +152,11 @@ async fn saved_owner_inheritance_continues_its_original_namespace_and_multiple_s
     connect.runtime_for_source(&handle,&RuntimeSelection{admin_endpoint:ready.admin_endpoint.clone(),config_path:Some(config_path)}).await.unwrap();
     drop(connect);let before=service.counts().await;
     let lifecycle=crate::agent_lifecycle::Lifecycle::profile(profile);
+    Box::pin(lifecycle.call(AgentRequest::Context)).await.unwrap();
+    assert_eq!(service.counts().await["commands"],before["commands"],"continuing inherited authority must not submit remote changes");
     for ws in &spaces {
         let result=Box::pin(lifecycle.call(AgentRequest::parse("reachability",json!({"workspace":ws})).unwrap())).await.unwrap();assert_eq!(result["members"].as_array().unwrap().len(),1);
     }
-    assert_eq!(service.counts().await["commands"],before["commands"],"continuing inherited authority must not submit remote changes");
     let current=Connect::inspect(&directory).unwrap().profile_for_scope(Some(&handle),None).unwrap().unwrap();
     let client=RuntimeClient::connect(current.endpoint_path.clone(),&service.origin,&config.expected_actor).await.unwrap();
     assert_eq!(client.call(json!({"method":"binding"})).await.unwrap()["namespace"],old_binding["namespace"]);

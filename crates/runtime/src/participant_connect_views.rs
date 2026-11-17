@@ -4,8 +4,8 @@ use super::*;
 use crate::agent_tools::{ProtocolView,ProtocolViewScope,MAX_PROTOCOL_VIEWS};
 pub(super) const AUTHORITY_REVISION:u64=2;
 impl Connect {
-    /// Continue only a sealed native-managed bootstrap through its existing
-    /// local owner. Arbitrary configured clients remain explicit delegates.
+    /// Continue a sealed managed bootstrap or recorded Owner inheritance
+    /// through its original issuer. Arbitrary clients remain explicit delegates.
     pub(super) async fn scoped_issuer(&mut self,participant:&str,workspace:&str,client:RuntimeClient,caps:&Value)->Result<RuntimeClient> {
         let capability=Capability::from_observation(caps)?;
         if capability.operations.contains("*"){return Ok(client);}
