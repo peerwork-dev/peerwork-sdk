@@ -13,7 +13,7 @@ reuse a previously registered endpoint/host bridge. Select the exact thread once
 when necessary; the session-tree root is not a writer identity. The connector
 checks current metadata before committing the existing durable attachment.
 
-The connection-recovery update pins new proxy selections to their original
+Native0.3.40 pins new proxy selections to their original
 Codex home, executable and OS user. Exact UUID selection reads just that thread;
 the bounded picker marks partial results. An ownership rejection preserves the
 original route and suppresses repeated resume attempts. It does not prove that
@@ -39,7 +39,7 @@ business fields in process arguments. There is no second plaintext file queue.
 Exit success establishes `HOST_QUEUED`, not a model response. Uncertain outcomes
 retain the original attempt evidence and controlled notification recovery.
 
-With the connection-recovery update, explicit original host registration captures
+With native0.3.40, explicit original host registration captures
 `ANTIGRAVITY_LS_ADDRESS` and `ANTIGRAVITY_CSRF_TOKEN` from the owning App's current
 environment into the selected private directory. Invoke the same registration
 from the original host at App startup/restart: `Connect::register_host` or

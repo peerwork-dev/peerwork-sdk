@@ -33,6 +33,12 @@ without an Agent host, MCP or Skill.
    [availability](docs/member-availability.md) and [protocol tools](docs/protocol-session.md)
    through the same original client.
 
+Native0.3.40 improves existing-harness connections: direct Codex thread lookup,
+pinned installation context and actionable owner-conflict guidance; refreshable
+original AGY App launch context; and fresh current-session Claude Channel proof.
+It preserves the existing receiving stack and pending work. See the
+[release notes](docs/releases/0.3.40.md).
+
 Native0.3.39 keeps MCP diagnostics available during local path failures, reuses
 the original opened registry for ordinary reads, and reports actionable endpoint
 and startup failures. Targeted original-component repair preserves identity,

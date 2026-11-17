@@ -101,7 +101,7 @@ relay is not enabled.
 
 ## Delivery and recovery
 
-- With the connection-recovery update, each active Channel projection must see
+- With native0.3.40, each active Channel projection must see
   a successful `peerwork_inbox` read of a batch written through that same MCP
   connection. Before that, current delivery is `VERIFYING` with
   `CURRENT_CHANNEL_READ_NOT_OBSERVED`, even if an earlier session passed its

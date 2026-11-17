@@ -61,7 +61,7 @@ Direct CLI launch alone does not establish incompatibility: use the selected
 host version and supported shared-daemon/remote/standalone mode.
 
 An ownership conflict does not identify the other writer or establish that the
-current conversation is standalone. The connection-recovery update reports
+current conversation is standalone. Native0.3.40 reports
 `VERIFY_SELECTED_CODEX_ROUTE_AND_ORIGINAL_SESSION_OWNER`, with owner identity
 and the need to exit explicitly undetermined. First verify the selected existing
 route. A healthy shared host needs no exit/relaunch. Only a confirmed standalone

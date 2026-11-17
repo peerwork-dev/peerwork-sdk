@@ -84,7 +84,7 @@ already select that installation. A candidate list is `PENDING` with exit code2;
 it does not change the receiver. Discovery reads bounded loaded-thread metadata,
 not transcripts or workspace history. It never chooses the newest conversation.
 
-In the connection-recovery update, an exact UUID goes directly to
+In native0.3.40, an exact UUID goes directly to
 `thread/read` on the selected host. A title picker reads at most four pages of
 32 loaded IDs, deduplicates them, and reports `complete: false` when bounded.
 A partial picker cannot establish a unique title; select the exact thread ID.
