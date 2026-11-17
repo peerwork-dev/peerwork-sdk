@@ -27,7 +27,7 @@ GROUPS = ['communication_bridge::', 'communication_host::', 'communication_host_
           'agent_tools::tests', 'process_identity::tests',
           'kernel_access::resident_wal_tests',
           'participant_legacy_delivery::tests',
-          'participant_inbox::host_ledger',
+          'participant_inbox::host_ledger', 'agent_mcp::background_listener::tests',
           'participant_owner::tests',
           'transport::tests::send_phase_scope_excludes_interleaved_and_spawned_work_and_survives_cancellation']
 

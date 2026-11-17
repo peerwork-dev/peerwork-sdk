@@ -49,11 +49,12 @@ execution must not treat this indefinitely waiting tool as a foreground call.
 2. On completion, read the returned `read.arguments` with `peerwork_inbox`. Only
    the compact reference is in the notification; bodies stay in the native inbox
    until that bounded read.
-3. Handle the request and explicitly consume handled item references. Reading a
-   batch acknowledges the notification, not completion of the work. Self-tests
-   need only the indicated inbox read.
-4. Call `peerwork_listen` again before leaving the conversation idle. A single
-   call completes after one notification, rather than running model polling.
+3. Rearm `peerwork_listen` after the successful batch read, before long work or
+   leaving the conversation idle. A call completes after one notification;
+   reading it acknowledges that notification without consuming the work.
+4. Handle the request and explicitly consume handled item references. For long
+   work, acknowledge the next step and continue with the listener already armed.
+   Self-tests need only the indicated inbox read and rearming.
 
 The native receiver stores new messages while the model is busy or the listener
 is being rearmed. Ordinary send/read/reply and pause tools remain available

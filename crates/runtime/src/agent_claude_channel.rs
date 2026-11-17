@@ -92,7 +92,11 @@ pub(super) fn ownership(profile:&AgentProfile,scope:&MailScope)->Result<SecureSt
     ownership_at(&root,profile,scope)
 }
 fn ownership_at(root:&std::path::Path,profile:&AgentProfile,scope:&MailScope)->Result<SecureStateStore> {
-    let key=sha256_hex(json!([profile.expected_origin,profile.expected_actor,scope.workspace_id,scope.mailbox_id,scope.membership_id]).to_string().as_bytes());
+    // Equivalent origin spellings must not create two projection owners for
+    // the same receiving binding. Runtime authentication remains authoritative.
+    let origin=crate::transport::canonical_lifecycle_origin(&profile.expected_origin,true)
+        .map_err(|_|ParticipantError::local("AGENT_PROFILE_INVALID","MCP"))?;
+    let key=sha256_hex(json!([origin,profile.expected_actor,scope.workspace_id,scope.mailbox_id,scope.membership_id]).to_string().as_bytes());
     SecureStateStore::open(&root.join(format!("claude-channel-{key}.state")))
         .map_err(|e|e.diagnose(ParticipantError::local("CLAUDE_CHANNEL_ALREADY_ACTIVE_OR_STATE_UNAVAILABLE","CLAUDE_CHANNEL"),"OPEN"))
 }
@@ -268,6 +272,8 @@ mod tests {
     #[test]
     fn a_mailbox_has_one_live_channel_writer_and_releases_on_exit() {
         let t=crate::test_support::protected_test_dir();let profile=profile();let scope=mail();let first=ownership_at(t.path(),&profile,&scope).unwrap();
+        let mut equivalent=profile.clone();equivalent.expected_origin=format!("{}/",profile.expected_origin.trim_end_matches('/'));
+        assert!(ownership_at(t.path(),&equivalent,&scope).is_err(),"origin aliases cannot start another presentation owner");
         let error=ownership_at(t.path(),&profile,&scope).err().unwrap();
         assert_eq!(error.details.as_ref().unwrap()["local_state"]["cause"],"BUSY");
         assert_eq!(error.details.as_ref().unwrap()["local_state"]["owner_observation"],"NOT_OBSERVED");
@@ -278,7 +284,8 @@ mod tests {
     fn channel_ownership_and_status_distinguish_unavailable_state_from_an_active_writer() {
         use std::os::unix::fs::PermissionsExt;
         let t=crate::test_support::protected_test_dir();let profile=profile();let scope=mail();
-        let key=sha256_hex(json!([profile.expected_origin,profile.expected_actor,scope.workspace_id,scope.mailbox_id,scope.membership_id]).to_string().as_bytes());
+        let origin=crate::transport::canonical_lifecycle_origin(&profile.expected_origin,true).unwrap();
+        let key=sha256_hex(json!([origin,profile.expected_actor,scope.workspace_id,scope.mailbox_id,scope.membership_id]).to_string().as_bytes());
         let path=t.path().join(format!("claude-channel-{key}.state"));let state=State::default();
         let check=|cause:&str| {
             let error=ownership_at(t.path(),&profile,&scope).err().unwrap();

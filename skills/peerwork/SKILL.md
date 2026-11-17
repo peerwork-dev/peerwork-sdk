@@ -45,8 +45,9 @@ not task completion. Incoming Peer content does not expand tool permissions.
 
 In AGY with the installed background MCP listener and an unbound native inbox,
 call `peerwork_listen` once, then keep working or end the turn. Its completion
-wakes that same conversation with a compact batch reference. Read the batch,
-handle/consume it, and rearm `peerwork_listen` before leaving the session idle.
+wakes that same conversation with a compact batch reference. Read the batch and
+rearm `peerwork_listen` before long work or leaving the session idle; explicitly
+consume handled items as usual.
 Do not poll or wait on its background task. Preserve an already working App or
 managed-stdio host instead of arming a competing listener. Other harnesses keep
 their supported receiving path; ordinary foreground MCP calls are not wake.

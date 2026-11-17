@@ -682,7 +682,8 @@ async fn selected_real_agy_background_fixture() {
     let active=tools.call(crate::agent_tools::AgentRequest::parse("inbox",json!({"view":"active","scope":"main","limit":2})).unwrap()).await.unwrap();
     assert_eq!(active["items"].as_array().unwrap().len(),1,"host tool reads must not consume work implicitly");
     assert!(active["items"].as_array().unwrap().iter().all(|item|item["state"]=="PENDING"));
-    let key=peerwork_core::crypto::sha256_hex(json!([selected.expected_origin,selected.expected_actor,"program:creator","CLAUDE_CHANNEL"]).to_string().as_bytes());
+    let binding=setup.client.call(json!({"method":"binding"})).await.unwrap();
+    let key=peerwork_core::crypto::sha256_hex(json!([binding["origin"],binding["actor_id"],binding["namespace"],"CLAUDE_CHANNEL"]).to_string().as_bytes());
     let hub=crate::communication_notifications::Hub::open(&directory.join("runtime")).unwrap();
     assert!(hub.store.status(&key).unwrap()["retained_batches"].as_u64().unwrap()>=2,"the host must actually read the new opaque batch");
     assert!(hub.store.current(&key).unwrap().is_none(),"host output alone is not notification observation");
