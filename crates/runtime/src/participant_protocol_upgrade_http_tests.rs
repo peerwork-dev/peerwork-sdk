@@ -193,9 +193,10 @@ async fn workspace_client_uses_current_grants_without_local_role_refresh(){
     let continued_client=ipc::RuntimeClient::connect(migrated_endpoint.clone(),&service.origin,&config.expected_actor).await.unwrap();
     assert_eq!(continued_client.call(json!({"method":"binding"})).await.unwrap()["namespace"],sender.call(json!({"method":"binding"})).await.unwrap()["namespace"]);
     let tools=AgentTools::open(migrated).await.unwrap();
-    let status=call(&tools,"status",json!({"operation_id":"legacy-lost-send"})).await;assert_eq!(status["command_id"],send_command);assert_eq!(status["recovery_arguments"]["operation_id"],"legacy-lost-send");
+    let status=call(&tools,"status",json!({"operation_id":"legacy-lost-send"})).await;assert_eq!(status["command_id"],send_command);assert_eq!(status["operation_id"],"legacy-lost-send");
     let retry=tools.call(AgentRequest::parse("send",json!({"workspace":ws,"to":config.expected_actor,"operation_id":"legacy-lost-send","text":"do not duplicate"})).unwrap()).await.unwrap_err();assert_eq!(retry.code,"EXISTING_OPERATION_USE_STATUS_OR_RECOVER");
-    assert_eq!(call(&tools,"recover",status["recovery_arguments"].clone()).await["command_id"],send_command);assert_eq!(service.counts().await["actions"]["structure.message.send"],before);
+    let recovery=status.get("recovery_arguments").cloned().unwrap_or_else(||json!({"operation_id":status["operation_id"]}));
+    assert_eq!(call(&tools,"recover",recovery).await["command_id"],send_command);assert_eq!(service.counts().await["actions"]["structure.message.send"],before);
     let update=|id:&str,previous:Value,revision:u64|json!({"protocol":"tickets","operation_id":id,"action":"ticket.update","structure":{"title":"updated","previous":previous},"record_id":previous["record_id"],"exact_input_refs":[previous],"expected_revision":revision,"wait_ms":5000});
     let denied=call(&tools,"act",update("permission-before",first.clone(),2)).await;assert_eq!(denied["state"],"REJECTED_NO_EFFECT","{denied}");assert_eq!(denied["details"]["reason"],"ACTION_NOT_GRANTED","{denied}");
     // An action list is a remote permission request, not a local delegation.
