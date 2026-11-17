@@ -174,6 +174,17 @@ impl Connect {
     }
     pub(super) async fn workspace_client(&self,participant:&str,workspace:&str,parent:&Capability,client:&RuntimeClient)->Result<(Capability,PathBuf)>{
         let mut cap=parent.clone();cap.allow_root=false;cap.workspace_ids=Some([workspace.to_owned()].into());
+        if let Some(previous)=self.registry.active_by_scope.get(&format!("{participant}:{workspace}")).and_then(|id|self.registry.setups.get(id)).and_then(|setup|setup.profile.as_ref()) {
+            let original=RuntimeClient::connect(previous.endpoint_path.clone(),client.origin(),client.actor_id()).await?;
+            let observed=Capability::from_observation(&original.call(json!({"method":"capabilities"})).await?)?;
+            if observed==cap {
+                let source=original.call(json!({"method":"binding"})).await?;
+                let issuer=client.call(json!({"method":"binding"})).await?;
+                let same_engine=["actor_id","origin","state_binding","engine_digest"].iter().all(|field|source[*field]==issuer[*field]);
+                let own_namespace=issuer["namespace"].as_str().zip(source["namespace"].as_str()).is_some_and(|(parent,child)|child==parent||child.starts_with(&format!("{parent}:")));
+                if same_engine && own_namespace {return Ok((cap,previous.endpoint_path.clone()));}
+            }
+        }
         if &cap==parent {return Ok((cap,client.endpoint_path().to_owned()));}
         let name=format!("workspace-{}",&sha256_hex(json!([participant,workspace,cap]).to_string().as_bytes())[..40]);
         let derived=client.call(json!({"method":"derive","name":name,"capability":cap})).await?;
