@@ -127,6 +127,12 @@ It accepts up to four endpoints. Use the command without endpoints to clear the
 list. It leaves the startup configuration, original destination, credentials
 and inbox intact.
 
+If the original Bridge selected a custom proxy socket and pinned the Codex
+installation and OS user, recovery also checks that installation's standard
+daemon socket. The exact original thread and session must be loaded there.
+Peerwork verifies the local socket's peer UID and never starts a Codex daemon
+or resumes the thread while finding its owner.
+
 For `BRIDGE_UNAVAILABLE`, the runtime can relaunch the original same-user Codex
 bridge while automatic receiving is enabled. Run the original protected
 `peerwork bridge run` command once on this version to record its successful

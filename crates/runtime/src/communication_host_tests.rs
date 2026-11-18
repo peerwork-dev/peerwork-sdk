@@ -114,6 +114,39 @@ fn codex_proxy_child_receives_pinned_home_without_starting_another_host() {
 
 #[cfg(unix)]
 #[test]
+fn codex_pinned_installation_recovers_to_the_normal_daemon_without_enrollment() {
+    let directory = crate::test_support::protected_test_dir();
+    let (executable, original) = codex_proxy_fixture(directory.path());
+    let source = std::fs::read_to_string(&executable).unwrap()
+        .replace("sys.argv[1:]==", "sys.argv[1:3]==");
+    std::fs::write(&executable, source).unwrap();
+    original.emit_events.store(false, Ordering::SeqCst);
+    let control = directory.path().join("app-server-control");
+    std::fs::create_dir(&control).unwrap();
+    let config = json!({"kind":"codex","endpoint":"codex-proxy://local",
+        "control_socket":original.endpoint.trim_start_matches("unix://"),
+        "codex_executable":executable,"codex_home":directory.path(),
+        "codex_uid":unsafe{libc::geteuid()},"thread_id":"existing-thread",
+        "expected_session_id":original.session});
+    let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build().unwrap();
+    let mut host = Host::open(config, runtime.handle().clone()).unwrap();
+    host.observe_codex_owner();
+    let anchor = host.destination.clone();
+
+    let normal = CodexFixture::start_unix(&control.join("app-server-control.sock"));
+    normal.emit_events.store(false, Ordering::SeqCst);
+    *normal.actual_session.lock().unwrap() = original.session.clone();
+    *original.status_override.lock().unwrap() = Some("notLoaded".into());
+    assert_eq!(host.health(&json!({})).unwrap()["ready"], true);
+    assert_eq!(host.destination, anchor);
+    let outcome = host.deliver(&json!({}), &json!({"rendered_text":"isolated probe"})).unwrap();
+    assert_eq!(outcome["state"], "HOST_ACCEPTED");
+    assert!(normal.calls().iter().any(|request| request["method"] == "turn/start"));
+    assert!(!original.calls().iter().any(|request| matches!(request["method"].as_str(), Some("thread/resume" | "turn/start"))));
+}
+
+#[cfg(unix)]
+#[test]
 fn agy_inline_queue_preserves_session_and_does_not_accumulate_message_files() {
     use std::os::unix::fs::PermissionsExt;
     let directory = crate::test_support::protected_test_dir();

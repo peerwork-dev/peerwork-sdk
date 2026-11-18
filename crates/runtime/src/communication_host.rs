@@ -169,10 +169,15 @@ impl Codex {
                 add_auth(config, &mut request)?;
                 let remaining=budget.remaining().map_err(|_|"HOST_OPERATION_TIMEOUT")?;
                 let stream=executor.block_on(async {
-                    tokio::time::timeout(remaining,tokio::net::UnixStream::connect(file)).await
+                    let stream = tokio::time::timeout(remaining,tokio::net::UnixStream::connect(file)).await
                         .map_err(|_|"HOST_OPERATION_TIMEOUT")?
-                        .map_err(|e|if e.kind()==std::io::ErrorKind::PermissionDenied{"HOST_ACCESS_DENIED"}else{"HOST_UNAVAILABLE"})?
-                        .into_std().map_err(|_|"HOST_UNAVAILABLE")
+                        .map_err(|e|if e.kind()==std::io::ErrorKind::PermissionDenied{"HOST_ACCESS_DENIED"}else{"HOST_UNAVAILABLE"})?;
+                    if let Some(uid) = config["expected_socket_uid"].as_u64() {
+                        if stream.peer_cred().map_err(|_| "HOST_ACCESS_DENIED")?.uid() as u64 != uid {
+                            return Err("HOST_ACCESS_DENIED");
+                        }
+                    }
+                    stream.into_std().map_err(|_|"HOST_UNAVAILABLE")
                 })?;
                 stream.set_nonblocking(false).map_err(|_|"HOST_UNAVAILABLE")?;
                 let stream=Deadline{stream,budget:budget.clone()};
@@ -652,10 +657,12 @@ impl Host {
         budget: &Budget,
     ) -> R<Codex> {
         let registered = config["codex_routes_file"].as_str()
+            .filter(|path| Path::new(path).exists())
             .map(|path| crate::communication_store::private_json(Path::new(path), 4096))
             .transpose()?;
-        let alternatives = registered.as_ref().unwrap_or(&config["codex_routes"])
-            .as_array().ok_or("HOST_CONFIG_INVALID")?;
+        let alternatives = registered.as_ref().or_else(|| config.get("codex_routes"))
+            .map(|routes| routes.as_array().map(Vec::as_slice).ok_or("HOST_CONFIG_INVALID"))
+            .transpose()?.unwrap_or(&[]);
         let expected_session = text(config, "expected_session_id")?;
         let primary = text(config, "endpoint")?;
         if alternatives.len() > 4 {
@@ -673,6 +680,13 @@ impl Host {
             // endpoint. A listed Unix socket has its own OS access control.
             candidates.push(json!({"kind":"codex","endpoint":endpoint,
                 "thread_id":config["thread_id"],"expected_session_id":expected_session}));
+        }
+        if let Some(endpoint) = codex_proxy::default_route(config) {
+            if !seen.contains(endpoint.as_str()) {
+                candidates.push(json!({"kind":"codex","endpoint":endpoint,
+                    "thread_id":config["thread_id"],"expected_session_id":expected_session,
+                    "expected_socket_uid":config["codex_uid"]}));
+            }
         }
         let mut selected = None;
         for candidate in candidates {
@@ -695,10 +709,12 @@ impl Host {
     }
 
     fn codex_route_allowed(config: &Value, endpoint: &str) -> R<bool> {
-        if config["endpoint"] == endpoint {
+        if config["endpoint"] == endpoint
+            || codex_proxy::default_route(config).as_deref() == Some(endpoint) {
             return Ok(true);
         }
         let registered = config["codex_routes_file"].as_str()
+            .filter(|path| Path::new(path).exists())
             .map(|path| crate::communication_store::private_json(Path::new(path), 4096))
             .transpose()?;
         Ok(registered.as_ref().unwrap_or(&config["codex_routes"]).as_array()
@@ -706,7 +722,8 @@ impl Host {
     }
 
     fn has_codex_routes(config: &Value) -> bool {
-        config.get("codex_routes").is_some()
+        codex_proxy::default_route(config).is_some()
+            || config.get("codex_routes").is_some()
             || config["codex_routes_file"].as_str().is_some_and(|path| Path::new(path).exists())
     }
 

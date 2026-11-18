@@ -62,6 +62,42 @@ pub(super) fn pin_installation(config: &mut Value) -> R<()> {
     Ok(())
 }
 
+/// The pinned installation's normal daemon can outlive an explicit socket
+/// selected for an earlier owner. Never search other users' installations.
+pub(super) fn default_route(config: &Value) -> Option<String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{FileTypeExt, MetadataExt};
+        if config["endpoint"] != "codex-proxy://local"
+            || config["codex_uid"].as_u64() != Some(unsafe { libc::geteuid() } as u64)
+        {
+            return None;
+        }
+        let previous = Path::new(config["control_socket"].as_str()?);
+        let home = Path::new(config["codex_home"].as_str()?);
+        if !home.is_absolute() { return None; }
+        let directory = home.join("app-server-control");
+        let directory_owner = std::fs::metadata(&directory).ok()?.uid();
+        if directory_owner as u64 != config["codex_uid"].as_u64()? { return None; }
+        let path = directory.join("app-server-control.sock");
+        let meta = std::fs::metadata(&path).ok()?;
+        if !meta.file_type().is_socket() || meta.uid() as u64 != config["codex_uid"].as_u64()? {
+            return None;
+        }
+        if previous == path || std::fs::canonicalize(previous).ok().as_ref()
+            == Some(&std::fs::canonicalize(&path).ok()?)
+        {
+            return None;
+        }
+        return Some(format!("unix://{}", path.to_str()?));
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = config;
+        None
+    }
+}
+
 fn configure_installation(command: &mut tokio::process::Command, config: &Value) -> R<()> {
     if let Some(home) = config.get("codex_home") {
         let home = home.as_str().filter(|p| Path::new(p).is_absolute())
