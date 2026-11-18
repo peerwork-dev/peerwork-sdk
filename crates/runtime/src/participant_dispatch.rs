@@ -739,7 +739,7 @@ async fn run_owned(
             }
         }
         let mut scope_errors = Vec::new();
-        for (client, configured) in selected_sources {
+        for (client, configured) in selected_sources.iter().cloned() {
             if !client.locally_live() {
                 continue;
             }
@@ -862,8 +862,7 @@ async fn run_owned(
                     reverify.remove(&owner);
                 }
                 let delivery = notification_hub.store.status(&owner)?;
-                recover_bridge |= codex_target && value["reason"] == "BRIDGE_UNAVAILABLE"
-                    && matches!(delivery["state"].as_str(), Some("RUNNING" | "VERIFYING"));
+
                 if let Ok(HostReply::Status(summary))=client.host_operation(options,HostOperation::Summary).await{obligations.push(summary);}
                 if let Err(problem) = client
                     .host_operation(
@@ -876,6 +875,24 @@ async fn run_owned(
                     .await
                 {
                     scope_error(&status, options, &problem);
+                }
+            }
+            if codex_target && value["reason"] == "BRIDGE_UNAVAILABLE" {
+                // A cold runtime cannot finish attaching its watches while the
+                // bridge is down. Use its configured sources to recover it.
+                for (client, options) in &selected_sources {
+                    let mut selected = options.clone();
+                    if let Some(binding) = &current_binding {
+                        if selected.host_destination.is_none() {
+                            selected.host_destination = Some(binding.digest.clone());
+                        }
+                    }
+                    let owner = crate::communication_notifications::owner(client, &selected);
+                    let delivery = notification_hub.store.status(&owner)?;
+                    if matches!(delivery["state"].as_str(), Some("RUNNING" | "VERIFYING")) {
+                        recover_bridge = true;
+                        break;
+                    }
                 }
             }
             if recover_bridge && !cancel.is_cancelled() {

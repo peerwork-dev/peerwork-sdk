@@ -490,3 +490,83 @@ async fn resident_existing_push_reuses_physical_owner_and_restarts_from_unchange
     assert_eq!(pins.receiver_id,source.original.receiver_id);assert_eq!(pins.binding_version,source.original.binding_version+2);
     assert_eq!(host.calls().iter().filter(|v|matches!(v["method"].as_str(),Some("turn/start"|"turn/steer"))).count(),1,"original accepted input cannot be replayed into the new session");
 }
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires an isolated real Codex host, native CLI, and synthetic PostgreSQL"]
+async fn codex_bridge_loss_recovers_and_the_original_thread_reads_a_fresh_probe() {
+    use crate::communication_bridge::{BridgeConfig, BridgeGrant, BridgeReady};
+    use tokio::io::{AsyncBufReadExt, BufReader};
+
+    let root = PathBuf::from(std::env::var_os("PEERWORK_CODEX_RECOVERY_TEST").unwrap());
+    let cli = std::env::var_os("PEERWORK_TEST_BRIDGE_EXECUTABLE").unwrap();
+    let host = private_json(&root.join("host.json"), 65536).unwrap();
+    assert_eq!(host["kind"], "codex");
+    let mut source = setup(false, host.clone()).await;
+    let engine = &source.runtime.engines[0];
+    let identity = KernelIdentity::open(&engine.identity_path).unwrap();
+    let origin = crate::transport::canonical_lifecycle_origin(&engine.origin, true).unwrap();
+    let bridge_config = BridgeConfig {
+        format: "peerwork.host-bridge.v1".into(),
+        state_directory: root.join("bridge"),
+        host,
+        bindings: vec![BridgeGrant {
+            expected_origin: origin.clone(),
+            expected_actor: identity.actor_id().into(),
+            expected_key_id: identity.key_id().into(),
+            namespace: source.namespace.clone(),
+            workspace_id: source.old.workspace_id.clone(),
+            mailbox_id: source.old.mailbox_id.clone(),
+            membership_id: source.old.membership_id.clone(),
+        }],
+    };
+    let bridge_path = root.join("bridge.json");
+    write_private(&bridge_path, &serde_json::to_vec(&bridge_config).unwrap()).unwrap();
+    let mut bridge = tokio::process::Command::new(cli).args(["bridge", "run"]).arg(&bridge_path)
+        .stdout(std::process::Stdio::piped()).kill_on_drop(true).spawn().unwrap();
+    let mut lines = BufReader::new(bridge.stdout.take().unwrap()).lines();
+    let launch = tokio::time::timeout(Duration::from_secs(20), lines.next_line())
+        .await.unwrap().unwrap().unwrap();
+    let bridge_ready: BridgeReady = serde_json::from_str(&launch).expect("real host bridge did not start");
+    source.request.adapter = bridge_ready.adapter;
+    // Rebinding checks the live host independently of descriptor creation.
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let moved = rebind_host(&source.path, source.request.clone()).await.unwrap();
+    let target: RuntimeConfig = serde_json::from_value(private_json(&source.path, 65536).unwrap()).unwrap();
+    let mut watch = source.old.clone();
+    watch.host_destination = Some(moved["destination_digest"].as_str().unwrap().into());
+    let cancel = KernelCancellationToken::new();
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let running = tokio::spawn(ipc::serve(target, cancel.clone(), tx));
+    let ready = rx.await.unwrap().unwrap();
+    let endpoint = ready.client_endpoints[&source.client_name].clone();
+    write_private(&root.join("profile.json"), &serde_json::to_vec(&json!({
+        "format":"peerwork.agent-profile.v1","endpoint_path":endpoint,"expected_origin":origin,
+        "expected_actor":identity.actor_id(),"scopes":{"main":{"workspace_id":watch.workspace_id,
+        "mailbox_id":watch.mailbox_id,"membership_id":watch.membership_id}}
+    })).unwrap()).unwrap();
+    let client = RuntimeClient::connect(endpoint, &engine.origin, identity.actor_id()).await.unwrap();
+    async fn verified_after(client: &RuntimeClient, watch: &WatchOptions, since: i64) -> i64 {
+        let mut last = Value::Null;
+        let result = tokio::time::timeout(Duration::from_secs(65), async {
+            loop {
+                if let Ok(value) = client.call(json!({"method":"delivery","mode":"status","options":watch})).await {
+                    if let Some(stamp) = value["destinations"][0]["last_verified_at"].as_i64().filter(|stamp| *stamp > since) {
+                        return stamp;
+                    }
+                    last = value;
+                }
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+        }).await;
+        result.unwrap_or_else(|_| panic!("fresh read not observed: {last}"))
+    }
+    let first = verified_after(&client, &watch, 0).await;
+    // A killed original process must be relaunched by the running dispatcher.
+    bridge.kill().await.unwrap();
+    let fresh = verified_after(&client, &watch, first).await;
+    assert!(fresh > first);
+    write_private(&root.join("proof.json"), b"{\"state\":\"PASS\",\"fresh_read_after_bridge_loss\":true}").unwrap();
+    cancel.cancel();
+    running.await.unwrap().unwrap();
+}
