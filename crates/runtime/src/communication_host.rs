@@ -791,6 +791,13 @@ impl Host {
             Some(if Self::has_codex_routes(&config) && config["expected_session_id"].is_string() {
                 Self::discover_codex_route(&config, &executor, &progress)?
             } else {
+                let resume_blocker = if config.get("codex_routes_file").is_some()
+                    && config["expected_session_id"].is_string()
+                {
+                    resume_blocker.or(Some("HOST_SESSION_NOT_LOADED"))
+                } else {
+                    resume_blocker
+                };
                 Codex::connect_recovery(&config, executor.clone(),progress.clone(),resume_blocker)?
             })
         } else {
