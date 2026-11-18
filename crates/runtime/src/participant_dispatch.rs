@@ -849,6 +849,7 @@ async fn run_owned(
             let age=value["observation_age_ms"].as_u64().unwrap_or(0).saturating_add(value["coordinator_age_ms"].as_u64().unwrap_or(0)).min(60000);
             let source_observed_at=observed_at.checked_sub(Duration::from_millis(age)).unwrap_or(observed_at);
             let mut obligations=Vec::new();
+            let mut recover_bridge = false;
             for (client, options) in watches.iter() {
                 let owner = crate::communication_notifications::owner(client, options);
                 if codex_target && matches!(value["reason"].as_str(),
@@ -861,6 +862,8 @@ async fn run_owned(
                     reverify.remove(&owner);
                 }
                 let delivery = notification_hub.store.status(&owner)?;
+                recover_bridge |= codex_target && value["reason"] == "BRIDGE_UNAVAILABLE"
+                    && matches!(delivery["state"].as_str(), Some("RUNNING" | "VERIFYING"));
                 if let Ok(HostReply::Status(summary))=client.host_operation(options,HostOperation::Summary).await{obligations.push(summary);}
                 if let Err(problem) = client
                     .host_operation(
@@ -873,6 +876,16 @@ async fn run_owned(
                     .await
                 {
                     scope_error(&status, options, &problem);
+                }
+            }
+            if recover_bridge && !cancel.is_cancelled() {
+                let adapter = config.adapter.clone();
+                let executor = handle.clone();
+                let recovery = tokio::task::spawn_blocking(move || {
+                    crate::communication_bridge::startup::recover(&adapter, &executor).map(|_| ())
+                }).await.unwrap_or(Err("BRIDGE_STARTUP_FAILED"));
+                if let Ok(mut current) = status.lock() {
+                    current["bridge_recovery_error"] = recovery.err().map_or(Value::Null, |code| json!(code));
                 }
             }
             if let Ok(mut current)=status.lock(){

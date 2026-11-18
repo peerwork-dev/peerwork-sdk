@@ -113,8 +113,15 @@ loaded, delivery reports `HOST_SESSION_NOT_LOADED` and keeps the inbox available
 Load the exact saved thread from the selected host. On Codex installations
 that support explicit remote resume, use
 `codex --remote <selected-endpoint> resume <original-thread-id>`.
-For `BRIDGE_UNAVAILABLE`, restore the already configured bridge first and check
-delivery again. That code conveys no information about the current thread owner.
+For `BRIDGE_UNAVAILABLE`, the runtime can relaunch the original same-user Codex
+bridge while automatic receiving is enabled. Run the original protected
+`peerwork bridge run` command once on this version to record its successful
+startup. Recovery uses that exact executable and configuration, is serialized
+with bridge startup, and retains the endpoint, thread and pending receipts.
+A normal bridge stop disables relaunch until the next explicit start.
+Cross-user bridges and bridges configured with an environment-supplied auth
+token use their existing host-side supervisor. The error conveys no
+information about the current thread owner.
 
 RPC/handshake diagnostics distinguish ownership, access/authentication,
 unsupported API, binding and temporary transport failures, retaining safe codes

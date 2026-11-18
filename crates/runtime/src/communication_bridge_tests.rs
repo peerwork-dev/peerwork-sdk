@@ -1146,6 +1146,54 @@ async fn bridge_restart_serves_persisted_receipts_while_original_host_is_offline
     assert_eq!(call(&restarted,"health",&json!({}),json!({})).await["health"]["ready"],false);
     stop.cancel();task.await.unwrap().unwrap();
 }
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires the current native CLI and an isolated loopback host"]
+async fn codex_bridge_process_recovers_original_endpoint_and_honors_normal_stop() {
+    use tokio::io::{AsyncBufReadExt, BufReader};
+
+    let binary = std::env::var_os("PEERWORK_TEST_BRIDGE_EXECUTABLE").unwrap();
+    let fixture = CodexFixture::start();
+    fixture.emit_events.store(false, Ordering::SeqCst);
+    let directory = crate::test_support::protected_test_dir();
+    let config = BridgeConfig {
+        format: "peerwork.host-bridge.v1".into(),
+        state_directory: directory.path().join("bridge"),
+        host: fixture.config(),
+        bindings: vec![grant()],
+    };
+    let path = directory.path().join("bridge.json");
+    write_private(&path, &serde_json::to_vec(&config).unwrap()).unwrap();
+    let mut bridge = tokio::process::Command::new(binary)
+        .args(["bridge", "run"]).arg(&path)
+        .stdout(std::process::Stdio::piped()).kill_on_drop(true).spawn().unwrap();
+    let mut lines = BufReader::new(bridge.stdout.take().unwrap()).lines();
+    let ready: BridgeReady = serde_json::from_str(&tokio::time::timeout(
+        Duration::from_secs(10), lines.next_line(),
+    ).await.unwrap().unwrap().unwrap()).unwrap();
+    wait_ready(&ready).await;
+    bridge.kill().await.unwrap();
+    let executor = tokio::runtime::Handle::current();
+    let adapter = ready.adapter.clone();
+    let mut recovered = tokio::task::spawn_blocking(move || startup::recover(&adapter, &executor))
+        .await.unwrap().unwrap().unwrap();
+    let health = wait_ready(&ready).await;
+    assert_eq!(health["destination"], ready.adapter["destination"]);
+    assert!(!fixture.calls().iter().any(|request| request["method"] == "thread/resume"));
+
+    // This PID is a child still owned by this test.
+    assert_eq!(unsafe { libc::kill(recovered.id().unwrap() as libc::pid_t, libc::SIGTERM) }, 0);
+    assert!(tokio::time::timeout(Duration::from_secs(10), recovered.wait())
+        .await.unwrap().unwrap().success());
+    let saved = SecureStateStore::open(&config.state_directory.join("bridge-startup.state")).unwrap();
+    let record: Value = serde_json::from_slice(&saved.read_exact().unwrap().unwrap()).unwrap();
+    assert_eq!(record["enabled"], false);
+    drop(saved);
+    let executor = tokio::runtime::Handle::current();
+    assert!(tokio::task::spawn_blocking(move || startup::recover(&ready.adapter, &executor))
+        .await.unwrap().unwrap().is_none());
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires a loopback bridge and synthetic Codex host"]
 async fn codex_bridge_restart_waits_for_the_pinned_thread_without_resuming_it() {

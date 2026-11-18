@@ -3,6 +3,8 @@
 pub(crate) use crate::communication_local_channel as channel;
 #[path = "communication_bridge_store.rs"]
 mod store;
+#[path = "communication_bridge_startup.rs"]
+pub(crate) mod startup;
 #[cfg(test)]
 #[path = "communication_bridge_tests.rs"]
 mod tests;
@@ -1180,11 +1182,26 @@ pub fn cli(args: &[String]) -> Value {
         let [verb, path] = args else {
             return Err("BRIDGE_ARGUMENT_INVALID");
         };
-        if verb != "run" {
+        let recovery = verb == "recover-original";
+        if verb != "run" && !recovery {
             return Err("BRIDGE_ARGUMENT_INVALID");
         }
-        let config = serde_json::from_value(private_json(Path::new(path), 65536)?)
+        let path = Path::new(path);
+        let value = private_json(path, 65536)?;
+        let digest = digest_value(&value);
+        let config: BridgeConfig = serde_json::from_value(value)
             .map_err(|_| "BRIDGE_CONFIG_INVALID")?;
+        let managed = config.host["kind"] == "codex" && config.host["auth_token_env"].is_null();
+        if recovery && !managed {
+            return Err("BRIDGE_STARTUP_NOT_CONFIGURED");
+        }
+        let mut startup = if managed {
+            create_private_state_directory(&config.state_directory)
+                .map_err(|_| "BRIDGE_STATE_NOT_PRIVATE")?;
+            Some(startup::Startup::open(&config, path, digest, recovery)?)
+        } else {
+            None
+        };
         let executor = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -1192,10 +1209,29 @@ pub fn cli(args: &[String]) -> Value {
         let cancel = KernelCancellationToken::new();
         let _interrupt = crate::interrupts::InterruptMonitor::start(cancel.clone())
             .map_err(|_| "SIGNAL_FAILED")?;
-        executor.block_on(async{let(tx,rx)=oneshot::channel();let service=serve(config,cancel,tx);tokio::pin!(service);tokio::pin!(rx);tokio::select!{
-            result=&mut service=>{result?;},
-            initialized=&mut rx=>{let value=initialized.map_err(|_|"BRIDGE_START_FAILED")??;println!("{}",serde_json::to_string(&value).map_err(|_|"BRIDGE_STATE_FAILED")?);service.await?;}
-        }Ok(json!({"state":"STOPPED"}))})
+        let result = executor.block_on(async {
+            let (tx, rx) = oneshot::channel();
+            let service = serve(config, cancel, tx);
+            tokio::pin!(service);
+            tokio::select! {
+                result = &mut service => result?,
+                initialized = rx => {
+                    let value = initialized.map_err(|_| "BRIDGE_START_FAILED")??;
+                    if let Some((state, record)) = &startup {
+                        record.ready(state)?;
+                    }
+                    println!("{}", serde_json::to_string(&value).map_err(|_| "BRIDGE_STATE_FAILED")?);
+                    service.await?;
+                }
+            }
+            Ok(json!({"state":"STOPPED"}))
+        });
+        if crate::interrupts::InterruptMonitor::interrupted() {
+            if let Some((state, record)) = &mut startup {
+                record.stop(state)?;
+            }
+        }
+        result
     };
     run().unwrap_or_else(|code| json!({"state":"FAILED","code":code}))
 }
