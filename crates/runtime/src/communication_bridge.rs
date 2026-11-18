@@ -689,7 +689,7 @@ struct ProviderRequest {
 // may synchronously reap children using the runtime handle.
 fn provider_loop(config:Value,executor:tokio::runtime::Handle,progress:crate::communication_host::operation::Budget,mut requests:mpsc::Receiver<ProviderRequest>,notice_fence:Arc<crate::notification_fence::Fence>)->R<()> {
     let mut host:Option<Host>=None;
-    let mut resume_allowed=true;
+    let mut resume_blocker=None;
     let mut pending_receipt:Option<(Value,Value)>=None;
     #[cfg(test)] let mut injected=false;
     while let Some(request)=requests.blocking_recv(){
@@ -702,9 +702,10 @@ fn provider_loop(config:Value,executor:tokio::runtime::Handle,progress:crate::co
             if host.is_none(){
                 let mut selected=config.clone();
                 if selected["kind"]=="codex" {if let Some(expected)=&request.destination{selected["expected_session_id"]=expected["session_id"].clone();}}
-                match Host::open_recovery(selected,executor.clone(),progress.clone(),resume_allowed) {
+                let blocker=resume_blocker.or_else(|| (selected["kind"]=="codex" && request.destination.is_some()).then_some("HOST_SESSION_NOT_LOADED"));
+                match Host::open_recovery(selected,executor.clone(),progress.clone(),blocker) {
                     Ok(opened)=>host=Some(opened),
-                    Err(code)=>{if code=="HOST_SESSION_OWNERSHIP_CONFLICT"{resume_allowed=false;}return if request.frame.is_some(){Ok((request.destination.clone().unwrap_or(Value::Null),json!({"state":"NOT_SENT","code":code,"proof":"BOUND_HOST_RECONCILIATION"})))}else{Err(code)}},
+                    Err(code)=>{if code=="HOST_SESSION_OWNERSHIP_CONFLICT"{resume_blocker=Some("HOST_SESSION_OWNERSHIP_CONFLICT");}return if request.frame.is_some(){Ok((request.destination.clone().unwrap_or(Value::Null),json!({"state":"NOT_SENT","code":code,"proof":"BOUND_HOST_RECONCILIATION"})))}else{Err(code)}},
                 }
             }
             let selected=host.as_mut().unwrap();
@@ -713,6 +714,7 @@ fn provider_loop(config:Value,executor:tokio::runtime::Handle,progress:crate::co
                 if actual.get("bridge_id").is_none(){if let Some(id)=expected.get("bridge_id"){actual["bridge_id"]=id.clone();}}
                 if &actual!=expected{return if request.frame.is_some(){Ok((expected.clone(),json!({"state":"NOT_SENT","code":"HOST_BINDING_MISMATCH","proof":"BOUND_HOST_RECONCILIATION"})))}else{Err("HOST_BINDING_MISMATCH")};}
                 selected.destination=actual;
+                selected.observe_codex_owner();
             }
             let result=if let Some(frame)=&request.frame {
                 if let Some(n)=request.binding.get("notification"){
@@ -753,7 +755,7 @@ fn provider_loop(config:Value,executor:tokio::runtime::Handle,progress:crate::co
                 let _=notice_fence.finish(owner,batch,attempt,&value);
             }
         }
-        if let Err(code)=&result{if *code=="HOST_SESSION_OWNERSHIP_CONFLICT"{resume_allowed=false;}progress.failure(code,None);if *code!="HOST_SESSION_OWNERSHIP_CONFLICT"{drop(host.take());}}
+        if let Err(code)=&result{if *code=="HOST_SESSION_OWNERSHIP_CONFLICT"{resume_blocker=Some("HOST_SESSION_OWNERSHIP_CONFLICT");}progress.failure(code,None);if *code!="HOST_SESSION_OWNERSHIP_CONFLICT"{drop(host.take());}}
         let _=request.reply.send(result);
     }
     drop(host);Ok(())

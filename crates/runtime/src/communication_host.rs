@@ -130,7 +130,7 @@ struct Codex {
     requests: BTreeSet<String>,
     session: String,
     budget: Budget,
-    resume_allowed: bool,
+    resume_blocker: Option<&'static str>,
 }
 impl Codex {
     fn channel(config: &Value, executor: tokio::runtime::Handle) -> R<Self> {
@@ -235,7 +235,7 @@ impl Codex {
             requests: BTreeSet::new(),
             session: String::new(),
             budget,
-            resume_allowed: true,
+            resume_blocker: None,
         };
         host.rpc("initialize",json!({"clientInfo":{"name":"peerwork_runtime","title":"Peerwork runtime","version":"1"},"capabilities":{"experimentalApi":true}}))?;
         host.socket.write(json!({"method":"initialized"}))?;
@@ -248,11 +248,11 @@ impl Codex {
     fn connect_budget(config:&Value,executor:tokio::runtime::Handle,budget:Budget)->R<Self>{
         text(config,"thread_id")?;
         let _operation=budget.scope("ATTACH");
-        Self::connect_recovery(config,executor,budget,true)
+        Self::connect_recovery(config,executor,budget,None)
     }
-    fn connect_recovery(config:&Value,executor:tokio::runtime::Handle,budget:Budget,resume_allowed:bool)->R<Self>{
+    fn connect_recovery(config:&Value,executor:tokio::runtime::Handle,budget:Budget,resume_blocker:Option<&'static str>)->R<Self>{
         let mut host = Self::channel_budget(config, executor,budget)?;
-        host.resume_allowed=resume_allowed;
+        host.resume_blocker=resume_blocker;
         let current = host.rpc(
             "thread/read",
             json!({"threadId":host.thread,"includeTurns":false}),
@@ -269,7 +269,7 @@ impl Codex {
         if current["thread"]["status"]["type"]=="notLoaded" {
             // A prior active-writer rejection allows observing this exact
             // owner's metadata, never repeatedly loading its stored rollout.
-            if !resume_allowed{return Ok(host);}
+            if resume_blocker.is_some(){return Ok(host);}
             host.resume_original()?;
         } else if !matches!(current["thread"]["status"]["type"].as_str(),Some("idle"|"active")) {
             return Err(if current["thread"]["status"]["type"]=="systemError"{"HOST_SESSION_ERROR"}else{"HOST_STATUS_UNSUPPORTED"});
@@ -330,7 +330,7 @@ impl Codex {
             if value["id"] == id {
                 if value.get("error").is_some() {
                     let code=crate::host_recovery_policy::rpc_error(&value["error"]);
-                    if code=="HOST_SESSION_OWNERSHIP_CONFLICT"{self.resume_allowed=false;}
+                    if code=="HOST_SESSION_OWNERSHIP_CONFLICT"{self.resume_blocker=Some("HOST_SESSION_OWNERSHIP_CONFLICT");}
                     self.budget.failure(code,value["error"]["code"].as_i64());
                     return Err(code);
                 }
@@ -339,7 +339,7 @@ impl Codex {
         }
     }
     fn resume_original(&mut self)->R<()> {
-        if !self.resume_allowed{return Err("HOST_SESSION_OWNERSHIP_CONFLICT");}
+        if let Some(code)=self.resume_blocker{return Err(code);}
         let restored=self.rpc("thread/resume",json!({"threadId":self.thread,"excludeTurns":true}))?;
         if restored["thread"]["id"]!=self.thread||restored["thread"]["sessionId"]!=self.session{return Err("HOST_BINDING_MISMATCH");}
         Ok(())
@@ -356,6 +356,12 @@ impl Codex {
             return Err("HOST_BINDING_MISMATCH");
         }
         if r["thread"]["status"]["type"]=="notLoaded" {
+            if self.resume_blocker==Some("HOST_SESSION_NOT_LOADED") {
+                self.requests.clear();
+                self.turn=None;
+                self.execution="UNKNOWN".into();
+                return Ok(json!({"ready":false,"execution_state":"UNKNOWN","reason":"HOST_SESSION_NOT_LOADED"}));
+            }
             self.resume_original()?;
             r=self.rpc("thread/read",json!({"threadId":self.thread,"includeTurns":false}))?;
             if r["thread"]["id"]!=self.thread||r["thread"]["sessionId"]!=self.session{return Err("HOST_BINDING_MISMATCH");}
@@ -616,9 +622,9 @@ impl Host {
         let mut config=self.config.clone();
         if config["kind"]=="codex" {config["expected_session_id"]=self.destination["session_id"].clone();}
         // Terminate the old byte transport before replacing it. The physical owner remains held.
-        let resume_allowed=self.codex.as_ref().is_none_or(|host|host.resume_allowed);
+        let resume_blocker=self.codex.as_ref().and_then(|host|host.resume_blocker);
         self.codex.take();
-        let mut next = Self::connect_recovery(config, self.executor.clone(),self.progress.clone(),resume_allowed)?;
+        let mut next = Self::connect_recovery(config, self.executor.clone(),self.progress.clone(),resume_blocker)?;
         let mut expected = self.destination.clone();
         let instance = if self.config["kind"] != "bridge" {
             expected.as_object_mut().and_then(|o| o.remove("bridge_id"))
@@ -635,23 +641,29 @@ impl Host {
         *self = next;
         Ok(())
     }
+    pub(crate) fn observe_codex_owner(&mut self) {
+        if let Some(codex) = &mut self.codex {
+            codex.resume_blocker.get_or_insert("HOST_SESSION_NOT_LOADED");
+        }
+    }
+
     pub fn open(config: Value, executor: tokio::runtime::Handle) -> R<Self> {
         Self::open_progress(config,executor,Budget::new(Duration::from_secs(10)))
     }
     pub(crate) fn open_progress(config:Value,executor:tokio::runtime::Handle,progress:Budget)->R<Self>{
-        Self::open_recovery(config,executor,progress,true)
+        Self::open_recovery(config,executor,progress,None)
     }
-    pub(crate) fn open_recovery(config:Value,executor:tokio::runtime::Handle,progress:Budget,resume_allowed:bool)->R<Self>{
+    pub(crate) fn open_recovery(config:Value,executor:tokio::runtime::Handle,progress:Budget,resume_blocker:Option<&'static str>)->R<Self>{
         let _operation=progress.scope("OPEN");
         let mut owner = crate::communication_host_owner::HostOwner::select(&config)?;
-        let mut host = Self::connect_recovery(config, executor,progress.clone(),resume_allowed).map_err(|code|{progress.failure(code,None);code})?;
+        let mut host = Self::connect_recovery(config, executor,progress.clone(),resume_blocker).map_err(|code|{progress.failure(code,None);code})?;
         if let Some(owner) = owner.as_mut() {
             owner.bind(&host.destination)?;
         }
         host.owner = owner;
         Ok(host)
     }
-    fn connect_recovery(config: Value, executor: tokio::runtime::Handle,progress:Budget,resume_allowed:bool) -> R<Self> {
+    fn connect_recovery(config: Value, executor: tokio::runtime::Handle,progress:Budget,resume_blocker:Option<&'static str>) -> R<Self> {
         let kind = text(&config, "kind")?;
         let (name, mode, destination) = match kind {
             "opencode" => ("OPENCODE_V2","LIVE",opencode::destination(&config)?),
@@ -707,7 +719,7 @@ impl Host {
         let name = name.to_owned();
         let mode = mode.to_owned();
         let codex = if kind == "codex" {
-            Some(Codex::connect_recovery(&config, executor.clone(),progress.clone(),resume_allowed)?)
+            Some(Codex::connect_recovery(&config, executor.clone(),progress.clone(),resume_blocker)?)
         } else {
             None
         };

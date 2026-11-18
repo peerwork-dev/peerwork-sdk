@@ -107,6 +107,15 @@ reset the SDK's resume suppression. No project Python launcher is required.
 Do not remove locks, kill the session or change sandbox/model settings to repair
 an unverified route.
 
+After a destination has been persisted, a restarted dispatcher or bridge checks
+the original Codex thread without requesting its writer. If the thread is not
+loaded, delivery reports `HOST_SESSION_NOT_LOADED` and keeps the inbox available.
+Load the exact saved thread from the selected host. On Codex installations
+that support explicit remote resume, use
+`codex --remote <selected-endpoint> resume <original-thread-id>`.
+For `BRIDGE_UNAVAILABLE`, restore the already configured bridge first and check
+delivery again. That code conveys no information about the current thread owner.
+
 RPC/handshake diagnostics distinguish ownership, access/authentication,
 unsupported API, binding and temporary transport failures, retaining safe codes
 and phases without exposing arbitrary host errors. Claude scope failures use the

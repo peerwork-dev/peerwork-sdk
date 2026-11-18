@@ -1146,6 +1146,47 @@ async fn bridge_restart_serves_persisted_receipts_while_original_host_is_offline
     assert_eq!(call(&restarted,"health",&json!({}),json!({})).await["health"]["ready"],false);
     stop.cancel();task.await.unwrap().unwrap();
 }
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires a loopback bridge and synthetic Codex host"]
+async fn codex_bridge_restart_waits_for_the_pinned_thread_without_resuming_it() {
+    let fixture = CodexFixture::start();
+    fixture.emit_events.store(false, Ordering::SeqCst);
+    let directory = crate::test_support::protected_test_dir();
+    let config = BridgeConfig {
+        format: "peerwork.host-bridge.v1".into(),
+        state_directory: directory.path().join("bridge"),
+        host: fixture.config(),
+        bindings: vec![grant()],
+    };
+    let (before, stop, task) = start(config.clone()).await;
+    wait_ready(&before).await;
+    stop.cancel();
+    task.await.unwrap().unwrap();
+
+    *fixture.status_override.lock().unwrap() = Some("notLoaded".into());
+    let (after, stop, task) = start(config).await;
+    assert_eq!(before.adapter, after.adapter);
+    tokio::time::timeout(Duration::from_secs(8), async {
+        loop {
+            let health = call(&after, "health", &json!({}), json!({})).await;
+            if health["health"]["reason"] == "HOST_SESSION_NOT_LOADED" {
+                assert_eq!(health["health"]["ready"], false);
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }).await.unwrap();
+
+    *fixture.status_override.lock().unwrap() = None;
+    wait_ready(&after).await;
+    assert!(!fixture.calls().iter().any(|request| matches!(
+        request["method"].as_str(),
+        Some("thread/resume" | "thread/start" | "turn/start" | "turn/steer")
+    )));
+    stop.cancel();
+    task.await.unwrap().unwrap();
+}
+
 #[tokio::test(flavor="multi_thread",worker_threads=2)]
 #[ignore="requires loopback bridge and synthetic host"]
 async fn bridge_aggregate_budget_blocks_stalled_preflight_without_late_input(){

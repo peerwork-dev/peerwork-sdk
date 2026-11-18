@@ -617,7 +617,10 @@ async fn run_owned(
     let mut next = 0usize;
     let mut next_health = std::time::Instant::now();
     let mut open_attempts=0u32;
-    let mut resume_allowed=true;
+    let codex_target = config.adapter["kind"] == "codex"
+        || config.adapter["destination"]["host"] == "CODEX_APP_SERVER";
+    let mut reverify = std::collections::BTreeSet::new();
+    let mut resume_blocker=None;
     let mut current_binding:Option<HostBinding>=None;
     let mut control:Option<crate::communication_host::RetirementControl>=None;
     let mut next_retire = std::time::Instant::now();
@@ -665,18 +668,19 @@ async fn run_owned(
                     let binding:HostBinding=serde_json::from_slice(&saved).map_err(|_|error("HOST_STATE_INVALID"))?;
                     if HostBinding::new(binding.destination.clone())?!=binding{return Err(error("HOST_STATE_INVALID"));}
                     options["expected_session_id"]=binding.destination["session_id"].clone();
+                    if resume_blocker.is_none(){resume_blocker=Some("HOST_SESSION_NOT_LOADED");}
                 }
             }
             let executor = handle.clone();
             let operation_progress=progress.clone();
-            let opened = tokio::task::spawn_blocking(move || Host::open_recovery(options, executor,operation_progress,resume_allowed))
+            let opened = tokio::task::spawn_blocking(move || Host::open_recovery(options, executor,operation_progress,resume_blocker))
                 .await
                 .map_err(|_| error("HOST_TASK_FAILED"))?;
-            let host = match opened {
+            let mut host = match opened {
                 Ok(host) => host,
                 Err(code) => {
                     open_attempts=open_attempts.saturating_add(1);
-                    if code=="HOST_SESSION_OWNERSHIP_CONFLICT"&&resume_allowed{resume_allowed=false;continue;}
+                    if code=="HOST_SESSION_OWNERSHIP_CONFLICT"&&resume_blocker.is_none(){resume_blocker=Some("HOST_SESSION_OWNERSHIP_CONFLICT");continue;}
                     let policy=crate::host_recovery_policy::diagnostic(code);
                     let delay=crate::host_recovery_policy::delay(code,open_attempts,&launch_fence.to_string_lossy());
                     set(&status,json!({"state":"BLOCKED","code":code,"recovery":policy,"restart_attempt":open_attempts,"retry_after_ms":delay.as_millis() as u64,"model_response":"NOT_ATTESTED"}));
@@ -685,6 +689,7 @@ async fn run_owned(
                 }
             };
             open_attempts=0;
+            host.observe_codex_owner();
             let destination = host.destination.clone();
             control=Some(host.retirement_control());
             *adapter = Some(Arc::new(Mutex::new(host)));
@@ -845,7 +850,17 @@ async fn run_owned(
             let source_observed_at=observed_at.checked_sub(Duration::from_millis(age)).unwrap_or(observed_at);
             let mut obligations=Vec::new();
             for (client, options) in watches.iter() {
-                let delivery=notification_hub.store.status(&crate::communication_notifications::owner(client,options))?;
+                let owner = crate::communication_notifications::owner(client, options);
+                if codex_target && matches!(value["reason"].as_str(),
+                    Some("HOST_SESSION_NOT_LOADED" | "HOST_SESSION_OWNERSHIP_CONFLICT" | "BRIDGE_UNAVAILABLE"))
+                {
+                    reverify.insert(owner.clone());
+                } else if value["ready"] == true && reverify.contains(&owner)
+                    && notification_hub.store.reverify_after_recovery(&owner)?
+                {
+                    reverify.remove(&owner);
+                }
+                let delivery = notification_hub.store.status(&owner)?;
                 if let Ok(HostReply::Status(summary))=client.host_operation(options,HostOperation::Summary).await{obligations.push(summary);}
                 if let Err(problem) = client
                     .host_operation(
@@ -876,8 +891,8 @@ async fn run_owned(
                 }
             }
             next_health = std::time::Instant::now() + Duration::from_secs(3);
-            if observed.as_ref().err()==Some(&"HOST_SESSION_OWNERSHIP_CONFLICT"){resume_allowed=false;}
-            if observed.is_err() && observed.as_ref().err()!=Some(&"HOST_SESSION_OWNERSHIP_CONFLICT") {
+            if observed.as_ref().err()==Some(&"HOST_SESSION_OWNERSHIP_CONFLICT"){resume_blocker=Some("HOST_SESSION_OWNERSHIP_CONFLICT");}
+            if observed.is_err() && !matches!(observed.as_ref().err(),Some(&("HOST_SESSION_OWNERSHIP_CONFLICT"|"BRIDGE_UNAVAILABLE"))) {
                 close_adapter(adapter).await?;
                 continue;
             }

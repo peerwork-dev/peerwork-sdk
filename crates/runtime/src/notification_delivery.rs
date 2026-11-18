@@ -270,6 +270,25 @@ impl Store {
             Ok(status(s))
         })
     }
+    /// Request a fresh read after reconnect without replacing an in-flight
+    /// notification or changing a user's pause intent. False means defer.
+    pub(crate) fn reverify_after_recovery(&self, owner: &str) -> Result<bool> {
+        self.transaction(owner, |s| {
+            if s.mode != "RUNNING" || s.probe {
+                return Ok(true);
+            }
+            if s.active.is_some() {
+                return Ok(false);
+            }
+            s.revision = s.revision.checked_add(1)
+                .ok_or_else(|| error("NOTIFICATION_REVISION_EXHAUSTED"))?;
+            s.mode = "VERIFYING".into();
+            s.probe = true;
+            s.probe_resumes = true;
+            Ok(true)
+        })
+    }
+
     pub fn due(&self, owner: &str, heads: &[SourceHead], now: i64) -> Result<Option<Wake>> {
         self.due_checked(owner,heads,now,None)
     }
@@ -532,6 +551,28 @@ mod tests {
         assert_eq!(next.ranges[0].through, 634);
         assert!(!next.ranges[0].backlog);
     }
+    #[test]
+    fn host_recovery_reverifies_once_and_preserves_pending_and_pause() {
+        let f = Fixture::new();
+        let s = f.open();
+        ready(&s, "owner", &head(1));
+        let pending = s.due("owner", &head(1), 0).unwrap().unwrap();
+        assert!(!s.reverify_after_recovery("owner").unwrap());
+        assert_eq!(s.current("owner").unwrap().unwrap().batch, pending.batch);
+        s.observed("owner", &pending.batch).unwrap();
+
+        assert!(s.reverify_after_recovery("owner").unwrap());
+        let revision = s.status("owner").unwrap()["revision"].clone();
+        assert!(s.reverify_after_recovery("owner").unwrap());
+        assert_eq!(s.status("owner").unwrap()["revision"], revision);
+        let test = s.due("owner", &head(1), 0).unwrap().unwrap();
+        assert!(test.self_test);
+        s.control("owner", "pause").unwrap();
+        assert!(s.reverify_after_recovery("owner").unwrap());
+        assert_eq!(s.status("owner").unwrap()["state"], "PAUSED");
+        assert!(s.due("owner", &head(2), 0).unwrap().is_none());
+    }
+
     #[test]
     fn late_observation_cannot_unpause_and_other_owner_is_independent() {
         let f = Fixture::new();

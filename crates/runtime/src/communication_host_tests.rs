@@ -824,15 +824,36 @@ fn codex_writer_conflict_retains_session_and_stops_repeated_resume() {
     assert_eq!(fixture.calls().iter().filter(|c|c["method"]=="thread/resume").count(),1);
     let diagnostic=host.progress.snapshot();assert_eq!(diagnostic["failure_phase"],"SESSION_READ");assert!(!diagnostic.to_string().contains("SECRET_SENTINEL"));
     drop(host);
-    let mut observer=Host::open_recovery(fixture.config(),runtime.handle().clone(),Budget::new(Duration::from_secs(10)),false).unwrap();
+    let mut observer=Host::open_recovery(fixture.config(),runtime.handle().clone(),Budget::new(Duration::from_secs(10)),Some("HOST_SESSION_OWNERSHIP_CONFLICT")).unwrap();
     assert_eq!(observer.health(&json!({})).unwrap_err(),"HOST_SESSION_OWNERSHIP_CONFLICT");
     assert_eq!(fixture.calls().iter().filter(|c|c["method"]=="thread/resume").count(),1);
     drop(observer);
     *fixture.status_override.lock().unwrap()=None;*fixture.rpc_error.lock().unwrap()=None;
-    let mut recovered=Host::open_recovery(fixture.config(),runtime.handle().clone(),Budget::new(Duration::from_secs(10)),false).unwrap();
+    let mut recovered=Host::open_recovery(fixture.config(),runtime.handle().clone(),Budget::new(Duration::from_secs(10)),Some("HOST_SESSION_OWNERSHIP_CONFLICT")).unwrap();
     assert_eq!(recovered.destination,destination);assert_eq!(recovered.health(&json!({})).unwrap()["ready"],true);
     assert!(!fixture.calls().iter().any(|c|matches!(c["method"].as_str(),Some("turn/start"|"turn/steer"|"thread/start"|"turn/interrupt"))));
 }
+#[test]
+fn codex_recovery_of_pinned_thread_observes_until_the_host_loads_it() {
+    let fixture = CodexFixture::start();
+    fixture.emit_events.store(false, Ordering::SeqCst);
+    *fixture.status_override.lock().unwrap() = Some("notLoaded".into());
+    let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build().unwrap();
+    let mut host = Host::open_recovery(
+        fixture.config(),
+        runtime.handle().clone(),
+        Budget::new(Duration::from_secs(10)),
+        Some("HOST_SESSION_NOT_LOADED"),
+    ).unwrap();
+    assert_eq!(host.health(&json!({})).unwrap()["reason"], "HOST_SESSION_NOT_LOADED");
+    *fixture.status_override.lock().unwrap() = None;
+    assert_eq!(host.health(&json!({})).unwrap()["ready"], true);
+    assert!(!fixture.calls().iter().any(|c| matches!(
+        c["method"].as_str(),
+        Some("thread/resume" | "thread/start" | "turn/start" | "turn/steer")
+    )));
+}
+
 #[test]
 fn codex_unsupported_metadata_api_is_diagnosed_without_input() {
     let fixture=CodexFixture::start();fixture.emit_events.store(false,Ordering::SeqCst);
