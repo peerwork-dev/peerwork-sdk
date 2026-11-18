@@ -110,9 +110,16 @@ an unverified route.
 After a destination has been persisted, a restarted dispatcher or bridge checks
 the original Codex thread without requesting its writer. If the thread is not
 loaded, delivery reports `HOST_SESSION_NOT_LOADED` and keeps the inbox available.
-Load the exact saved thread from the selected host. On Codex installations
-that support explicit remote resume, use
-`codex --remote <selected-endpoint> resume <original-thread-id>`.
+
+A protected Codex host configuration can opt in to route discovery by listing
+one to four additional Unix control endpoints in `codex_routes` and pinning
+`expected_session_id`. Start or resume the thread using that Codex installation's
+normal interface. Peerwork discovers the exact original thread and session
+among the configured endpoints when attaching or recovering. The original
+destination digest and inbox stay fixed. An ambiguous route blocks attachment.
+Select only endpoints controlled by the original host user. A session without
+a supported control endpoint keeps inbox access while automatic wake is unavailable.
+
 For `BRIDGE_UNAVAILABLE`, the runtime can relaunch the original same-user Codex
 bridge while automatic receiving is enabled. Run the original protected
 `peerwork bridge run` command once on this version to record its successful
@@ -198,7 +205,7 @@ credentials. An old observation becomes UNKNOWN; it cannot prove current health.
 | --- | --- |
 | Receiver custody | The local durable inbox has the message; host delivery may still be pending. |
 | HOST_ACCEPTED | The selected host acknowledged input; model processing/completion is not attested. |
-| HOST_SESSION_NOT_LOADED | The exact saved Codex session is unloaded. The adapter uses supported `thread/resume` after checking the original thread/session pins. Loaded sessions are not resumed unnecessarily. |
+| HOST_SESSION_NOT_LOADED | The exact saved Codex session is unloaded. Start or resume the original thread through its host. Recovery observes the selected host and any configured alternatives without claiming the thread writer. |
 | HOST_SESSION_ERROR / HOST_STATUS_UNSUPPORTED | The host reports a distinct session condition. Inspect the original host; successful reconnect does not claim to repair every system error. |
 | Approval wait / busy turn | Respect the host's approval and input policy. Do not launch a replacement conversation. |
 | HOST_PREFLIGHT_DEADLINE / HOST_LOCK_TIMEOUT | This attempt did not hand input to the host. The original work can be retried under its original identity and scope. |

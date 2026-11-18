@@ -641,6 +641,53 @@ impl Host {
         *self = next;
         Ok(())
     }
+    // The persisted destination keeps the original endpoint as an identity
+    // anchor. Only the live transport moves, so inbox and bridge fences keep
+    // the same destination digest across host changes.
+    fn discover_codex_route(
+        config: &Value,
+        executor: &tokio::runtime::Handle,
+        budget: &Budget,
+    ) -> R<Codex> {
+        let alternatives = config["codex_routes"].as_array().ok_or("HOST_CONFIG_INVALID")?;
+        let expected_session = text(config, "expected_session_id")?;
+        let primary = text(config, "endpoint")?;
+        if alternatives.is_empty() || alternatives.len() > 4 {
+            return Err("HOST_CONFIG_INVALID");
+        }
+        let mut seen = BTreeSet::from([primary]);
+        let mut candidates = vec![config.clone()];
+        for value in alternatives {
+            let endpoint = value.as_str().ok_or("HOST_ENDPOINT_INVALID")?;
+            let path = endpoint.strip_prefix("unix://").ok_or("HOST_ENDPOINT_INVALID")?;
+            if !Path::new(path).is_absolute() || path.contains(['?', '#']) || !seen.insert(endpoint) {
+                return Err("HOST_ENDPOINT_INVALID");
+            }
+            // Do not forward options or credentials belonging to another
+            // endpoint. A listed Unix socket has its own OS access control.
+            candidates.push(json!({"kind":"codex","endpoint":endpoint,
+                "thread_id":config["thread_id"],"expected_session_id":expected_session}));
+        }
+        let mut selected = None;
+        for candidate in candidates {
+            if budget.remaining().is_err() {
+                return Err("HOST_OPERATION_TIMEOUT");
+            }
+            if let Ok(mut host) = Codex::connect_recovery(
+                &candidate, executor.clone(), budget.clone(), Some("HOST_SESSION_NOT_LOADED"),
+            ) {
+                let health = host.health()?;
+                if health["reason"] == "HOST_SESSION_NOT_LOADED" {
+                    continue;
+                }
+                if selected.replace(host).is_some() {
+                    return Err("CODEX_ROUTE_AMBIGUOUS");
+                }
+            }
+        }
+        selected.ok_or("HOST_SESSION_NOT_LOADED")
+    }
+
     pub(crate) fn observe_codex_owner(&mut self) {
         if let Some(codex) = &mut self.codex {
             codex.resume_blocker.get_or_insert("HOST_SESSION_NOT_LOADED");
@@ -719,7 +766,11 @@ impl Host {
         let name = name.to_owned();
         let mode = mode.to_owned();
         let codex = if kind == "codex" {
-            Some(Codex::connect_recovery(&config, executor.clone(),progress.clone(),resume_blocker)?)
+            Some(if config.get("codex_routes").is_some() {
+                Self::discover_codex_route(&config, &executor, &progress)?
+            } else {
+                Codex::connect_recovery(&config, executor.clone(),progress.clone(),resume_blocker)?
+            })
         } else {
             None
         };
@@ -872,7 +923,16 @@ impl Host {
             return host.health();
         }
         if let Some(host) = &mut self.codex {
-            return host.health();
+            let observed = host.health();
+            if self.config.get("codex_routes").is_some() && match &observed {
+                Ok(health) => health["reason"] == "HOST_SESSION_NOT_LOADED",
+                Err(_) => true,
+            } {
+                self.codex.take();
+                self.reconnect()?;
+                return self.codex.as_mut().ok_or("HOST_NOT_READY")?.health();
+            }
+            return observed;
         }
         if self.config["kind"] == "bridge" {
             return Ok(self.bridge("health", binding, json!({}))?["health"].clone());

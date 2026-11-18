@@ -833,6 +833,36 @@ fn codex_writer_conflict_retains_session_and_stops_repeated_resume() {
     assert_eq!(recovered.destination,destination);assert_eq!(recovered.health(&json!({})).unwrap()["ready"],true);
     assert!(!fixture.calls().iter().any(|c|matches!(c["method"].as_str(),Some("turn/start"|"turn/steer"|"thread/start"|"turn/interrupt"))));
 }
+#[cfg(unix)]
+#[test]
+fn codex_route_follows_original_session_without_changing_destination() {
+    let directory = crate::test_support::protected_test_dir();
+    let primary = CodexFixture::start();
+    let alternate = CodexFixture::start_unix(&directory.path().join("alternate.sock"));
+    primary.emit_events.store(false, Ordering::SeqCst);
+    alternate.emit_events.store(false, Ordering::SeqCst);
+    let mut config = primary.config();
+    config["codex_routes"] = json!([alternate.config()["endpoint"]]);
+    *alternate.actual_session.lock().unwrap() = config["expected_session_id"].as_str().unwrap().into();
+    *alternate.status_override.lock().unwrap() = Some("notLoaded".into());
+
+    let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build().unwrap();
+    let mut host = Host::open(config, runtime.handle().clone()).unwrap();
+    let destination = host.destination.clone();
+    for (previous, current) in [(&primary, &alternate), (&alternate, &primary)] {
+        *previous.status_override.lock().unwrap() = Some("notLoaded".into());
+        *current.status_override.lock().unwrap() = None;
+        assert_eq!(host.health(&json!({})).unwrap()["ready"], true);
+        assert_eq!(host.destination, destination);
+        assert_eq!(host.deliver(&json!({}), &json!({"rendered_text":"isolated route probe"})).unwrap()["state"], "HOST_ACCEPTED");
+    }
+    for fixture in [&primary, &alternate] {
+        let calls = fixture.calls();
+        assert_eq!(calls.iter().filter(|request| request["method"] == "turn/start").count(), 1);
+        assert!(!calls.iter().any(|request| request["method"] == "thread/resume"));
+    }
+}
+
 #[test]
 fn codex_recovery_of_pinned_thread_observes_until_the_host_loads_it() {
     let fixture = CodexFixture::start();

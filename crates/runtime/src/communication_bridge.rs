@@ -163,6 +163,7 @@ impl BridgeConfig {
                 "codex_home",
                 "codex_uid",
                 "control_socket",
+                "codex_routes",
             ],
             Some("agy-app") => &[
                 "kind",
