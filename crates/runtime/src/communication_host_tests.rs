@@ -842,13 +842,15 @@ fn codex_route_follows_original_session_without_changing_destination() {
     primary.emit_events.store(false, Ordering::SeqCst);
     alternate.emit_events.store(false, Ordering::SeqCst);
     let mut config = primary.config();
-    config["codex_routes"] = json!([alternate.config()["endpoint"]]);
+    let routes = directory.path().join("codex-routes.json");
+    config["codex_routes_file"] = json!(routes);
     *alternate.actual_session.lock().unwrap() = config["expected_session_id"].as_str().unwrap().into();
     *alternate.status_override.lock().unwrap() = Some("notLoaded".into());
 
     let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build().unwrap();
     let mut host = Host::open(config, runtime.handle().clone()).unwrap();
     let destination = host.destination.clone();
+    write_private(&routes, json!([alternate.config()["endpoint"]]).to_string().as_bytes()).unwrap();
     for (previous, current) in [(&primary, &alternate), (&alternate, &primary)] {
         *previous.status_override.lock().unwrap() = Some("notLoaded".into());
         *current.status_override.lock().unwrap() = None;

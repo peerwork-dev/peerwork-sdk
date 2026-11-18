@@ -123,6 +123,7 @@ impl Socket {
 }
 struct Codex {
     socket: Socket,
+    endpoint: String,
     thread: String,
     next: u64,
     turn: Option<String>,
@@ -228,6 +229,7 @@ impl Codex {
         }
         let mut host = Self {
             socket,
+            endpoint: endpoint.into(),
             thread: config["thread_id"].as_str().unwrap_or_default().into(),
             next: 1,
             turn: None,
@@ -649,10 +651,14 @@ impl Host {
         executor: &tokio::runtime::Handle,
         budget: &Budget,
     ) -> R<Codex> {
-        let alternatives = config["codex_routes"].as_array().ok_or("HOST_CONFIG_INVALID")?;
+        let registered = config["codex_routes_file"].as_str()
+            .map(|path| crate::communication_store::private_json(Path::new(path), 4096))
+            .transpose()?;
+        let alternatives = registered.as_ref().unwrap_or(&config["codex_routes"])
+            .as_array().ok_or("HOST_CONFIG_INVALID")?;
         let expected_session = text(config, "expected_session_id")?;
         let primary = text(config, "endpoint")?;
-        if alternatives.is_empty() || alternatives.len() > 4 {
+        if alternatives.len() > 4 {
             return Err("HOST_CONFIG_INVALID");
         }
         let mut seen = BTreeSet::from([primary]);
@@ -686,6 +692,22 @@ impl Host {
             }
         }
         selected.ok_or("HOST_SESSION_NOT_LOADED")
+    }
+
+    fn codex_route_allowed(config: &Value, endpoint: &str) -> R<bool> {
+        if config["endpoint"] == endpoint {
+            return Ok(true);
+        }
+        let registered = config["codex_routes_file"].as_str()
+            .map(|path| crate::communication_store::private_json(Path::new(path), 4096))
+            .transpose()?;
+        Ok(registered.as_ref().unwrap_or(&config["codex_routes"]).as_array()
+            .is_some_and(|routes| routes.iter().any(|route| route == endpoint)))
+    }
+
+    fn has_codex_routes(config: &Value) -> bool {
+        config.get("codex_routes").is_some()
+            || config["codex_routes_file"].as_str().is_some_and(|path| Path::new(path).exists())
     }
 
     pub(crate) fn observe_codex_owner(&mut self) {
@@ -766,7 +788,7 @@ impl Host {
         let name = name.to_owned();
         let mode = mode.to_owned();
         let codex = if kind == "codex" {
-            Some(if config.get("codex_routes").is_some() {
+            Some(if Self::has_codex_routes(&config) && config["expected_session_id"].is_string() {
                 Self::discover_codex_route(&config, &executor, &progress)?
             } else {
                 Codex::connect_recovery(&config, executor.clone(),progress.clone(),resume_blocker)?
@@ -922,9 +944,14 @@ impl Host {
         if let Some(host) = &mut self.agy_stdio {
             return host.health();
         }
+        if self.codex.as_ref().is_some_and(|host|
+            !Self::codex_route_allowed(&self.config, &host.endpoint).unwrap_or(false)
+        ) {
+            self.reconnect()?;
+        }
         if let Some(host) = &mut self.codex {
             let observed = host.health();
-            if self.config.get("codex_routes").is_some() && match &observed {
+            if Self::has_codex_routes(&self.config) && match &observed {
                 Ok(health) => health["reason"] == "HOST_SESSION_NOT_LOADED",
                 Err(_) => true,
             } {
@@ -970,6 +997,9 @@ impl Host {
             return host.deliver(message);
         }
         if let Some(host) = &mut self.codex {
+            if !Self::codex_route_allowed(&self.config, &host.endpoint)? {
+                return Err("HOST_NOT_READY");
+            }
             return host.deliver(message);
         }
         if self.config["kind"] == "bridge" {

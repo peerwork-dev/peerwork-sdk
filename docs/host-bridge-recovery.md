@@ -120,6 +120,13 @@ destination digest and inbox stay fixed. An ambiguous route blocks attachment.
 Select only endpoints controlled by the original host user. A session without
 a supported control endpoint keeps inbox access while automatic wake is unavailable.
 
+For a running Codex Bridge, the local host integration can update the allowlist
+with `peerwork bridge codex-routes CONFIG.json unix://SOCKET`. The command
+replaces the additional endpoints in the original Bridge's protected state.
+It accepts up to four endpoints. Use the command without endpoints to clear the
+list. It leaves the startup configuration, original destination, credentials
+and inbox intact.
+
 For `BRIDGE_UNAVAILABLE`, the runtime can relaunch the original same-user Codex
 bridge while automatic receiving is enabled. Run the original protected
 `peerwork bridge run` command once on this version to record its successful

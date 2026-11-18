@@ -831,6 +831,9 @@ async fn serve_limit(mut config:BridgeConfig,cancel:KernelCancellationToken,read
     let progress=crate::communication_host::operation::Budget::new(operation_limit);
     let provider_progress=progress.clone();let provider_executor=executor.clone();
     let mut provider_config=config.host.clone();
+    if config.host["kind"] == "codex" && config.host.get("codex_routes").is_none() {
+        provider_config["codex_routes_file"] = json!(config.state_directory.join("codex-routes.json"));
+    }
     if provider_config["kind"]=="agy-stdio"{provider_config["launch_fence"]=json!(config.state_directory.join("agy-stdio-launch.state"));}
     let (provider_tx,provider_rx)=mpsc::channel(1);
     let notice_fence=crate::notification_fence::Fence::open(&config.state_directory)?;
@@ -1162,12 +1165,38 @@ async fn serve_limit(mut config:BridgeConfig,cancel:KernelCancellationToken,read
     if let Some(code)=listener_error{return Err(code);}Ok(())
 }
 
+fn write_codex_routes(mut config: BridgeConfig, routes: &[String]) -> R<Value> {
+    config.validate()?;
+    if config.host["kind"] != "codex" || config.host.get("codex_routes").is_some() {
+        return Err("CODEX_ROUTE_REGISTRATION_UNAVAILABLE");
+    }
+    let mut unique = std::collections::BTreeSet::new();
+    if routes.len() > 4 || routes.iter().any(|route| {
+        !route.strip_prefix("unix://").is_some_and(|path| {
+            Path::new(path).is_absolute() && !path.contains(['?', '#'])
+        }) || config.host["endpoint"] == *route || !unique.insert(route)
+    }) {
+        return Err("HOST_ENDPOINT_INVALID");
+    }
+    crate::secure_state::check_private_directory(&config.state_directory)
+        .map_err(|_| "BRIDGE_STATE_NOT_PRIVATE")?;
+    replace_descriptor(&config.state_directory.join("codex-routes.json"), &json!(routes))?;
+    Ok(json!({"state":"CODEX_ROUTES_REGISTERED","additional_routes":routes.len()}))
+}
+
 pub fn cli(args: &[String]) -> Value {
     let run = || -> R<Value> {
         if args.is_empty() || args == ["--help"] {
             return Ok(
-                json!({"state":"HELP","maturity":"EXPERIMENTAL","runtime_dependencies":[],"usage":"peerwork bridge run CONFIG.json | set-grants CONFIG.json EXPECTED_REVISION","scope":"Explicit existing host and identity/space/mailbox grants; no permission responses or new Agent."}),
+                json!({"state":"HELP","maturity":"EXPERIMENTAL","runtime_dependencies":[],"usage":"peerwork bridge run CONFIG.json | codex-routes CONFIG.json [unix://SOCKET ...] | set-grants CONFIG.json EXPECTED_REVISION","scope":"Explicit existing host and identity/space/mailbox grants; no permission responses or new Agent."}),
             );
+        }
+        if let [verb, path, routes @ ..] = args {
+            if verb == "codex-routes" {
+                let config: BridgeConfig = serde_json::from_value(private_json(Path::new(path), 65536)?)
+                    .map_err(|_| "BRIDGE_CONFIG_INVALID")?;
+                return write_codex_routes(config, routes);
+            }
         }
         if let [verb, path, revision] = args {
             if verb != "set-grants" {
