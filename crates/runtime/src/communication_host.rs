@@ -536,6 +536,11 @@ pub(crate) fn sanitized_health(value:&Value)->Value {
         let v=&value[key];
         if v.is_boolean()||v.is_number()||v.as_str().is_some_and(|s|s.len()<=96&&s.bytes().all(|b|b.is_ascii_uppercase()||b.is_ascii_digit()||b==b'_')) {out[key]=v.clone();}
     }
+    if let Some(route) = value["route_fingerprint"].as_str()
+        .filter(|value| value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
+    {
+        out["route_fingerprint"] = json!(route);
+    }
     let mut diagnostic=json!({});
     for key in ["phase","failure_phase","inflight","elapsed_ms","budget_ms","remaining_ms","last_error_code","original_error_code","rpc_error_code","last_success_at","last_failure_code","last_failure_phase","last_failure_at","observed_at"] {
         let v=&value["diagnostic"][key];
@@ -958,7 +963,16 @@ impl Host {
     }
     pub fn health(&mut self,binding:&Value)->R<Value>{
         let _operation=self.progress.scope("HEALTH");
-        let result=self.health_inner(binding);
+        let result = self.health_inner(binding).map(|mut value| {
+            if let Some(codex) = &self.codex {
+                if value["reason"] != "HOST_SESSION_NOT_LOADED" {
+                    value["route_fingerprint"] = json!(peerwork_core::crypto::sha256_hex(
+                        codex.endpoint.as_bytes(),
+                    ));
+                }
+            }
+            value
+        });
         if let Err(code)=&result {self.progress.failure(code,None);}
         result
     }

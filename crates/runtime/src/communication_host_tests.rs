@@ -132,12 +132,17 @@ fn codex_pinned_installation_recovers_to_the_normal_daemon_without_enrollment() 
     let mut host = Host::open(config, runtime.handle().clone()).unwrap();
     host.observe_codex_owner();
     let anchor = host.destination.clone();
+    let original_route = host.health(&json!({})).unwrap()["route_fingerprint"].clone();
+    assert!(original_route.is_string());
 
     let normal = CodexFixture::start_unix(&control.join("app-server-control.sock"));
     normal.emit_events.store(false, Ordering::SeqCst);
     *normal.actual_session.lock().unwrap() = original.session.clone();
     *original.status_override.lock().unwrap() = Some("notLoaded".into());
-    assert_eq!(host.health(&json!({})).unwrap()["ready"], true);
+    let restored = host.health(&json!({})).unwrap();
+    assert_eq!(restored["ready"], true);
+    assert!(restored["route_fingerprint"].is_string());
+    assert_ne!(restored["route_fingerprint"], original_route);
     assert_eq!(host.destination, anchor);
     let outcome = host.deliver(&json!({}), &json!({"rendered_text":"isolated probe"})).unwrap();
     assert_eq!(outcome["state"], "HOST_ACCEPTED");

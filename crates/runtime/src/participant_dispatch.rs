@@ -621,6 +621,7 @@ async fn run_owned(
     let codex_target = config.adapter["kind"] == "codex"
         || config.adapter["destination"]["host"] == "CODEX_APP_SERVER";
     let mut reverify = std::collections::BTreeSet::new();
+    let mut last_route: Option<String> = None;
     let mut resume_blocker=None;
     let mut current_binding:Option<HostBinding>=None;
     let mut control:Option<crate::communication_host::RetirementControl>=None;
@@ -849,15 +850,23 @@ async fn run_owned(
             }
             let age=value["observation_age_ms"].as_u64().unwrap_or(0).saturating_add(value["coordinator_age_ms"].as_u64().unwrap_or(0)).min(60000);
             let source_observed_at=observed_at.checked_sub(Duration::from_millis(age)).unwrap_or(observed_at);
+            let route_changed = value["route_fingerprint"].as_str().is_some_and(|route| {
+                let changed = last_route.as_deref().is_some_and(|previous| previous != route);
+                if changed || last_route.is_none() {
+                    last_route = Some(route.to_owned());
+                }
+                changed
+            });
             let mut obligations=Vec::new();
             let mut recover_bridge = false;
             for (client, options) in watches.iter() {
                 let owner = crate::communication_notifications::owner(client, options);
-                if codex_target && matches!(value["reason"].as_str(),
-                    Some("HOST_SESSION_NOT_LOADED" | "HOST_SESSION_OWNERSHIP_CONFLICT" | "BRIDGE_UNAVAILABLE"))
+                if codex_target && (route_changed || matches!(value["reason"].as_str(),
+                    Some("HOST_SESSION_NOT_LOADED" | "HOST_SESSION_OWNERSHIP_CONFLICT" | "BRIDGE_UNAVAILABLE")))
                 {
                     reverify.insert(owner.clone());
-                } else if value["ready"] == true && reverify.contains(&owner)
+                }
+                if value["ready"] == true && reverify.contains(&owner)
                     && notification_hub.store.reverify_after_recovery(&owner)?
                 {
                     reverify.remove(&owner);
