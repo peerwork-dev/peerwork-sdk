@@ -563,11 +563,22 @@ async fn codex_bridge_loss_recovers_and_the_original_thread_reads_a_fresh_probe(
     }
     let first = verified_after(&client, &watch, 0).await;
     println!("CODEX_BRIDGE_RECOVERY_INITIAL_READ_VERIFIED");
-    // A killed original process must be relaunched by the running dispatcher.
-    bridge.kill().await.unwrap();
+    let route_change = std::env::var_os("PEERWORK_CODEX_RECOVERY_ROUTE_CHANGE").is_some();
+    if route_change {
+        // The controller now transfers the original thread between real
+        // Codex hosts. The Bridge and Runtime stay running.
+        write_private(&root.join("route-change-ready"), b"1").unwrap();
+    } else {
+        bridge.kill().await.unwrap();
+    }
     let fresh = verified_after(&client, &watch, first).await;
     assert!(fresh > first);
-    write_private(&root.join("proof.json"), b"{\"state\":\"PASS\",\"fresh_read_after_bridge_loss\":true}").unwrap();
+    if route_change {
+        assert!(bridge.try_wait().unwrap().is_none(), "Bridge must survive a route change");
+    }
+    let proof = json!({"state":"PASS","fresh_read_after_bridge_loss":!route_change,
+        "fresh_read_after_route_change":route_change});
+    write_private(&root.join("proof.json"), &serde_json::to_vec(&proof).unwrap()).unwrap();
     cancel.cancel();
     running.await.unwrap().unwrap();
 }
