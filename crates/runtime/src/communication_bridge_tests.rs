@@ -1177,6 +1177,14 @@ async fn codex_bridge_process_recovers_original_endpoint_and_honors_normal_stop(
     let adapter = ready.adapter.clone();
     let mut recovered = tokio::task::spawn_blocking(move || startup::recover(&adapter, &executor))
         .await.unwrap().unwrap().unwrap();
+    let endpoint = reqwest::Url::parse(ready.adapter["endpoint"].as_str().unwrap()).unwrap();
+    let address = (endpoint.host_str().unwrap(), endpoint.port().unwrap());
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while tokio::net::TcpStream::connect(address).await.is_err() {
+            assert!(recovered.try_wait().unwrap().is_none(), "recovery process exited");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }).await.unwrap();
     let health = wait_ready(&ready).await;
     assert_eq!(health["destination"], ready.adapter["destination"]);
     assert!(!fixture.calls().iter().any(|request| request["method"] == "thread/resume"));
