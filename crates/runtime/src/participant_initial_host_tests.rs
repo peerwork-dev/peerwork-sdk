@@ -554,7 +554,7 @@ async fn codex_bridge_loss_recovers_and_the_original_thread_reads_a_fresh_probe(
                     if let Some(stamp) = value["destinations"][0]["last_verified_at"].as_i64().filter(|stamp| *stamp > since) {
                         return stamp;
                     }
-                    last = value;
+                    last = json!({"state":value["state"],"code":value["code"],"verified_at":value["destinations"][0]["last_verified_at"]});
                 }
                 tokio::time::sleep(Duration::from_millis(250)).await;
             }
@@ -562,6 +562,7 @@ async fn codex_bridge_loss_recovers_and_the_original_thread_reads_a_fresh_probe(
         result.unwrap_or_else(|_| panic!("fresh read not observed: {last}"))
     }
     let first = verified_after(&client, &watch, 0).await;
+    println!("CODEX_BRIDGE_RECOVERY_INITIAL_READ_VERIFIED");
     // A killed original process must be relaunched by the running dispatcher.
     bridge.kill().await.unwrap();
     let fresh = verified_after(&client, &watch, first).await;
