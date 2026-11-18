@@ -1178,7 +1178,17 @@ async fn codex_bridge_restart_waits_for_the_pinned_thread_without_resuming_it() 
     }).await.unwrap();
 
     *fixture.status_override.lock().unwrap() = None;
-    wait_ready(&after).await;
+    let mut last_health = Value::Null;
+    let recovered = tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            last_health = call(&after, "health", &json!({}), json!({})).await;
+            if last_health["health"]["ready"] == true {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }).await;
+    assert!(recovered.is_ok(), "last health: {last_health}, RPCs: {:?}", fixture.calls());
     assert!(!fixture.calls().iter().any(|request| matches!(
         request["method"].as_str(),
         Some("thread/resume" | "thread/start" | "turn/start" | "turn/steer")
