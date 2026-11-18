@@ -1211,14 +1211,18 @@ pub fn cli(args: &[String]) -> Value {
             .map_err(|_| "SIGNAL_FAILED")?;
         let result = executor.block_on(async {
             let (tx, rx) = oneshot::channel();
-            let service = serve(config, cancel, tx);
+            let service = serve(config, cancel.clone(), tx);
             tokio::pin!(service);
             tokio::select! {
                 result = &mut service => result?,
                 initialized = rx => {
                     let value = initialized.map_err(|_| "BRIDGE_START_FAILED")??;
                     if let Some((state, record)) = &startup {
-                        record.ready(state)?;
+                        if let Err(code) = record.ready(state) {
+                            cancel.cancel();
+                            service.await?;
+                            return Err(code);
+                        }
                     }
                     println!("{}", serde_json::to_string(&value).map_err(|_| "BRIDGE_STATE_FAILED")?);
                     service.await?;
