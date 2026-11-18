@@ -579,6 +579,16 @@ async fn codex_bridge_loss_recovers_and_the_original_thread_reads_a_fresh_probe(
     let proof = json!({"state":"PASS","fresh_read_after_bridge_loss":!route_change,
         "fresh_read_after_route_change":route_change});
     write_private(&root.join("proof.json"), &serde_json::to_vec(&proof).unwrap()).unwrap();
+    if route_change {
+        // Keep the native tool endpoint open until the controller observes the
+        // completed read and verifies its session. The stamp can commit just
+        // before the read response finishes crossing IPC.
+        tokio::time::timeout(Duration::from_secs(15), async {
+            while !root.join("tool-read-confirmed").is_file() {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        }).await.expect("controller did not receive the completed read");
+    }
     cancel.cancel();
     running.await.unwrap().unwrap();
 }
