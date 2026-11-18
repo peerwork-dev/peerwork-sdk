@@ -230,6 +230,42 @@ mod tests {
         let user_owned = b"[mcp_servers.peerwork-one]\ncommand = \"other\"\n".to_vec();
         assert!(codex_update(Some(user_owned), "peerwork-one", &a, None, false).is_err());
     }
+    #[test]
+    fn codex_update_uses_committed_entry_and_reports_real_drift() {
+        let root = crate::test_support::protected_test_dir();
+        let project = root.path().join("project");
+        files::directory(&project, false).unwrap();
+        let mut connect = Connect::open(&root.path().join("local")).unwrap();
+        registration(&mut connect);
+        let workspace = "W".repeat(43);
+        let executable = std::env::current_exe().unwrap();
+        let spec = Installation { host: "codex".into(), project, executable: executable.clone() };
+        let first = connect.install("worker", &workspace, spec).unwrap();
+        let config = Path::new(first["mcp_configuration"].as_str().unwrap());
+        let name = first["server_name"].as_str().unwrap();
+        let old = std::fs::read_to_string(config).unwrap();
+        let key = format!("[mcp_servers.{name}]");
+        files::replace(config, old.replace(&key, &format!("[mcp_servers.'{name}']")).as_bytes()).unwrap();
+
+        let binaries = tempfile::tempdir_in(executable.parent().unwrap()).unwrap();
+        let second = binaries.path().join("peerwork-previous");
+        let third = binaries.path().join("peerwork-next");
+        for binary in [&second, &third] {
+            std::fs::write(binary, b"synthetic executable").unwrap();
+        }
+        update_owned(&mut connect, "worker", &second).unwrap();
+        update_owned(&mut connect, "worker", &third).unwrap();
+        let updated = std::fs::read_to_string(config).unwrap();
+        assert!(updated.contains(&third.to_string_lossy().to_string()));
+        let edited = updated.replace(&third.to_string_lossy().to_string(), "/user/peerwork");
+        files::replace(config, edited.as_bytes()).unwrap();
+        let record = std::fs::read(connect.directory.join("connect.state")).unwrap();
+        let error = update_owned(&mut connect, "worker", &third).unwrap_err();
+        assert_eq!(error.code, "HOST_CONFIGURATION_CHANGED");
+        assert_eq!(error.details.unwrap()["fields"], json!(["command"]));
+        assert_eq!(std::fs::read_to_string(config).unwrap(), edited);
+        assert_eq!(std::fs::read(connect.directory.join("connect.state")).unwrap(), record);
+    }
     #[cfg(unix)]
     #[test]
     fn changed_project_cannot_inherit_prior_installation_ownership(){
@@ -643,40 +679,75 @@ fn codex_update(
     let parsed = old
         .parse::<toml_edit::DocumentMut>()
         .map_err(|_| local("HOST_CONFIGURATION_INVALID"))?;
-    let begin = format!("\n# peerwork-owned {name} begin\n");
-    let end = format!("# peerwork-owned {name} end\n");
-    let (prefix, suffix, current) = if let Some(start) = old.find(&begin) {
-        let tail = &old[start..];
-        let stop = tail
-            .find(&end)
-            .ok_or_else(|| local("HOST_CONFIGURATION_CONFLICT"))?
-            + end.len();
-        if tail[stop..].contains(&begin) {
-            return Err(local("HOST_CONFIGURATION_CONFLICT"));
+    let begin = format!("# peerwork-owned {name} begin");
+    let end = format!("# peerwork-owned {name} end");
+    let mut offset = 0;
+    let mut start = None;
+    let mut stop = None;
+    for line in old.split_inclusive('\n') {
+        if line.trim() == begin {
+            if start.is_some() || stop.is_some() {
+                return Err(local("HOST_CONFIGURATION_CONFLICT"));
+            }
+            // Include the separator emitted by codex_block, if present.
+            start = Some(if old[..offset].ends_with("\n\n") || &old[..offset] == "\n" {
+                offset - 1
+            } else {
+                offset
+            });
+        } else if line.trim() == end {
+            if start.is_none() || stop.is_some() {
+                return Err(local("HOST_CONFIGURATION_CONFLICT"));
+            }
+            stop = Some(offset + line.len());
         }
-        (&old[..start], &tail[stop..], Some(&tail[..stop]))
-    } else {
-        if parsed
-            .get("mcp_servers")
-            .and_then(|servers| servers.get(name))
-            .is_some()
-        {
-            return Err(local("HOST_CONFIGURATION_CONFLICT"));
-        }
-        (old.as_str(), "", None)
-    };
-    let desired = if remove {
-        String::new()
-    } else {
-        codex_block(name, wanted)
-    };
-    if current.is_some_and(|s| {
-        s != desired
-            && s != codex_block(name, wanted)
-            && prior.is_none_or(|p| s != codex_block(name, p))
-    }) {
-        return Err(local("HOST_CONFIGURATION_CHANGED"));
+        offset += line.len();
     }
+    let existing = parsed.get("mcp_servers").and_then(|servers| servers.get(name));
+    let (prefix, suffix) = match (start, stop) {
+        (Some(start), Some(stop)) => {
+            // The marked region must contain only the managed table. In
+            // particular, a marker inside a multiline value conveys no ownership.
+            let block = old[start..stop].parse::<toml_edit::DocumentMut>()
+                .map_err(|_| local("HOST_CONFIGURATION_CONFLICT"))?;
+            let servers = block.get("mcp_servers").and_then(|item| item.as_table())
+                .filter(|servers| block.as_table().len() == 1 && servers.len() == 1)
+                .ok_or_else(|| local("HOST_CONFIGURATION_CONFLICT"))?;
+            let entry = servers.get(name).and_then(|item| item.as_table())
+                .ok_or_else(|| local("HOST_CONFIGURATION_CONFLICT"))?;
+            let prefix = &old[..start];
+            let suffix = &old[stop..];
+            let outside = format!("{prefix}{suffix}").parse::<toml_edit::DocumentMut>()
+                .map_err(|_| local("HOST_CONFIGURATION_CONFLICT"))?;
+            if outside.get("mcp_servers").and_then(|servers| servers.get(name)).is_some() {
+                return Err(local("HOST_CONFIGURATION_CONFLICT"));
+            }
+            let actual = json!({
+                "command": entry.get("command").and_then(|value| value.as_str()),
+                "args": entry.get("args").and_then(|value| value.as_array())
+                    .and_then(|args| args.iter().map(|arg| arg.as_str()).collect::<Option<Vec<_>>>()),
+            });
+            if entry.len() != 2 || (&actual != wanted && prior != Some(&actual)) {
+                let expected = prior.unwrap_or(wanted);
+                let mut fields: Vec<&str> = ["command", "args"].into_iter()
+                    .filter(|key| actual[*key] != expected[*key]).collect();
+                if entry.iter().any(|(key, _)| !matches!(key, "command" | "args")) {
+                    fields.push("additional_fields");
+                }
+                let mut error = local("HOST_CONFIGURATION_CHANGED");
+                error.details = Some(json!({"entry": format!("mcp_servers.{name}"), "fields": fields,
+                    "next_action":"RESTORE_OR_RESELECT_ORIGINAL_OWNED_ENTRY"}));
+                return Err(error);
+            }
+            if !remove && &actual == wanted {
+                return Ok(None);
+            }
+            (prefix, suffix)
+        }
+        (None, None) if existing.is_none() => (old.as_str(), ""),
+        _ => return Err(local("HOST_CONFIGURATION_CONFLICT")),
+    };
+    let desired = if remove { String::new() } else { codex_block(name, wanted) };
     let output = format!("{prefix}{desired}{suffix}");
     output
         .parse::<toml_edit::DocumentMut>()
@@ -732,7 +803,7 @@ impl Connect {
                 prior
                     .as_ref()
                     .filter(|p| p.entry_owned)
-                    .map(|p| p.previous_entry.as_ref().unwrap_or(&p.entry)),
+                    .map(|p| if p.committed { &p.entry } else { p.previous_entry.as_ref().unwrap_or(&p.entry) }),
                 false,
             )?
         } else {
