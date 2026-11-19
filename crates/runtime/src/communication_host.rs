@@ -543,6 +543,9 @@ pub(crate) fn sanitized_health(value:&Value)->Value {
         let v=&value[key];
         if v.is_boolean()||v.is_number()||v.as_str().is_some_and(|s|s.len()<=96&&s.bytes().all(|b|b.is_ascii_uppercase()||b.is_ascii_digit()||b==b'_')) {out[key]=v.clone();}
     }
+    if value["input_delivery"] == "DURABLE_QUEUE" {
+        out["input_delivery"] = json!("DURABLE_QUEUE");
+    }
     if let Some(route) = value["route_fingerprint"].as_str()
         .filter(|value| value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
     {

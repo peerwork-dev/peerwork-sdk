@@ -85,6 +85,7 @@ async fn codex_local_queue_preserves_scope_and_never_repeats_the_same_batch() {
         }
     }).await.unwrap();
     assert_eq!(health["health"]["ready"], false);
+    assert_eq!(crate::communication_host::sanitized_health(&health["health"])["input_delivery"], "DURABLE_QUEUE");
     let (binding, _) = frame(&ready.adapter["destination"], 1);
     let scope = access_scope(&binding);
     let owner = notices::owner(&scope).unwrap();
