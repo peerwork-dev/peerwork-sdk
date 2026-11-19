@@ -560,11 +560,13 @@ async fn launch_using(config: RuntimeConfig, selected: Registration, config_path
         {
             return Ok((selected, runtime_dir.join("admin.json")));
         }
-        if child
-            .try_wait()
-            .map_err(|_| local("RUNTIME_START_FAILED"))?
-            .is_some()
-        {
+        if child.try_wait().map_err(|_| local("RUNTIME_STARTING_REOBSERVE_SAME_BINDING"))?.is_some() {
+            // After reaping this exact child there is no live launch to
+            // reobserve. Persist that fact before a maintenance rollback.
+            let exited = Launch { pid: Some(0), process_token: None, ..launch };
+            owner.write_exact(&serde_json::to_vec(&exited)
+                .map_err(|_| local("RUNTIME_LAUNCH_RECOVERY_REQUIRED"))?)
+                .map_err(|_| local("RUNTIME_LAUNCH_RECOVERY_REQUIRED"))?;
             return Err(local("RUNTIME_START_FAILED_CHECK_ORIGINAL_STATE_OWNER"));
         }
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -660,8 +662,19 @@ impl OwnedRuntime {
             .map_err(|_| local("UPDATE_RUNTIME_ARTIFACT_UNCONFIRMED"))?;
         let launch: Launch = serde_json::from_slice(&raw)
             .map_err(|_| local("UPDATE_RUNTIME_ARTIFACT_UNCONFIRMED"))?;
-        if launch.launcher.as_ref() != Some(artifact)
-            || !alive(launch.pid.unwrap_or(0), launch.process_token.as_deref())? {
+        if launch.launcher.as_ref() != Some(artifact) || launch.pid.unwrap_or(0) == 0 {
+            return Err(local("UPDATE_RUNTIME_ARTIFACT_UNCONFIRMED"));
+        }
+        if let Some(token) = launch.process_token.as_deref() {
+            if !alive(launch.pid.unwrap(), Some(token))? {
+                return Err(local("UPDATE_RUNTIME_ARTIFACT_UNCONFIRMED"));
+            }
+        } else if !matches!(
+            SecureStateStore::open(&self.config.state_directory.join("runtime.state")),
+            Err(crate::secure_state::SecureStateError::Busy)
+        ) {
+            // Some hosts hide process start ticks. Require local writer
+            // custody as well as the caller's authenticated runtime observation.
             return Err(local("UPDATE_RUNTIME_ARTIFACT_UNCONFIRMED"));
         }
         Ok(())
