@@ -14,6 +14,7 @@ pub(super) async fn step(
         return Ok(false);
     }
     if health["ready"] != true
+        && !(health["can_attempt"] == true && health["input_delivery"] == "DURABLE_QUEUE")
         && config.adapter["kind"] != "agy-app"
         && config.adapter["destination"]["host"] != "ANTIGRAVITY_APP"
     {

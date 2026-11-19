@@ -848,7 +848,7 @@ impl Host {
         }
         let name = name.to_owned();
         let mode = mode.to_owned();
-        let codex = if kind == "codex" {
+        let codex = if kind == "codex" && config["local_queue_only"] != true {
             Some(if Self::has_codex_routes(&config) && config["expected_session_id"].is_string() {
                 Self::discover_codex_route(&config, &executor, &progress)?
             } else {
@@ -878,6 +878,9 @@ impl Host {
         let mut destination = destination;
         if let Some(host) = &codex {
             destination["session_id"] = json!(host.session);
+        } else if kind == "codex" {
+            codex_proxy::validate_queue_target(&config)?;
+            destination["session_id"] = config["expected_session_id"].clone();
         } else if config["kind"] == "agy-app" {
             destination["session_id"] = destination["conversation_id"].clone();
         }
@@ -1021,6 +1024,11 @@ impl Host {
     }
     fn health_inner(&mut self, binding: &Value) -> R<Value> {
         if self.config["kind"]=="opencode" {return opencode::health(self)}
+        if self.config["kind"]=="codex" && self.config["local_queue_only"] == true {
+            codex_proxy::validate_queue_target(&self.config)?;
+            return Ok(json!({"ready":false,"can_attempt":true,"execution_state":"UNKNOWN",
+                "input_delivery":"DURABLE_QUEUE","model_response":"NOT_ATTESTED"}));
+        }
         if self.config["kind"]=="codex"&&self.codex.is_none(){self.reconnect()?;}
         if let Some(host) = &mut self.agy_stdio {
             return host.health();
@@ -1082,6 +1090,9 @@ impl Host {
                 return Err("HOST_NOT_READY");
             }
             return host.deliver(message);
+        }
+        if self.config["kind"] == "codex" && self.config["local_queue_only"] == true {
+            return codex_proxy::queue_notification(&self.config, &self.executor, &self.progress, message);
         }
         if self.config["kind"] == "bridge" {
             return self.bridge("deliver", binding, json!({"message":message}));

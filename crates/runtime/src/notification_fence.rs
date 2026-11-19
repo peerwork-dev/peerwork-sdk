@@ -169,6 +169,10 @@ impl Fence {
         batch: &str,
         attempt: u64,
     ) -> R<Option<Value>> {
+        self.begin_with_policy(owner, revision, batch, attempt, false)
+    }
+    pub(crate) fn begin_with_policy(&self, owner: &str, revision: u64, batch: &str,
+        attempt: u64, once: bool) -> R<Option<Value>> {
         valid(owner)?;
         valid(batch)?;
         if attempt == 0 {
@@ -190,7 +194,7 @@ impl Fence {
         if attempt < row.attempt {
             return Err("NOTIFICATION_FENCE_ATTEMPT_STALE");
         }
-        if attempt == row.attempt {
+        if attempt == row.attempt || once && row.attempt > 0 {
             return Ok(Some(row.outcome.unwrap_or_else(
                 || json!({"state":"RESULT_UNKNOWN","code":"NOTIFICATION_INPUT_UNRESOLVED"}),
             )));
@@ -286,6 +290,23 @@ mod tests {
             fence.begin("owner", 1, "batch", 2).unwrap().unwrap()["state"],
             "HOST_ACCEPTED"
         );
+    }
+    #[test]
+    fn local_queue_does_not_repeat_unknown_or_accepted_batches_across_restarts() {
+        let f = Fixture::new();
+        let directory = f.0.path().join("state");
+        let fence = Fence::open(&directory).unwrap();
+        fence.control("owner", 1, Some("original"), false).unwrap();
+        assert!(fence.begin_with_policy("owner", 1, "original", 1, true).unwrap().is_none());
+        drop(fence);
+        let fence = Fence::open(&directory).unwrap();
+        assert_eq!(fence.begin_with_policy("owner", 1, "original", 2, true).unwrap().unwrap()["state"],
+            "RESULT_UNKNOWN");
+        fence.control("owner", 2, Some("next"), false).unwrap();
+        assert!(fence.begin_with_policy("owner", 2, "next", 1, true).unwrap().is_none());
+        fence.finish("owner", "next", 1, &json!({"state":"HOST_QUEUED","receipt":"original"})).unwrap();
+        assert_eq!(fence.begin_with_policy("owner", 2, "next", 2, true).unwrap().unwrap()["state"],
+            "HOST_QUEUED");
     }
     #[test]
     fn pause_is_independent_of_inflight_and_old_finish_cannot_overwrite_successor() {

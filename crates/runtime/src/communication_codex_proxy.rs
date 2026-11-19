@@ -113,6 +113,46 @@ fn configure_installation(command: &mut tokio::process::Command, config: &Value)
     Ok(())
 }
 
+pub(super) fn validate_queue_target(config: &Value) -> R<()> {
+    let thread = super::text(config, "thread_id")?;
+    let id = thread.as_bytes();
+    if id.len() != 36 || id.iter().enumerate().any(|(index, byte)| {
+        if matches!(index, 8 | 13 | 18 | 23) { *byte != b'-' } else { !byte.is_ascii_hexdigit() }
+    }) || config["expected_session_id"] != thread {
+        return Err("HOST_SESSION_BINDING_UNAVAILABLE");
+    }
+    if config["codex_executable"].as_str().is_none()
+        || config["codex_home"].as_str().is_none()
+        || config["codex_uid"].as_u64().is_none()
+        || !config["auth_token_env"].is_null() {
+        return Err("HOST_CONFIG_INVALID");
+    }
+    let home = Path::new(super::text(config, "codex_home")?);
+    crate::onboarding_files::check_directory(home, true).map_err(|_| "CODEX_HOME_INVALID")?;
+    let mut command = tokio::process::Command::new(executable(config["codex_executable"].as_str())?);
+    configure_installation(&mut command, config)
+}
+
+pub(super) fn queue_notification(config: &Value, executor: &tokio::runtime::Handle,
+    budget: &Budget, message: &Value) -> R<Value> {
+    validate_queue_target(config)?;
+    let batch = message["batch"].as_str().filter(|batch| batch.len() == 43
+        && batch.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_')))
+        .filter(|_| message["format"] == "peerwork.notification-frame.v1").ok_or("HOST_INPUT_INVALID")?;
+    let mut command = tokio::process::Command::new(executable(config["codex_executable"].as_str())?);
+    configure_installation(&mut command, config)?;
+    command.args(["queue", "--thread", super::text(config, "thread_id")?, "--message",
+        &crate::communication_notifications::text(batch)])
+        .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).kill_on_drop(true);
+    let remaining = budget.remaining().map_err(|_| "HOST_PREFLIGHT_DEADLINE")?;
+    let status = executor.block_on(async {
+        tokio::time::timeout(remaining, command.status()).await
+            .map_err(|_| "HOST_ACK_UNKNOWN")?.map_err(|_| "HOST_ACK_UNKNOWN")
+    })?;
+    if !status.success() { return Err("HOST_ACK_UNKNOWN"); }
+    Ok(serde_json::json!({"state":"HOST_QUEUED","receipt":batch,"model_response":"NOT_ATTESTED"}))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

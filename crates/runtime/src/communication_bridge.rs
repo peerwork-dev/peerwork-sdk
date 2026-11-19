@@ -164,6 +164,7 @@ impl BridgeConfig {
                 "codex_uid",
                 "control_socket",
                 "codex_routes",
+                "local_queue_only",
             ],
             Some("agy-app") => &[
                 "kind",
@@ -181,6 +182,9 @@ impl BridgeConfig {
             .as_object()
             .is_none_or(|o| o.keys().any(|k| !allowed.contains(&k.as_str())))
         {
+            return Err("BRIDGE_CONFIG_INVALID");
+        }
+        if self.host.get("local_queue_only").is_some_and(|value| !value.is_boolean()) {
             return Err("BRIDGE_CONFIG_INVALID");
         }
         for b in &mut self.bindings {
@@ -723,9 +727,12 @@ fn provider_loop(config:Value,executor:tokio::runtime::Handle,progress:crate::co
                 if let Some(n)=request.binding.get("notification"){
                     let owner=n["owner"].as_str().ok_or("BRIDGE_REQUEST_INVALID")?;
                     let batch=n["batch"].as_str().ok_or("BRIDGE_REQUEST_INVALID")?;
-                    if let Some(known)=notice_fence.begin(owner,n["revision"].as_u64().ok_or("BRIDGE_REQUEST_INVALID")?,batch,n["attempt"].as_u64().ok_or("BRIDGE_REQUEST_INVALID")?)?{return Ok((selected.destination.clone(),known));}
+                    if let Some(known)=notice_fence.begin_with_policy(owner,n["revision"].as_u64().ok_or("BRIDGE_REQUEST_INVALID")?,batch,
+                        n["attempt"].as_u64().ok_or("BRIDGE_REQUEST_INVALID")?,config["local_queue_only"]==true)? {
+                        return Ok((selected.destination.clone(),known));
+                    }
                     notice_admitted=true;
-                }else if request.binding["format"]=="peerwork.host-call.v1"&&!notice_fence.legacy_allowed(&notices::owner(&request.binding)?)?{
+                }else if config["local_queue_only"]==true || request.binding["format"]=="peerwork.host-call.v1"&&!notice_fence.legacy_allowed(&notices::owner(&request.binding)?)?{
                     return Ok((selected.destination.clone(),json!({"state":"NOT_SENT","code":"COMPACT_NOTIFICATION_DELIVERY_REQUIRED","proof":"LOCAL_PREFLIGHT_NO_IO"})));
                 }
                 let delivered=selected.deliver(&request.binding,frame);
