@@ -272,10 +272,28 @@ fn validate_source(context:&Value,scope:&MailScope)->Result<()> {
 // coalescing, retry backoff and progress; this frontend never scans a head page.
 async fn project_scope<F,Fut>(alias:&str,output:mpsc::Sender<Value>,observed:State,mut poll:F)->Result<()>
 where F:FnMut()->Fut,Fut:std::future::Future<Output=Result<Value>> {
+    let mut failures = 0_u32;
     loop {
         let changed=observed.1.notified();tokio::pin!(changed);changed.as_mut().enable();
         let started=tokio::time::Instant::now();
-        let value=tokio::select!{_=output.closed()=>return Ok(()),result=poll()=>result?};
+        let result=tokio::select!{_=output.closed()=>return Ok(()),result=poll()=>result};
+        let value = match result {
+            Ok(value) => {
+                failures = 0;
+                value
+            }
+            Err(error) if crate::host_recovery_policy::notification_wait_retry(&error) => {
+                failures = failures.saturating_add(1);
+                let delay = crate::host_recovery_policy::delay(&error.code, failures, alias);
+                observed.scope_retry(alias, &error, delay);
+                tokio::select! {
+                    _ = output.closed() => return Ok(()),
+                    _ = tokio::time::sleep(delay) => {}
+                }
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
         observed.scope_observed(alias,&value);
         if value["state"]=="NOTIFICATION_DUE" {
             if output.send(notification(&value)?).await.is_err(){return Ok(())}
