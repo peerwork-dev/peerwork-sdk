@@ -268,6 +268,7 @@ impl Connect {
                 return Err(local("RUNTIME_STARTUP_POLICY_CHANGED"));
             }
             update.original.stop().await?;
+            update.original.retire_stopped_shared_launcher()?;
             update.phase = SharedPhase::Starting;
             save_shared(&store, &update)?;
         }

@@ -646,6 +646,26 @@ impl OwnedRuntime {
         launcher.verify()?;
         self.restart_using(committed,Some(&launcher.executable)).await
     }
+    pub(super) fn retire_stopped_shared_launcher(&self) -> Result<()> {
+        let directory = &self.config.state_directory;
+        let marker = SecureStateStore::open(&directory.join("bootstrap.state"))
+            .map_err(|_| local("RUNTIME_LAUNCH_ALREADY_OWNED_OR_UNSAFE"))?;
+        let _writer = SecureStateStore::open(&directory.join("runtime.state"))
+            .map_err(|_| local("ORIGINAL_RUNTIME_WRITER_STILL_OWNED"))?;
+        let Some(bytes) = marker.read_exact().map_err(|_| local("RUNTIME_LAUNCH_RECOVERY_REQUIRED"))?
+            else { return Ok(()); };
+        let mut launch: Launch = serde_json::from_slice(&bytes)
+            .map_err(|_| local("RUNTIME_LAUNCH_RECOVERY_REQUIRED"))?;
+        let digest = sha256_hex(&serde_json::to_vec(&self.config).map_err(|_| local("RUNTIME_CONFIG_INVALID"))?);
+        if launch.config_digest != digest {
+            return Err(local("ORIGINAL_RUNTIME_CONFIG_CHANGED"));
+        }
+        launch.pid = Some(0);
+        launch.process_token = None;
+        marker.write_exact(&serde_json::to_vec(&launch)
+            .map_err(|_| local("RUNTIME_LAUNCH_RECOVERY_REQUIRED"))?)
+            .map_err(|_| local("RUNTIME_LAUNCH_RECOVERY_REQUIRED"))
+    }
     pub(super) async fn launch_shared(&self, artifact: &crate::runtime_startup::Launcher,
         policy: &Option<crate::runtime_startup::Policy>) -> Result<()> {
         artifact.verify()?;
