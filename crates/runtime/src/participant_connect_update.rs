@@ -3,7 +3,7 @@
 use super::*;
 use std::io::Read;
 
-const REQUIRED: &[&str] = &["host-observation-upload-deadline-v1","current-host-delivery-health-v1","automatic-runtime-startup-v1","harness-connection-context-v1"];
+const REQUIRED: &[&str] = &["host-observation-upload-deadline-v1","current-host-delivery-health-v1","automatic-runtime-startup-v1","harness-connection-context-v1","receiving-lifecycle-recovery-v1"];
 
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
