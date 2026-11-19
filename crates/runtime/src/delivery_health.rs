@@ -13,7 +13,7 @@ pub(crate) fn evaluate(receiver: &Value, notification: &Value, transport: &str, 
     let host_code=health["code"].as_str().or_else(||health["reason"].as_str());
     let blocked=matches!(health["state"].as_str(),Some("BLOCKED"|"FAILED"|"STOPPED"|"RECONNECTING")) || health["ready"]==false && health["can_attempt"]!=true;
     let capable=if transport=="MCP_STDIO_CHANNEL" {
-        fresh && !matches!(health["state"].as_str(),None|Some("UNKNOWN"|"BLOCKED"|"STARTING"|"STOPPED"|"RECOVERING"))
+        fresh && !matches!(health["state"].as_str(),None|Some("UNKNOWN"|"BLOCKED"|"STARTING"|"STOPPED"|"RECOVERING"|"WAITING_HOST"))
     } else { fresh && (health["ready"]==true || health["can_attempt"]==true) };
     let (state,code)=if receiver["state"]=="LOCAL_STOPPED" {("STOPPED","RECEIVER_STOPPED")}
         else if automatic && control==Some("PAUSED") {("PAUSED","DELIVERY_PAUSED")}
@@ -23,6 +23,7 @@ pub(crate) fn evaluate(receiver: &Value, notification: &Value, transport: &str, 
         else if !automatic {("READY","READY")}
         else if !keys {("BLOCKED","BODY_KEYS_NOT_READY")}
         else if health["state"]=="RECOVERING" {("RECOVERING",host_code.unwrap_or("HOST_RECONNECTING"))}
+        else if health["state"]=="WAITING_HOST" {("WAITING_HOST",host_code.unwrap_or("HOST_NOT_READY"))}
         else if blocked {("BLOCKED",host_code.unwrap_or("HOST_NOT_READY"))}
         else if !capable {("UNKNOWN",host_code.unwrap_or("CURRENT_TRANSPORT_OBSERVATION_UNAVAILABLE"))}
         // Only the active Channel frontend can qualify its own session. Native
@@ -36,7 +37,7 @@ pub(crate) fn evaluate(receiver: &Value, notification: &Value, transport: &str, 
         "automatic_receiving":if !automatic{"NOT_CONFIGURED"}else if state=="READY"{"VERIFIED"}else{state},
         "last_verified_at":notification["last_verified_at"],"verification_evidence":"BOUND_LOCAL_INBOX_READ",
         "verification_scope":"HISTORICAL_SELECTED_DESTINATION","acceptance":if !automatic{"LOCAL_INBOX"}else if transport=="MCP_STDIO_CHANNEL"{"CHANNEL_OUTPUT"}else if health["can_attempt"]==true && health["ready"]!=true{"QUEUED_ONLY"}else{"HOST_INPUT_CAPABILITY"},"model_response":"NOT_ATTESTED",
-        "recovery":if matches!(state,"BLOCKED"|"RECOVERING"){crate::host_recovery_policy::diagnostic(code)}else{Value::Null},
+        "recovery":if matches!(state,"BLOCKED"|"RECOVERING"|"WAITING_HOST"){crate::host_recovery_policy::diagnostic(code)}else{Value::Null},
         "next_action":match state {"READY"=>"CONTINUE_COLLABORATION","PAUSED"=>"RESUME_WHEN_REQUESTED","STOPPED"=>"RESTART_ORIGINAL_RECEIVER_WHEN_REQUESTED","VERIFYING" if code=="CURRENT_CHANNEL_READ_NOT_OBSERVED"=>"OBSERVE_CURRENT_CHANNEL_BATCH_OR_RUN_DELIVERY_SELF_TEST","VERIFYING"=>"OBSERVE_EXISTING_SELF_TEST",_=>crate::host_recovery_policy::action(code)}})
 }
 
@@ -54,7 +55,7 @@ pub(crate) fn source_matches(source: &Value, binding: &Value, host: &Value) -> b
 pub(crate) fn host_observation(host: &Value) -> Value {
     let mut value=host["host_observation"].clone();
     if !value.is_object(){value=json!({});}
-    if matches!(host["state"].as_str(),Some("BLOCKED"|"FAILED"|"STOPPED"|"RECONNECTING")) {
+    if matches!(host["state"].as_str(),Some("BLOCKED"|"FAILED"|"STOPPED"|"RECONNECTING"|"RECOVERING"|"WAITING_HOST")) {
         value["state"]=host["state"].clone();value["code"]=host["code"].clone();value["ready"]=json!(false);
     }
     value["phase"]=host["diagnostic"]["failure_phase"].clone();

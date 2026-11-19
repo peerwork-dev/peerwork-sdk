@@ -837,16 +837,30 @@ async fn run_owned(
             let value = observed
                 .clone()
                 .unwrap_or_else(|code| json!({"mode":mode,"ready":false,"execution_state":"UNKNOWN","reason":code}));
-            if let Err(code)=&observed {if let Ok(mut current)=status.lock(){current["state"]=json!("RECONNECTING");current["code"]=json!(code);current["diagnostic"]=progress.snapshot();}}
-            {let mut observation_clock=observed_clock.lock().unwrap();
-            *observation_clock=Some(observed_at);
-            if let Ok(mut current)=status.lock(){
-                current["host_observation"]=value.clone();
-                if value["ready"]!=true && value["can_attempt"]!=true {
-                    current["state"]=json!("BLOCKED");
-                    current["code"]=value.get("reason").cloned().unwrap_or_else(||json!(match value["execution_state"].as_str(){Some("WAITING_APPROVAL")=>"HOST_WAITING_APPROVAL",Some("BUSY")=>"HOST_BUSY",_=>"HOST_NOT_READY"}));
-                }else if current["code"]!="HOST_ACCEPTANCE_UNRESOLVED" {current["state"]=json!("HOST_ATTACHED");current.as_object_mut().unwrap().remove("code");}
-            }
+            {
+                let mut observation_clock = observed_clock.lock().unwrap();
+                *observation_clock = Some(observed_at);
+                if let Ok(mut current) = status.lock() {
+                    current["host_observation"] = value.clone();
+                    if value["ready"] != true && value["can_attempt"] != true {
+                        use crate::host_recovery_policy::{policy, Policy};
+                        let code = value["reason"].as_str().unwrap_or_else(|| match value["execution_state"].as_str() {
+                            Some("WAITING_APPROVAL") => "HOST_WAITING_APPROVAL",
+                            Some("BUSY") => "HOST_BUSY",
+                            _ => "HOST_NOT_READY",
+                        });
+                        current["state"] = json!(match policy(code) {
+                            Policy::Defer => "WAITING_HOST",
+                            Policy::Retry if observed.is_err() => "RECOVERING",
+                            _ => "BLOCKED",
+                        });
+                        current["code"] = json!(code);
+                        if observed.is_err() { current["diagnostic"] = progress.snapshot(); }
+                    } else if current["code"] != "HOST_ACCEPTANCE_UNRESOLVED" {
+                        current["state"] = json!("HOST_ATTACHED");
+                        current.as_object_mut().unwrap().remove("code");
+                    }
+                }
             }
             let age=value["observation_age_ms"].as_u64().unwrap_or(0).saturating_add(value["coordinator_age_ms"].as_u64().unwrap_or(0)).min(60000);
             let source_observed_at=observed_at.checked_sub(Duration::from_millis(age)).unwrap_or(observed_at);
@@ -861,8 +875,7 @@ async fn run_owned(
             let mut recover_bridge = false;
             for (client, options) in watches.iter() {
                 let owner = crate::communication_notifications::owner(client, options);
-                if codex_target && (route_changed || matches!(value["reason"].as_str(),
-                    Some("HOST_SESSION_NOT_LOADED" | "HOST_SESSION_OWNERSHIP_CONFLICT" | "BRIDGE_UNAVAILABLE")))
+                if codex_target && route_changed
                 {
                     reverify.insert(owner.clone());
                 }
