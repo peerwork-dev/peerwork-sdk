@@ -527,7 +527,10 @@ async fn codex_bridge_loss_recovers_and_the_original_thread_reads_a_fresh_probe(
     let mut lines = BufReader::new(bridge.stdout.take().unwrap()).lines();
     let launch = tokio::time::timeout(Duration::from_secs(20), lines.next_line())
         .await.unwrap().unwrap().unwrap();
-    let bridge_ready: BridgeReady = serde_json::from_str(&launch).expect("real host bridge did not start");
+    let bridge_ready: BridgeReady = serde_json::from_str(&launch).unwrap_or_else(|error| {
+        let response: Value = serde_json::from_str(&launch).unwrap_or_default();
+        panic!("real host bridge failed: {error}; code={}", response["error"]["code"]);
+    });
     source.request.adapter = bridge_ready.adapter;
     // Rebinding checks the live host independently of descriptor creation.
     tokio::time::sleep(Duration::from_secs(1)).await;
