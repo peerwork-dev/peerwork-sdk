@@ -260,34 +260,41 @@ impl Codex {
     fn connect_recovery(config:&Value,executor:tokio::runtime::Handle,budget:Budget,resume_blocker:Option<&'static str>)->R<Self>{
         let mut host = Self::channel_budget(config, executor,budget)?;
         host.resume_blocker=resume_blocker;
-        let current = host.rpc(
+        let status = host.observe_exact_thread(config)?;
+        if status == "notLoaded" {
+            // Discovery observes a writer and never loads one.
+            if resume_blocker.is_some() {
+                return Ok(host);
+            }
+            host.resume_original()?;
+        } else if !matches!(status.as_str(), "idle" | "active") {
+            return Err(Self::unusable_thread_status(&status));
+        }
+        host.health()?;
+        Ok(host)
+    }
+
+    fn unusable_thread_status(status: &str) -> &'static str {
+        match status {
+            "notLoaded" => "HOST_SESSION_NOT_LOADED",
+            "systemError" => "HOST_SESSION_ERROR",
+            _ => "HOST_STATUS_UNSUPPORTED",
+        }
+    }
+
+    fn observe_exact_thread(&mut self, config: &Value) -> R<String> {
+        let current = self.rpc(
             "thread/read",
-            json!({"threadId":host.thread,"includeTurns":false}),
+            json!({"threadId":self.thread,"includeTurns":false}),
         )?;
-        if current["thread"]["id"] != host.thread
-            || config
-                .get("expected_session_id")
-                .is_some_and(|v| v != &current["thread"]["sessionId"])
+        if current["thread"]["id"] != self.thread
+            || config.get("expected_session_id").is_some_and(|value| value != &current["thread"]["sessionId"])
         {
             return Err("HOST_BINDING_MISMATCH");
         }
-        host.session = text(&current["thread"], "sessionId")
+        self.session = text(&current["thread"], "sessionId")
             .map_err(|_| "HOST_SESSION_BINDING_UNAVAILABLE")?.into();
-        if current["thread"]["status"]["type"]=="notLoaded" {
-            // A prior active-writer rejection allows observing this exact
-            // owner's metadata, never repeatedly loading its stored rollout.
-            if resume_blocker.is_some(){return Ok(host);}
-            host.resume_original()?;
-        } else if !matches!(current["thread"]["status"]["type"].as_str(),Some("idle"|"active")) {
-            return Err(if current["thread"]["status"]["type"]=="systemError"{"HOST_SESSION_ERROR"}else{"HOST_STATUS_UNSUPPORTED"});
-        }
-        // This destination is already loaded and its live session was pinned
-        // above. It need not have a saved rollout yet (a newly created or
-        // ephemeral thread may not). Resuming it adds a persistence prerequisite
-        // and can fail despite a usable live destination. Health reads current
-        // metadata; delivery targets the pinned thread and expected active turn.
-        host.health()?;
-        Ok(host)
+        Ok(current["thread"]["status"]["type"].as_str().unwrap_or_default().to_owned())
     }
     fn rpc(&mut self, method: &str, params: Value) -> R<Value> {
         let _operation=self.budget.scope("RPC");
@@ -694,23 +701,55 @@ impl Host {
             }
         }
         let mut selected = None;
+        let mut unavailable = None;
+        #[cfg(unix)]
+        let mut socket_ids = BTreeSet::new();
         for candidate in candidates {
             if budget.remaining().is_err() {
                 return Err("HOST_OPERATION_TIMEOUT");
             }
-            if let Ok(mut host) = Codex::connect_recovery(
-                &candidate, executor.clone(), budget.clone(), Some("HOST_SESSION_NOT_LOADED"),
-            ) {
-                let health = host.health()?;
-                if health["reason"] == "HOST_SESSION_NOT_LOADED" {
-                    continue;
+            #[cfg(unix)]
+            let socket_id = {
+                use std::os::unix::fs::{FileTypeExt, MetadataExt};
+                let endpoint = candidate["endpoint"].as_str().unwrap_or_default();
+                let path = if endpoint == "codex-proxy://local" {
+                    candidate["control_socket"].as_str()
+                } else {
+                    endpoint.strip_prefix("unix://")
+                };
+                path.and_then(|path| std::fs::metadata(path).ok())
+                    .filter(|metadata| metadata.file_type().is_socket())
+                    .map(|metadata| (metadata.dev(), metadata.ino()))
+            };
+            #[cfg(unix)]
+            if socket_id.is_some_and(|id| socket_ids.contains(&id)) {
+                continue;
+            }
+            let checked = Codex::channel_budget(&candidate, executor.clone(), budget.clone())
+                .and_then(|mut host| {
+                    host.resume_blocker = Some("HOST_SESSION_NOT_LOADED");
+                    let status = host.observe_exact_thread(&candidate)?;
+                    if matches!(status.as_str(), "idle" | "active") {
+                        Ok(host)
+                    } else {
+                        Err(Codex::unusable_thread_status(&status))
+                    }
+                });
+            #[cfg(unix)]
+            if matches!(&checked, Ok(_) | Err("HOST_SESSION_NOT_LOADED")) {
+                socket_ids.extend(socket_id);
+            }
+            match checked {
+                Ok(host) => {
+                    if selected.replace(host).is_some() {
+                        return Err("CODEX_ROUTE_AMBIGUOUS");
+                    }
                 }
-                if selected.replace(host).is_some() {
-                    return Err("CODEX_ROUTE_AMBIGUOUS");
-                }
+                Err("HOST_SESSION_NOT_LOADED") => {}
+                Err(code) => { unavailable.get_or_insert(code); }
             }
         }
-        selected.ok_or("HOST_SESSION_NOT_LOADED")
+        selected.ok_or_else(|| unavailable.unwrap_or("HOST_SESSION_NOT_LOADED"))
     }
 
     fn codex_route_allowed(config: &Value, endpoint: &str) -> R<bool> {
@@ -965,7 +1004,7 @@ impl Host {
         let _operation=self.progress.scope("HEALTH");
         let result = self.health_inner(binding).map(|mut value| {
             if let Some(codex) = &self.codex {
-                if value["reason"] != "HOST_SESSION_NOT_LOADED" {
+                if !Self::codex_non_owner(&value) {
                     value["route_fingerprint"] = json!(peerwork_core::crypto::sha256_hex(
                         codex.endpoint.as_bytes(),
                     ));
@@ -975,6 +1014,10 @@ impl Host {
         });
         if let Err(code)=&result {self.progress.failure(code,None);}
         result
+    }
+    fn codex_non_owner(health: &Value) -> bool {
+        matches!(health["reason"].as_str(),
+            Some("HOST_SESSION_NOT_LOADED" | "HOST_SESSION_ERROR" | "HOST_STATUS_UNSUPPORTED"))
     }
     fn health_inner(&mut self, binding: &Value) -> R<Value> {
         if self.config["kind"]=="opencode" {return opencode::health(self)}
@@ -990,7 +1033,7 @@ impl Host {
         if let Some(host) = &mut self.codex {
             let observed = host.health();
             if Self::has_codex_routes(&self.config) && match &observed {
-                Ok(health) => health["reason"] == "HOST_SESSION_NOT_LOADED",
+                Ok(health) => Self::codex_non_owner(health),
                 Err(_) => true,
             } {
                 self.codex.take();

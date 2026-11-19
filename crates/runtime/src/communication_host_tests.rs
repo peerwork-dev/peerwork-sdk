@@ -903,6 +903,34 @@ fn codex_route_follows_original_session_without_changing_destination() {
     }
 }
 
+#[cfg(unix)]
+#[test]
+fn codex_route_reports_unreachable_candidate_and_recovers_after_it_loads() {
+    let directory = crate::test_support::protected_test_dir();
+    let primary = CodexFixture::start();
+    primary.emit_events.store(false, Ordering::SeqCst);
+    *primary.status_override.lock().unwrap() = Some("notLoaded".into());
+    let path = directory.path().join("late.sock");
+    let mut config = primary.config();
+    config["codex_routes"] = json!([format!("unix://{}", path.display())]);
+    let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build().unwrap();
+    let error = Host::open(config.clone(), runtime.handle().clone()).err().unwrap();
+    assert_ne!(error, "HOST_SESSION_NOT_LOADED");
+
+    let alternate = CodexFixture::start_unix(&path);
+    alternate.emit_events.store(false, Ordering::SeqCst);
+    *alternate.actual_session.lock().unwrap() = config["expected_session_id"].as_str().unwrap().into();
+    let alias_path = directory.path().join("same.sock");
+    std::os::unix::fs::symlink(&path, &alias_path).unwrap();
+    config["codex_routes"].as_array_mut().unwrap().push(json!(format!("unix://{}", alias_path.display())));
+    let mut host = Host::open(config, runtime.handle().clone()).unwrap();
+    assert_eq!(host.health(&json!({})).unwrap()["ready"], true);
+    for fixture in [&primary, &alternate] {
+        assert!(!fixture.calls().iter().any(|request| matches!(request["method"].as_str(),
+            Some("thread/resume" | "turn/start" | "turn/steer"))));
+    }
+}
+
 #[test]
 fn codex_recovery_of_pinned_thread_observes_until_the_host_loads_it() {
     let fixture = CodexFixture::start();
