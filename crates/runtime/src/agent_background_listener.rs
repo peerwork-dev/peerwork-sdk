@@ -57,30 +57,36 @@ impl State {
             .filter(|(_,scope)|seen.insert(serde_json::to_string(scope).expect("mail scope")))
             .map(|(alias,scope)|(alias.clone(),scope.clone())).collect::<Vec<_>>();
         if scopes.is_empty() { return Err(ParticipantError::local("RECEIVING_SCOPE_NOT_CONFIGURED", "MCP")); }
-        // Keep this launch's activation between calls. Legacy runtimes retain
-        // their original exclusion guard until the MCP connection closes.
-        let mut selected=Vec::new();
-        let mut acquired=BTreeMap::new();
-        for (alias,scope) in &scopes {
-            let key=json!([profile.expected_origin,profile.expected_actor,scope]).to_string();
-            let original=self.owners.lock().map_err(|_|ParticipantError::local("BACKGROUND_LISTEN_STATE_UNAVAILABLE","MCP"))?.get(&key).cloned();
-            let projection=match original {
-                Some(original)=>original,
-                None=>{
-                    let projection=Arc::new(claude_channel::Projection::open(&tools,&profile,alias,scope).await?);
-                    acquired.insert(key,projection.clone());projection
-                },
-            };
-            selected.push((alias.clone(),projection));
-        }
-        self.owners.lock().map_err(|_|ParticipantError::local("BACKGROUND_LISTEN_STATE_UNAVAILABLE","MCP"))?.extend(acquired);
+        // Opening one source must not prevent other selected sources from
+        // arming. Keep the authenticated activation between successful calls.
         self.enabled.store(true, Ordering::Relaxed);
         let mut jobs = JoinSet::new();
-        for (alias,projection) in selected {
-            let tools = tools.clone(); let state = self.projection.clone();
+        for (alias, scope) in scopes {
+            let tools = tools.clone();
+            let state = self.projection.clone();
+            let profile = profile.clone();
+            let owners = self.owners.clone();
+            let key = json!([profile.expected_origin, profile.expected_actor, scope]).to_string();
             jobs.spawn(async move {
-                let result = wait(&alias,&state,||projection.poll(&tools)).await;
-                if let Err(error) = &result { state.scope_failed(&alias,error); }
+                let result = async {
+                    let existing = owners.lock()
+                        .map_err(|_| ParticipantError::local("BACKGROUND_LISTEN_STATE_UNAVAILABLE", "MCP"))?
+                        .get(&key).cloned();
+                    let projection = match existing {
+                        Some(original) => original,
+                        None => {
+                            let open = open_when_available(&alias, &state,
+                                || claude_channel::Projection::open(&tools, &profile, &alias, &scope)).await?;
+                            let projection = Arc::new(open);
+                            owners.lock()
+                                .map_err(|_| ParticipantError::local("BACKGROUND_LISTEN_STATE_UNAVAILABLE", "MCP"))?
+                                .insert(key, projection.clone());
+                            projection
+                        }
+                    };
+                    wait(&alias, &state, || projection.poll(&tools)).await
+                }.await;
+                if let Err(error) = &result { state.scope_failed(&alias, error); }
                 result
             });
         }
@@ -95,6 +101,27 @@ impl State {
             }
         }
         Err(failure.unwrap_or_else(||ParticipantError::local("BACKGROUND_LISTEN_SOURCE_UNAVAILABLE", "MCP")))
+    }
+}
+
+async fn open_when_available<F, Fut, T>(
+    alias: &str, state: &claude_channel::State, mut open: F,
+) -> Result<T>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T>>,
+{
+    let mut failures = 0_u32;
+    loop {
+        match open().await {
+            Err(error) if crate::host_recovery_policy::notification_wait_retry(&error) => {
+                failures = failures.saturating_add(1);
+                let delay = crate::host_recovery_policy::delay(&error.code, failures, alias);
+                state.scope_retry(alias, &error, delay);
+                tokio::time::sleep(delay).await;
+            }
+            result => return result,
+        }
     }
 }
 
@@ -230,6 +257,27 @@ mod tests {
         assert_eq!(out["batch"], "next-business-message");
         assert_eq!(state.status()["scopes"]["space"]["state"], "NOTIFICATION_DUE");
         assert!(state.status()["scopes"]["space"]["failure"].is_null());
+    }
+    #[tokio::test]
+    async fn opened_listener_waits_for_the_existing_owner_to_release_its_guard() {
+        let state = claude_channel::State::default();
+        let mut attempts = 0;
+        let result = tokio::time::timeout(Duration::from_secs(5), open_when_available("space", &state, || {
+            attempts += 1;
+            let first = attempts == 1;
+            async move {
+                if first {
+                    let mut error = ParticipantError::local("CLAUDE_CHANNEL_ALREADY_ACTIVE_OR_STATE_UNAVAILABLE", "MCP");
+                    error.details = Some(json!({"local_state":{"cause":"BUSY"}}));
+                    Err(error)
+                } else {
+                    Ok("original")
+                }
+            }
+        })).await.unwrap().unwrap();
+        assert_eq!(result, "original");
+        assert_eq!(attempts, 2);
+        assert_eq!(state.status()["scopes"]["space"]["state"], "RECOVERING");
     }
     #[tokio::test]
     async fn pending_rebind_keeps_original_background_activation_until_abort_recovers() {

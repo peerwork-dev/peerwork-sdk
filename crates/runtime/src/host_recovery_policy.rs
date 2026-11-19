@@ -59,6 +59,8 @@ pub(crate) fn notification_wait_retry(error: &crate::participant::ParticipantErr
     match error.code.as_str() {
         "NOTIFICATION_RECEIVER_PARTIALLY_AVAILABLE" | "RUNTIME_UNAVAILABLE" | "IPC_DISCONNECTED" | "IPC_OBSERVATION_TIMEOUT"
         | "IPC_HANDSHAKE_TIMEOUT" | "IPC_WRITE_TIMEOUT" | "PRESENTATION_REBIND_PENDING" => true,
+        "CLAUDE_CHANNEL_ALREADY_ACTIVE_OR_STATE_UNAVAILABLE" => error.details.as_ref()
+            .is_some_and(|detail| detail["local_state"]["cause"] == "BUSY"),
         "NOTIFICATION_RECEIVER_NOT_VERIFIED" => error.details.as_ref().is_none_or(|detail| {
             let fault = &detail["verification_failure"];
             if !fault.is_null() {
