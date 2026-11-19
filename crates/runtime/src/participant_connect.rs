@@ -1655,6 +1655,7 @@ pub fn cli(args: &[String]) -> Value {
                 "--project",
                 "--uninstall",
                 "--update",
+                "--rollback-executable",
                 "--engine-config",
                 "--runtime-config",
                 "--management",
@@ -1736,6 +1737,7 @@ pub fn cli(args: &[String]) -> Value {
             "peerwork connect --local DIRECTORY --resume ORIGINAL_SETUP_ID --install claude",
             "peerwork connect --local DIRECTORY --context",
             "peerwork connect --local ORIGINAL_DIRECTORY --participant HANDLE --update status|apply",
+            "peerwork connect --local ORIGINAL_DIRECTORY --participant HANDLE --update apply --runtime-config ORIGINAL_CONFIG --admin ORIGINAL_ADMIN --rollback-executable ORIGINAL_BINARY",
             "peerwork connect --local ORIGINAL_DIRECTORY --context --confirm-original",
             "peerwork connect --local DIRECTORY --participant OWNER_HANDLE --id APPROVAL_ID --approve-request -",
             "peerwork connect --local DIRECTORY --participant OWNER_HANDLE --id APPROVAL_ID --approve-code PW-AUTH-1.CODE",
@@ -1754,10 +1756,19 @@ pub fn cli(args: &[String]) -> Value {
             Some(install::persistent_executable(&std::env::current_exe().map_err(|_|local("EXECUTABLE_UNAVAILABLE"))?)?)
         }else{None};
         // Reject mixed intents before context/profile/discovery early returns.
+        let shared_update = values.contains_key("--rollback-executable");
         if let Some(mode)=values.get("--update") {
-            if !matches!(mode.as_str(),"status"|"apply") || values.keys().any(|key|!["--local","--participant","--project","--update"].contains(&key.as_str())) {
+            let regular = ["--local", "--participant", "--project", "--update"];
+            let shared = ["--runtime-config", "--admin", "--rollback-executable"];
+            if !matches!(mode.as_str(), "status" | "apply")
+                || values.keys().any(|key| !regular.contains(&key.as_str()) && !shared.contains(&key.as_str()))
+                || shared.iter().any(|key| values.contains_key(*key)) && (
+                    !shared.iter().all(|key| values.contains_key(*key)) || mode != "apply" || !values.contains_key("--local"))
+            {
                 return Err(local("UPDATE_USES_SELECTED_CLIENT_AND_STATUS_OR_APPLY"));
             }
+        } else if shared_update {
+            return Err(local("ROLLBACK_EXECUTABLE_REQUIRES_SHARED_RUNTIME_UPDATE"));
         }
 
         if let Some(path)=values.get("--profile") {
@@ -1796,7 +1807,7 @@ pub fn cli(args: &[String]) -> Value {
             },
             _=>return Err(local("BINDING_RECOVERY_REQUIRES_SELECTED_HOST_AND_STABLE_DECISION_ID")),
         };
-        if values.contains_key("--runtime-config")&&!selected_host{return Err(local("RUNTIME_CONFIG_REQUIRES_HOST_ATTACHMENT"));}
+        if values.contains_key("--runtime-config")&&!selected_host&&!shared_update{return Err(local("RUNTIME_CONFIG_REQUIRES_HOST_ATTACHMENT"));}
         if values.contains_key("--runtime-config")&&values.contains_key("--engine-config"){return Err(local("SELECT_ORIGINAL_RUNTIME_OR_ENGINE_NOT_BOTH"));}
         if (values.contains_key("--codex-chat")||values.contains_key("--codex-host"))&&!values.contains_key("--codex"){return Err(local("CODEX_CHAT_REQUIRES_CODEX"));}
         if values.contains_key("--codex") {
@@ -1851,7 +1862,14 @@ pub fn cli(args: &[String]) -> Value {
         }
         if let Some(mode)=values.get("--update") {
             let runtime=tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().map_err(|_|local("EXECUTOR_FAILED"))?;
-            return runtime.block_on(connect.update(values.get("--participant").map(String::as_str),mode=="apply"));
+            let participant = values.get("--participant").map(String::as_str);
+            if shared_update {
+                let config_path = std::path::absolute(&values["--runtime-config"]).map_err(|_| local("LOCAL_SELECTION_INVALID"))?;
+                let admin_endpoint = std::path::absolute(&values["--admin"]).map_err(|_| local("LOCAL_SELECTION_INVALID"))?;
+                let selection = RuntimeSelection { config_path: Some(config_path), admin_endpoint };
+                return runtime.block_on(connect.update_shared(participant, &selection, Path::new(&values["--rollback-executable"])));
+            }
+            return runtime.block_on(connect.update(participant,mode=="apply"));
         }
         if let Some(id)=values.get("--resume"){
             if values.keys().any(|k|!["--resume","--local","--project","--participant","--install"].contains(&k.as_str())){return Err(local("SETUP_RESUME_USES_SAVED_REQUEST_ONLY"));}

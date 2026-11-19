@@ -178,6 +178,17 @@ pub(crate) fn launch_guard(directory: &Path) -> Result<Option<SecureStateStore>>
     if !decode(&policy)?.automatic { return Err(error("RUNTIME_AUTOMATIC_START_DISABLED")); }
     Ok(Some(store))
 }
+/// Serialize an explicitly authorized maintenance start with user intent.
+pub(crate) fn maintenance_launch_guard(directory: &Path, expected: &Option<Policy>) -> Result<SecureStateStore> {
+    let store = SecureStateStore::open(&directory.join("startup.state"))
+        .map_err(|_| error("RUNTIME_STARTUP_POLICY_BUSY"))?;
+    let current = store.read_exact().map_err(|_| error("RUNTIME_STARTUP_POLICY_UNAVAILABLE"))?
+        .as_deref().map(decode).transpose()?;
+    if &current != expected {
+        return Err(error("RUNTIME_STARTUP_POLICY_CHANGED"));
+    }
+    Ok(store)
+}
 pub(crate) fn recovery_fence(directory: &Path) -> Result<SecureStateStore> {
     SecureStateStore::open(&directory.join("startup-recovery.state"))
         .map_err(|_| error("RUNTIME_RECOVERY_ALREADY_OWNED"))

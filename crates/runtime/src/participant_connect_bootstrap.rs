@@ -376,9 +376,9 @@ fn verify_existing_launch_config(path: &Path, expected: &RuntimeConfig) -> Resul
     Ok(())
 }
 async fn launch_at(config: RuntimeConfig, selected: Registration, config_path: PathBuf) -> Result<(Registration, PathBuf)> {
-    launch_using(config,selected,config_path,None).await
+    launch_using(config,selected,config_path,None,None).await
 }
-async fn launch_using(config: RuntimeConfig, selected: Registration, config_path: PathBuf, executable: Option<&Path>) -> Result<(Registration, PathBuf)> {
+async fn launch_using(config: RuntimeConfig, selected: Registration, config_path: PathBuf, executable: Option<&Path>, maintenance: Option<&Option<crate::runtime_startup::Policy>>) -> Result<(Registration, PathBuf)> {
     let runtime_dir = config.state_directory.clone();
     create_private_state_directory(&runtime_dir)
         .map_err(|_| local("RUNTIME_DIRECTORY_NOT_PRIVATE"))?;
@@ -445,6 +445,11 @@ async fn launch_using(config: RuntimeConfig, selected: Registration, config_path
             }
         }
     }
+    if maintenance.is_some() {
+        // An IPC outage is not proof that an externally launched writer exited.
+        let _writer = SecureStateStore::open(&runtime_dir.join("runtime.state"))
+            .map_err(|_| local("ORIGINAL_RUNTIME_WRITER_STILL_OWNED"))?;
+    }
     // A second launcher cannot own the original engine state. Never change the
     // state path to evade that fence. The parent observes the exact child.
     let log = runtime_dir.join("runtime.log");
@@ -499,7 +504,10 @@ async fn launch_using(config: RuntimeConfig, selected: Registration, config_path
         use std::os::windows::process::CommandExt;
         command.creation_flags(0x00000200 | 0x00000008);
     }
-    let intent = crate::runtime_startup::launch_guard(&runtime_dir)?;
+    let intent = match maintenance {
+        Some(expected) => Some(crate::runtime_startup::maintenance_launch_guard(&runtime_dir, expected)?),
+        None => crate::runtime_startup::launch_guard(&runtime_dir)?,
+    };
     owner
         .write_exact(
             &serde_json::to_vec(&Launch {
@@ -576,7 +584,7 @@ pub(crate) struct OwnedRuntime {
 impl OwnedRuntime {
     pub(crate) fn has_startup_launcher(&self)->bool {self.launch.as_ref().is_some_and(|launch|launch.launcher.is_some())}
     pub fn path(&self) -> PathBuf { self.config_path.clone().unwrap_or_else(||self.config.state_directory.join("config.json")) }
-    fn load(&self) -> Result<RuntimeConfig> {
+    pub(super) fn load(&self) -> Result<RuntimeConfig> {
         serde_json::from_value(crate::communication_store::private_json(&self.path(),65536)
             .map_err(|_|local("RUNTIME_CONFIG_NOT_PRIVATE"))?).map_err(|_|local("RUNTIME_CONFIG_INVALID"))
     }
@@ -636,6 +644,16 @@ impl OwnedRuntime {
         launcher.verify()?;
         self.restart_using(committed,Some(&launcher.executable)).await
     }
+    pub(super) async fn launch_shared(&self, artifact: &crate::runtime_startup::Launcher,
+        policy: &Option<crate::runtime_startup::Policy>) -> Result<()> {
+        artifact.verify()?;
+        if self.config_path.is_none() || serde_json::to_value(self.load()?).ok() != serde_json::to_value(&self.config).ok() {
+            return Err(local("ORIGINAL_RUNTIME_CONFIG_CHANGED"));
+        }
+        launch_using(self.config.clone(), self.registration.clone(), self.path(),
+            Some(&artifact.executable), Some(policy)).await?;
+        Ok(())
+    }
     async fn restart_using(&self, committed:&RuntimeConfig, executable:Option<&Path>)->Result<()> {
         self.same_engine(committed)?;
         if serde_json::to_value(self.load()?).ok()!=serde_json::to_value(committed).ok(){return Err(local("ORIGINAL_RUNTIME_CONFIG_CHANGED"));}
@@ -654,7 +672,7 @@ impl OwnedRuntime {
                     .map_err(|_|local("RUNTIME_LAUNCH_RECOVERY_REQUIRED"))?;
             }
         }
-        launch_using(committed.clone(),self.registration.clone(),self.path(),executable).await?;
+        launch_using(committed.clone(),self.registration.clone(),self.path(),executable,None).await?;
         Ok(())
     }
 }

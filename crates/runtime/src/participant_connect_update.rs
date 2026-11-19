@@ -136,7 +136,156 @@ fn continuation(
         Value::Null
     }
 }
+use crate::runtime_startup::{Launcher, Policy};
+
+#[derive(Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+enum SharedPhase { Stopping, Starting, RollingBack, RolledBack, Complete }
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SharedUpdate {
+    original: bootstrap::OwnedRuntime,
+    target: Launcher,
+    rollback: Launcher,
+    previous_version: String,
+    receivers: Value,
+    hosts: Vec<crate::participant_dispatch::HostConfig>,
+    policy: Option<Policy>,
+    phase: SharedPhase,
+}
+
+fn save_shared(store: &SecureStateStore, update: &SharedUpdate) -> Result<()> {
+    store.write_exact(&serde_json::to_vec(update).map_err(|_| local("UPDATE_STATE_INVALID"))?)
+        .map_err(|_| local("UPDATE_STATE_WRITE_FAILED"))
+}
+
+fn read_shared_config(selection: &bootstrap::RuntimeSelection) -> Result<crate::communication_runtime::RuntimeConfig> {
+    let path = selection.config_path.as_deref().ok_or_else(|| local("ORIGINAL_RUNTIME_CONFIG_SELECTION_REQUIRED"))?;
+    let config: crate::communication_runtime::RuntimeConfig = serde_json::from_value(
+        crate::communication_store::private_json(path, 65536).map_err(|_| local("RUNTIME_CONFIG_NOT_PRIVATE"))?,
+    ).map_err(|_| local("RUNTIME_CONFIG_INVALID"))?;
+    if !config.state_directory.is_absolute() || selection.admin_endpoint != config.state_directory.join("admin.json") {
+        return Err(local("ORIGINAL_RUNTIME_CONFIG_MISMATCH"));
+    }
+    Ok(config)
+}
+
+fn verify_shared_state(update: &SharedUpdate, status: &Value) -> Result<()> {
+    if status["receivers"] != update.receivers
+        || serde_json::to_value(host_inventory(&update.original, Some(status))?).ok()
+            != serde_json::to_value(&update.hosts).ok()
+    {
+        return Err(local("UPDATE_ORIGINAL_RECEIVING_BINDINGS_CHANGED"));
+    }
+    Ok(())
+}
+async fn rollback_version(artifact: &Launcher) -> Result<String> {
+    let mut command = tokio::process::Command::new(&artifact.executable);
+    command.arg("version").kill_on_drop(true);
+    let output = tokio::time::timeout(std::time::Duration::from_secs(5), command.output())
+        .await.map_err(|_| local("UPDATE_ROLLBACK_VERSION_UNAVAILABLE"))?
+        .map_err(|_| local("UPDATE_ROLLBACK_VERSION_UNAVAILABLE"))?;
+    if !output.status.success() || output.stdout.len() > 4096 {
+        return Err(local("UPDATE_ROLLBACK_VERSION_UNAVAILABLE"));
+    }
+    let version: Value = serde_json::from_slice(&output.stdout)
+        .map_err(|_| local("UPDATE_ROLLBACK_VERSION_UNAVAILABLE"))?;
+    version["version"].as_str().map(str::to_owned).ok_or_else(|| local("UPDATE_ROLLBACK_VERSION_UNAVAILABLE"))
+}
+
 impl Connect {
+    /// Explicit local-owner takeover for a directly launched shared runtime.
+    /// Its original state directory serializes updates across all registries.
+    pub(super) async fn update_shared(&mut self, participant: Option<&str>,
+        selection: &bootstrap::RuntimeSelection, rollback_path: &Path) -> Result<Value> {
+        self.require_writer()?;
+        let handle = self.selected_handle(participant)?.ok_or_else(|| local("LOCAL_SELECTION_REQUIRED"))?;
+        let registration = self.registry.participants.get(&handle).cloned().ok_or_else(|| local("LOCAL_SELECTION_REQUIRED"))?;
+        let config = read_shared_config(selection)?;
+        let directory = &config.state_directory;
+        let target = Launcher::capture(install::persistent_executable(
+            &std::env::current_exe().map_err(|_| local("EXECUTABLE_UNAVAILABLE"))?)?)?;
+        let rollback = Launcher::capture(install::persistent_executable(rollback_path)?)?;
+        let _fence = crate::runtime_startup::recovery_fence(directory)?;
+        let store = SecureStateStore::open(&directory.join("shared-update.state"))
+            .map_err(|_| local("UPDATE_ALREADY_OWNED_OR_UNSAFE"))?;
+        let persisted = store.read_exact().map_err(|_| local("UPDATE_STATE_UNAVAILABLE"))?
+            .map(|wire| serde_json::from_slice::<SharedUpdate>(&wire).map_err(|_| local("UPDATE_STATE_INVALID")))
+            .transpose()?;
+        let mut update = if let Some(saved) = persisted.filter(|saved| {
+            !matches!(saved.phase, SharedPhase::Complete | SharedPhase::RolledBack) || saved.target == target
+        }) {
+            if saved.original.registration != registration || saved.original.path() != *selection.config_path.as_ref().unwrap()
+                || serde_json::to_value(&saved.original.config).ok() != serde_json::to_value(&config).ok()
+                || saved.target != target || saved.rollback != rollback {
+                return Err(local("UPDATE_RESUME_ORIGINAL_ARTIFACT_AND_SELECTION"));
+            }
+            saved
+        } else {
+            let original = self.runtime_for_source(&handle, selection).await?;
+            let status = observation(&original).await?;
+            let version = rollback_version(&rollback).await?;
+            if status["sdk_version"] != version || rollback == target {
+                return Err(local("UPDATE_ROLLBACK_RUNTIME_VERSION_MISMATCH"));
+            }
+            let hosts = host_inventory(&original, Some(&status))?;
+            let update = SharedUpdate {original, target, rollback, previous_version: version,
+                receivers: status["receivers"].clone(), hosts,
+                policy: crate::runtime_startup::read(directory)?, phase: SharedPhase::Stopping};
+            save_shared(&store, &update)?;
+            update
+        };
+        if update.phase == SharedPhase::Stopping {
+            // If the stop reply was lost, stop still requires writer release.
+            update.target.verify()?;
+            update.rollback.verify()?;
+            if crate::runtime_startup::read(directory)? != update.policy {
+                return Err(local("RUNTIME_STARTUP_POLICY_CHANGED"));
+            }
+            update.original.stop().await?;
+            update.phase = SharedPhase::Starting;
+            save_shared(&store, &update)?;
+        }
+        if update.phase == SharedPhase::Starting {
+            match update.original.launch_shared(&update.target, &update.policy).await {
+                Ok(()) => {}
+                Err(error) if matches!(error.code.as_str(),
+                    "RUNTIME_START_FAILED" | "RUNTIME_START_FAILED_CHECK_ORIGINAL_STATE_OWNER") => {
+                    update.phase = SharedPhase::RollingBack;
+                    save_shared(&store, &update)?;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        if update.phase == SharedPhase::RollingBack {
+            update.original.launch_shared(&update.rollback, &update.policy).await?;
+            let status = observation(&update.original).await?;
+            verify_shared_state(&update, &status)?;
+            if status["sdk_version"] != update.previous_version {
+                return Err(local("UPDATE_ROLLBACK_RUNTIME_VERSION_MISMATCH"));
+            }
+            update.phase = SharedPhase::RolledBack;
+            save_shared(&store, &update)?;
+        }
+        if update.phase == SharedPhase::RolledBack {
+            return Ok(json!({"state":"SHARED_RUNTIME_UPDATE_ROLLED_BACK","runtime_version":observation(&update.original).await?["sdk_version"],
+                "model_wake":"NOT_ATTESTED"}));
+        }
+        let status = observation(&update.original).await?;
+        verify_shared_state(&update, &status)?;
+        if status["sdk_version"] != env!("CARGO_PKG_VERSION") {
+            return Err(local("UPDATE_TARGET_RUNTIME_VERSION_MISMATCH"));
+        }
+        let hosts = host_inventory(&update.original, Some(&status))?;
+        let installations = install::update_owned(self, &handle, &update.target.executable)?;
+        update.phase = SharedPhase::Complete;
+        save_shared(&store, &update)?;
+        Ok(json!({"state":"SHARED_RUNTIME_UPDATE_COMPLETE","runtime_version":status["sdk_version"],
+            "installations":installations,"original_operations":"PRESERVED","startup_policy":"PRESERVED",
+            "model_wake":"NOT_ATTESTED","continuation":continuation(self,&handle,false,&hosts)}))
+    }
+
     /// Inspect or resume an update of the already selected client. `apply`
     /// uses this CLI's artifact and never selects new identity/host authority.
     pub async fn update(&mut self, participant: Option<&str>, apply: bool) -> Result<Value> {
