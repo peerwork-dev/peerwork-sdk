@@ -255,6 +255,7 @@ impl Connect {
             if policy.as_ref().is_some_and(|policy| !policy.automatic) {
                 return Err(local("RUNTIME_AUTOMATIC_START_DISABLED"));
             }
+            original.preflight_shared_launcher()?;
             let update = SharedUpdate {original, target, rollback, previous_version: version,
                 receivers: status["receivers"].clone(), hosts, policy, phase: SharedPhase::Stopping};
             save_shared(&store, &update)?;
@@ -267,8 +268,7 @@ impl Connect {
             if crate::runtime_startup::read(directory)? != update.policy {
                 return Err(local("RUNTIME_STARTUP_POLICY_CHANGED"));
             }
-            update.original.stop().await?;
-            update.original.retire_stopped_shared_launcher()?;
+            update.original.stop_for_shared_update().await?;
             update.phase = SharedPhase::Starting;
             save_shared(&store, &update)?;
         }
@@ -707,6 +707,18 @@ mod process_tests {
                 .await
                 .unwrap();
         }
+        async fn shared_connect(&self) -> Connect {
+            let binding = RuntimeClient::connect(self.registration.endpoint_path.clone(),
+                &self.registration.origin, &self.registration.actor_id).await.unwrap()
+                .call(json!({"method":"binding"})).await.unwrap();
+            let mut connect = Connect::open(&self.root.path().join("registry")).unwrap();
+            connect.registry.participants.get_mut("peer").unwrap().origin =
+                binding["origin"].as_str().unwrap().to_owned();
+            connect.registry.verified_bindings.insert("peer".into(),
+                crate::communication_runtime::canonical_binding(&binding));
+            connect.save().unwrap();
+            connect
+        }
     }
     impl Drop for Fixture {
         fn drop(&mut self) {
@@ -737,21 +749,42 @@ mod process_tests {
             admin_endpoint: directory.join("admin.json"), config_path: Some(directory.join("config.json")),
         };
         let original_config = std::fs::read(selection.config_path.as_ref().unwrap()).unwrap();
-        let binding = RuntimeClient::connect(fixture.registration.endpoint_path.clone(),
-            &fixture.registration.origin, &fixture.registration.actor_id).await.unwrap()
-            .call(json!({"method":"binding"})).await.unwrap();
-        let mut connect = Connect::open(&fixture.root.path().join("registry")).unwrap();
-        connect.registry.participants.get_mut("peer").unwrap().origin =
-            binding["origin"].as_str().unwrap().to_owned();
-        connect.registry.verified_bindings.insert("peer".into(),
-            crate::communication_runtime::canonical_binding(&binding));
-        connect.save().unwrap();
+        let mut connect = fixture.shared_connect().await;
         for _ in 0..2 {
             let result = connect.update_shared_using(Some("peer"), &selection, target.clone(), rollback.clone()).await.unwrap();
             assert_eq!(result["state"], "SHARED_RUNTIME_UPDATE_ROLLED_BACK");
             assert_eq!(result["runtime_version"], rollback_version(&rollback).await.unwrap());
             assert_eq!(std::fs::read(selection.config_path.as_ref().unwrap()).unwrap(), original_config);
             assert!(crate::runtime_startup::read(directory).unwrap().is_none());
+        }
+    }
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore = "requires the native CLI and a previous resident binary"]
+    async fn shared_update_stale_launch_pin_keeps_original_runtime_running() {
+        let mut fixture = Fixture::new().await;
+        let directory = &fixture.config.state_directory;
+        let selection = bootstrap::RuntimeSelection {
+            admin_endpoint: directory.join("admin.json"), config_path: Some(directory.join("config.json")),
+        };
+        let pin = SecureStateStore::open(&directory.join("bootstrap.state")).unwrap();
+        let mut launch: Value = serde_json::from_slice(&pin.read_exact().unwrap().unwrap()).unwrap();
+        launch["config_digest"] = json!("0".repeat(64));
+        pin.write_exact(&serde_json::to_vec(&launch).unwrap()).unwrap();
+        drop(pin);
+
+        let mut connect = fixture.shared_connect().await;
+        let target = Launcher::capture(fixture.binary.clone()).unwrap();
+        let rollback = Launcher::capture(fixture.previous.clone()).unwrap();
+        for _ in 0..2 {
+            let error = connect.update_shared_using(Some("peer"), &selection, target.clone(), rollback.clone()).await.unwrap_err();
+            assert_eq!(error.code, "ORIGINAL_RUNTIME_CONFIG_CHANGED");
+            assert_eq!(error.details.unwrap()["field"], "bootstrap.state.config_digest");
+            assert!(fixture.child.try_wait().unwrap().is_none());
+            let status = crate::communication_runtime::call(&selection.admin_endpoint, json!({"method":"status"})).await.unwrap();
+            assert_eq!(status["ok"], true);
+            assert_eq!(status["value"]["sdk_version"], rollback_version(&rollback).await.unwrap());
+            let update_state = SecureStateStore::open(&directory.join("shared-update.state")).unwrap();
+            assert!(update_state.read_exact().unwrap().is_none());
         }
     }
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

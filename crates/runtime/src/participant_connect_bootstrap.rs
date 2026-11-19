@@ -646,20 +646,33 @@ impl OwnedRuntime {
         launcher.verify()?;
         self.restart_using(committed,Some(&launcher.executable)).await
     }
-    pub(super) fn retire_stopped_shared_launcher(&self) -> Result<()> {
+    fn checked_shared_launcher(&self) -> Result<(SecureStateStore, Option<Launch>)> {
         let directory = &self.config.state_directory;
         let marker = SecureStateStore::open(&directory.join("bootstrap.state"))
             .map_err(|_| local("RUNTIME_LAUNCH_ALREADY_OWNED_OR_UNSAFE"))?;
-        let _writer = SecureStateStore::open(&directory.join("runtime.state"))
-            .map_err(|_| local("ORIGINAL_RUNTIME_WRITER_STILL_OWNED"))?;
         let Some(bytes) = marker.read_exact().map_err(|_| local("RUNTIME_LAUNCH_RECOVERY_REQUIRED"))?
-            else { return Ok(()); };
-        let mut launch: Launch = serde_json::from_slice(&bytes)
+            else { return Ok((marker, None)); };
+        let launch: Launch = serde_json::from_slice(&bytes)
             .map_err(|_| local("RUNTIME_LAUNCH_RECOVERY_REQUIRED"))?;
         let digest = sha256_hex(&serde_json::to_vec(&self.config).map_err(|_| local("RUNTIME_CONFIG_INVALID"))?);
         if launch.config_digest != digest {
-            return Err(local("ORIGINAL_RUNTIME_CONFIG_CHANGED"));
+            let mut error = local("ORIGINAL_RUNTIME_CONFIG_CHANGED");
+            error.details = Some(json!({"field":"bootstrap.state.config_digest",
+                "stage":"BEFORE_MAINTENANCE_STOP"}));
+            return Err(error);
         }
+        Ok((marker, Some(launch)))
+    }
+    pub(super) fn preflight_shared_launcher(&self) -> Result<()> {
+        self.checked_shared_launcher().map(|_| ())
+    }
+    pub(super) async fn stop_for_shared_update(&self) -> Result<()> {
+        // Keep the checked launcher fenced while the existing writer stops.
+        let (marker, launch) = self.checked_shared_launcher()?;
+        self.stop().await?;
+        let Some(mut launch) = launch else { return Ok(()); };
+        let _writer = SecureStateStore::open(&self.config.state_directory.join("runtime.state"))
+            .map_err(|_| local("ORIGINAL_RUNTIME_WRITER_STILL_OWNED"))?;
         launch.pid = Some(0);
         launch.process_token = None;
         marker.write_exact(&serde_json::to_vec(&launch)
