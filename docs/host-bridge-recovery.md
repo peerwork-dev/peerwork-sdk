@@ -147,6 +147,12 @@ of the same batch, including when the first result is unknown. Check that the
 original thread reads a fresh test batch before relying on automatic wake.
 A queued receipt confirms submission only.
 
+Starting with 0.3.49, resident receiver rebind accepts this authenticated queue
+when it can accept input. The original runtime can stay running during the
+switch to the explicitly selected Bridge. The queue still requires an owner
+controlled Codex home with a protected path. Check that path before scheduling
+host maintenance.
+
 For `BRIDGE_UNAVAILABLE`, the runtime can relaunch the original same-user Codex
 bridge while automatic receiving is enabled. Run the original protected
 `peerwork bridge run` command once on this version to record its successful
@@ -416,7 +422,8 @@ version. Run this command only for a directly launched runtime whose
 operator controls the lifecycle of every affected client. A supervisor-owned
 runtime uses the supervisor's update procedure.
 
-Maintenance stop leaves startup intent intact. The updater verifies the
+Maintenance stop leaves startup intent intact. The updater checks the launch
+configuration digest before stopping the original runtime. It verifies the
 original engine inventory, waits for the existing writer to release its
 state, and starts the selected binary against the same configuration.
 Repeat the exact selection after interruption. A definite failure to start
