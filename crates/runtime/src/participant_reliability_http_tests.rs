@@ -698,6 +698,22 @@ async fn selected_real_agy_background_fixture() {
     tokio::time::timeout(Duration::from_secs(120),async {
         while !directory.join("trigger").is_file(){tokio::time::sleep(Duration::from_millis(25)).await;}
     }).await.unwrap();
+    let transient_fault = std::env::var_os("PEERWORK_AGY_BACKGROUND_TRANSIENT_FAULT").is_some();
+    if transient_fault {
+        let selection = &selected.scopes["main"];
+        let options = WatchOptions { workspace_id: selection.workspace_id.clone(),
+            mailbox_id: selection.mailbox_id.clone(), membership_id: selection.membership_id.clone(),
+            consumer_id: "background-fixture".into(), host_destination: None };
+        setup.cohort.service.config(json!({"offline":true,"close_connections":true})).await;
+        tokio::time::timeout(Duration::from_secs(15), async {
+            loop {
+                let value = setup.client.call(json!({"method":"watch","options":options})).await.unwrap();
+                if value["receiver_link_verified"] == false { break; }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        }).await.expect("the selected receiver did not observe the injected outage");
+        setup.cohort.service.config(json!({"offline":false})).await;
+    }
     setup.send("PW-NATIVE-AGY-BACKGROUND-EVENT").await;
     tokio::time::timeout(Duration::from_secs(100),async {
         while !directory.join("finish").is_file(){tokio::time::sleep(Duration::from_millis(25)).await;}
@@ -711,5 +727,7 @@ async fn selected_real_agy_background_fixture() {
     assert!(hub.store.status(&key).unwrap()["retained_batches"].as_u64().unwrap()>=2,"the host must actually read the new opaque batch");
     assert!(hub.store.current(&key).unwrap().is_none(),"host output alone is not notification observation");
     drop(tools);setup.finish().await;
-    crate::communication_host::write_private(&directory.join("result.json"),b"{\"state\":\"PASS\",\"ingestion\":\"REAL_LOCAL_PRODUCT_HTTP_SYNTHETIC_DATA\",\"application_consumption\":\"UNCHANGED\"}").unwrap();
+    let result = json!({"state":"PASS","ingestion":"REAL_LOCAL_PRODUCT_HTTP_SYNTHETIC_DATA",
+        "application_consumption":"UNCHANGED","transient_receiver_fault_injected":transient_fault});
+    crate::communication_host::write_private(&directory.join("result.json"), &serde_json::to_vec(&result).unwrap()).unwrap();
 }
