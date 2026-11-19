@@ -549,7 +549,7 @@ async fn codex_bridge_loss_recovers_and_the_original_thread_reads_a_fresh_probe(
         "mailbox_id":watch.mailbox_id,"membership_id":watch.membership_id}}
     })).unwrap()).unwrap();
     let client = RuntimeClient::connect(endpoint, &engine.origin, identity.actor_id()).await.unwrap();
-    async fn verified_after(client: &RuntimeClient, watch: &WatchOptions, since: i64) -> i64 {
+    async fn verified_after(client: &RuntimeClient, watch: &WatchOptions, admin: &Path, since: i64) -> i64 {
         let mut last = Value::Null;
         let result = tokio::time::timeout(Duration::from_secs(65), async {
             loop {
@@ -562,9 +562,18 @@ async fn codex_bridge_loss_recovers_and_the_original_thread_reads_a_fresh_probe(
                 tokio::time::sleep(Duration::from_millis(250)).await;
             }
         }).await;
-        result.unwrap_or_else(|_| panic!("fresh read not observed: {last}"))
+        if let Ok(stamp) = result { return stamp; }
+        let admin = ipc::call(admin, json!({"method":"status"})).await.unwrap_or_default();
+        let hosts: Vec<Value> = admin["value"]["hosts"].as_array().into_iter().flatten().map(|host| json!({
+            "state":host["state"],"code":host["code"],"notification_error":host["notification_error"],
+            "notification_code":host["notification"]["code"],"outcome":host["notification"]["outcome"]["state"],
+            "host_readiness":host["host_observation"]["ready"],
+            "host_can_attempt":host["host_observation"]["can_attempt"],
+            "host_input_delivery":host["host_observation"]["input_delivery"]
+        })).collect();
+        panic!("fresh read not observed: {last}; host={hosts:?}");
     }
-    let first = verified_after(&client, &watch, 0).await;
+    let first = verified_after(&client, &watch, &ready.admin_endpoint, 0).await;
     println!("CODEX_BRIDGE_RECOVERY_INITIAL_READ_VERIFIED");
     if std::env::var_os("PEERWORK_CODEX_LOCAL_QUEUE_TEST").is_some() {
         assert!(bridge.try_wait().unwrap().is_none());
@@ -588,7 +597,7 @@ async fn codex_bridge_loss_recovers_and_the_original_thread_reads_a_fresh_probe(
     } else {
         bridge.kill().await.unwrap();
     }
-    let fresh = verified_after(&client, &watch, first).await;
+    let fresh = verified_after(&client, &watch, &ready.admin_endpoint, first).await;
     assert!(fresh > first);
     if route_change {
         assert!(bridge.try_wait().unwrap().is_none(), "Bridge must survive a route change");
