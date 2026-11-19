@@ -133,6 +133,20 @@ daemon socket. The exact original thread and session must be loaded there.
 Peerwork verifies the local socket's peer UID and never starts a Codex daemon
 or resumes the thread while finding its owner.
 
+An operator can select the ordinary local Codex queue on an existing
+same-user bridge by setting `local_queue_only: true` in its protected Codex
+host configuration. Use the existing exact thread UUID for both `thread_id`
+and `expected_session_id`, and retain the original destination endpoint
+and pinned Codex executable, home and UID. The bridge uses `codex queue`
+without remote or resume flags. Make this selection explicitly because a
+local queue can accept input while its conversation is offline.
+
+Queue submission carries only an opaque notification reference. The bridge
+persists the admission before starting Codex and suppresses later submissions
+of the same batch, including when the first result is unknown. Check that the
+original thread reads a fresh test batch before relying on automatic wake.
+A queued receipt confirms submission only.
+
 For `BRIDGE_UNAVAILABLE`, the runtime can relaunch the original same-user Codex
 bridge while automatic receiving is enabled. Run the original protected
 `peerwork bridge run` command once on this version to record its successful

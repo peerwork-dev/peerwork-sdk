@@ -95,6 +95,20 @@ and reconcile it. A signed terminal refusal is not converted into a transient
 result. Invalid signatures, changed receiver generations and authority failures
 retain their existing isolation requirements.
 
+## Recovery of notification projections
+
+Temporary receive failures keep AGY background listeners and enabled Claude
+Channels attached to their original source. These frontends report
+`RECOVERING` with a bounded retry deadline and clear the failure after a
+successful observation. Authentication and evidence failures still follow
+the receiving stream's original quarantine and authority rules.
+
+A source that temporarily cannot provide a verified head keeps its original
+cursor. Healthy sources may schedule batches when there is no outstanding
+batch for their shared destination. An existing mixed batch is kept until
+it can be safely observed or reconciled. After a listener returns, the
+current host must support or perform another background call.
+
 ## Local notification storage
 
 Native 0.3.30 repairs accumulating Runtime/bridge call evidence. This is separate
