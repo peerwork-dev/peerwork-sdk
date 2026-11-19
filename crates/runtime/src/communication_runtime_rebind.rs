@@ -3,6 +3,28 @@
 use super::*;
 use crate::participant_rebind::{HostRebindRequest,resident::{Request,Selection,Snapshot,Source}};
 
+fn target_can_receive(adapter: &Value, mode: &str, health: &Value) -> bool {
+    health["ready"] == true || health["can_attempt"] == true && (mode == "TOOL_ONLY"
+        || adapter["kind"] == "bridge" && adapter["destination"]["host"] == "CODEX_APP_SERVER"
+            && health["input_delivery"] == "DURABLE_QUEUE")
+}
+
+#[cfg(test)]
+mod target_tests {
+    use super::*;
+
+    #[test]
+    fn resident_rebind_accepts_a_verified_codex_queue_without_claiming_a_live_session() {
+        let bridge = json!({"kind":"bridge","destination":{"host":"CODEX_APP_SERVER"}});
+        let queue = json!({"ready":false,"can_attempt":true,"input_delivery":"DURABLE_QUEUE"});
+        assert!(target_can_receive(&bridge, "LIVE", &queue));
+        assert!(!target_can_receive(&bridge, "LIVE", &json!({"ready":false,"can_attempt":false,"input_delivery":"DURABLE_QUEUE"})));
+        assert!(!target_can_receive(&bridge, "LIVE", &json!({"ready":false,"can_attempt":true})));
+        assert!(!target_can_receive(&json!({"kind":"codex"}), "LIVE", &queue));
+        assert!(target_can_receive(&json!({"kind":"agy-app"}), "TOOL_ONLY", &json!({"can_attempt":true})));
+    }
+}
+
 impl Runtime {
     fn presentation_rebind_selection(&self,snapshot:&Snapshot)->Result<(String,Vec<String>)> {
         let owner=self.owners.get(&snapshot.request.engine).ok_or_else(||local("HOST_REBIND_ENGINE_NOT_FOUND"))?;
@@ -112,7 +134,7 @@ impl Runtime {
             let check=|host:&mut crate::communication_host::Host|->std::result::Result<(),&'static str>{
                 if crate::participant_inbox::HostBinding::new(host.destination.clone()).map_err(|_|"HOST_REBIND_TARGET_SESSION_CHANGED")?!=wanted{return Err("HOST_REBIND_TARGET_SESSION_CHANGED");}
                 for scope in scopes {let health=host.health(&scope)?;
-                    if health["ready"]!=true && !(host.mode=="TOOL_ONLY"&&health["can_attempt"]==true){return Err("HOST_REBIND_TARGET_HOST_NOT_READY");}
+                    if !target_can_receive(&adapter, &host.mode, &health) {return Err("HOST_REBIND_TARGET_HOST_NOT_READY");}
                 }Ok(())
             };
             if let Some(host)=borrowed {
@@ -120,7 +142,7 @@ impl Runtime {
             }else{
                 let budget=crate::communication_host::operation::Budget::new(Duration::from_secs(10));
                 let _operation=budget.scope("REBIND");budget.clamp(deadline);
-                check(&mut crate::communication_host::Host::open_progress(adapter,executor,budget).map_err(local)?).map_err(local)
+                check(&mut crate::communication_host::Host::open_progress(adapter.clone(),executor,budget).map_err(local)?).map_err(local)
             }
         }).await.map_err(|_|local("HOST_REBIND_TARGET_HOST_FAILED"))?
     }

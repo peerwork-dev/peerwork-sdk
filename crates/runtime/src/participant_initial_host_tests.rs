@@ -534,14 +534,34 @@ async fn codex_bridge_loss_recovers_and_the_original_thread_reads_a_fresh_probe(
     source.request.adapter = bridge_ready.adapter;
     // Rebinding checks the live host independently of descriptor creation.
     tokio::time::sleep(Duration::from_secs(1)).await;
-    let moved = rebind_host(&source.path, source.request.clone()).await.unwrap();
-    let target: RuntimeConfig = serde_json::from_value(private_json(&source.path, 65536).unwrap()).unwrap();
-    let mut watch = source.old.clone();
-    watch.host_destination = Some(moved["destination_digest"].as_str().unwrap().into());
+    let resident_queue = std::env::var_os("PEERWORK_CODEX_RESIDENT_QUEUE_TEST").is_some();
+    let (target, moved) = if resident_queue {
+        (source.runtime.clone(), None)
+    } else {
+        let moved = rebind_host(&source.path, source.request.clone()).await.unwrap();
+        let target = serde_json::from_value(private_json(&source.path, 65536).unwrap()).unwrap();
+        (target, Some(moved))
+    };
     let cancel = KernelCancellationToken::new();
     let (tx, rx) = tokio::sync::oneshot::channel();
     let running = tokio::spawn(ipc::serve(target, cancel.clone(), tx));
     let ready = rx.await.unwrap().unwrap();
+    let moved = match moved {
+        Some(moved) => moved,
+        None => {
+            let mut last = Value::Null;
+            let result = tokio::time::timeout(Duration::from_secs(30), async {
+                loop {
+                    last = rpc(&ready.admin_endpoint, json!({"method":"host_rebind","rebind":source.request})).await;
+                    if last["state"] == "HOST_REBIND_READY" { return last.clone(); }
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+            }).await;
+            result.unwrap_or_else(|_| panic!("resident queue attachment did not settle: {last}"))
+        },
+    };
+    let mut watch = source.old.clone();
+    watch.host_destination = Some(moved["destination_digest"].as_str().unwrap().into());
     let endpoint = ready.client_endpoints[&source.client_name].clone();
     write_private(&root.join("profile.json"), &serde_json::to_vec(&json!({
         "format":"peerwork.agent-profile.v1","endpoint_path":endpoint,"expected_origin":origin,
