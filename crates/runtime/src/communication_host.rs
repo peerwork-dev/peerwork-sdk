@@ -1026,8 +1026,10 @@ impl Host {
         if self.config["kind"]=="opencode" {return opencode::health(self)}
         if self.config["kind"]=="codex" && self.config["local_queue_only"] == true {
             codex_proxy::validate_queue_target(&self.config)?;
+            let route = json!(["local_queue",self.config["codex_home"],self.config["thread_id"]]);
             return Ok(json!({"ready":false,"can_attempt":true,"execution_state":"UNKNOWN",
-                "input_delivery":"DURABLE_QUEUE","model_response":"NOT_ATTESTED"}));
+                "input_delivery":"DURABLE_QUEUE","route_fingerprint":peerwork_core::crypto::sha256_hex(route.to_string().as_bytes()),
+                "model_response":"NOT_ATTESTED"}));
         }
         if self.config["kind"]=="codex"&&self.codex.is_none(){self.reconnect()?;}
         if let Some(host) = &mut self.agy_stdio {

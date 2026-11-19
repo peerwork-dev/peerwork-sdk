@@ -879,8 +879,8 @@ async fn run_owned(
                 {
                     reverify.insert(owner.clone());
                 }
-                if value["ready"] == true && reverify.contains(&owner)
-                    && notification_hub.store.reverify_after_recovery(&owner)?
+                if (value["ready"] == true || value["can_attempt"] == true && value["input_delivery"] == "DURABLE_QUEUE")
+                    && reverify.contains(&owner) && notification_hub.store.reverify_after_recovery(&owner)?
                 {
                     reverify.remove(&owner);
                 }
