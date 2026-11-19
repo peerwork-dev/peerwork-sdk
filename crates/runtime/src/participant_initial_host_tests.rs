@@ -552,7 +552,9 @@ async fn codex_bridge_loss_recovers_and_the_original_thread_reads_a_fresh_probe(
             let mut last = Value::Null;
             let result = tokio::time::timeout(Duration::from_secs(30), async {
                 loop {
-                    last = rpc(&ready.admin_endpoint, json!({"method":"host_rebind","rebind":source.request})).await;
+                    let response = ipc::call(&ready.admin_endpoint, json!({"method":"host_rebind","rebind":source.request})).await.unwrap();
+                    assert_eq!(response["ok"], true, "{response}");
+                    last = response["value"].clone();
                     if last["state"] == "HOST_REBIND_READY" { return last.clone(); }
                     tokio::time::sleep(Duration::from_millis(100)).await;
                 }
