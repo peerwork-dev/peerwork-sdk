@@ -313,7 +313,7 @@ impl Hub {
             if head["receiver_link_verified"] != true || !head["verification_failure"].is_null() {
                 let mut problem = error("NOTIFICATION_RECEIVER_NOT_VERIFIED");
                 problem.details = Some(
-                    json!({"state":head["state"],"code":head["code"],"verification_failure":head["verification_failure"]}),
+                    json!({"source":key,"state":head["state"],"code":head["code"],"verification_failure":head["verification_failure"]}),
                 );
                 failure.get_or_insert(problem);
                 unavailable.push(key);
@@ -332,7 +332,7 @@ impl Hub {
             (None, Some(problem)) if !heads.is_empty() => {
                 let mut partial = error("NOTIFICATION_RECEIVER_PARTIALLY_AVAILABLE");
                 let detail = problem.details.unwrap_or_default();
-                partial.details = Some(json!({"state": detail["state"],
+                partial.details = Some(json!({"source":detail["source"],"state": detail["state"],
                     "code": detail["code"].as_str().unwrap_or(&problem.code),
                     "verification_failure": detail["verification_failure"]}));
                 Err(partial)

@@ -987,8 +987,10 @@ async fn run_owned(
         }
         // Legacy call facts remain available for reporting/retirement. They
         // never replay historical bodies through the new notification path.
-        if let Err(problem)=compact_notifications::step(&config,&notification_hub,watches,adapter,&status,&mut next).await {
-            if let Ok(mut value)=status.lock(){value["notification_error"]=json!(problem.code);}
+        match compact_notifications::step(&config,&notification_hub,watches,adapter,&status,&mut next).await {
+            Ok(true) => if let Ok(mut value) = status.lock() { value["notification_error"] = Value::Null; },
+            Err(problem) => if let Ok(mut value) = status.lock() { value["notification_error"] = json!(problem.code); },
+            Ok(false) => {}
         }
         tokio::select! {
             _=cancel.cancelled()=>break,

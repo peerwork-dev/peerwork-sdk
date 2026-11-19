@@ -102,7 +102,7 @@ fn notification_failure(error: &ParticipantError) -> Option<Value> {
     }
     error.details.as_ref().map(|detail| {
         let fault = &detail["verification_failure"];
-        json!({"phase":"NOTIFICATION_RECEIVER_OBSERVATION","receiver_state":detail["state"],
+        json!({"phase":"NOTIFICATION_RECEIVER_OBSERVATION","source":detail["source"],"receiver_state":detail["state"],
             "receiver_code":detail["code"],"verification_code":fault["code"],
             "verification_phase":fault["phase"]})
     })
