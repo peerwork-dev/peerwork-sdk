@@ -277,10 +277,12 @@ impl Connect {
             save_shared(&store, &update)?;
         }
         if update.phase == SharedPhase::RolledBack {
+            update.original.verify_shared_launcher(&update.rollback)?;
             return Ok(json!({"state":"SHARED_RUNTIME_UPDATE_ROLLED_BACK","runtime_version":observation(&update.original).await?["sdk_version"],
                 "model_wake":"NOT_ATTESTED"}));
         }
         let status = observation(&update.original).await?;
+        update.original.verify_shared_launcher(&update.target)?;
         verify_shared_state(&update, &status)?;
         if status["sdk_version"] != env!("CARGO_PKG_VERSION") {
             return Err(local("UPDATE_TARGET_RUNTIME_VERSION_MISMATCH"));

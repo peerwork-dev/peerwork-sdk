@@ -652,6 +652,18 @@ impl OwnedRuntime {
         }
         launch_using(self.config.clone(), self.registration.clone(), self.path(),
             Some(&artifact.executable), Some(policy)).await?;
+        self.verify_shared_launcher(artifact)
+    }
+    pub(super) fn verify_shared_launcher(&self, artifact: &crate::runtime_startup::Launcher) -> Result<()> {
+        let marker = self.config.state_directory.join("bootstrap.state");
+        let raw = SecureStateStore::read_snapshot(&marker, 65536)
+            .map_err(|_| local("UPDATE_RUNTIME_ARTIFACT_UNCONFIRMED"))?;
+        let launch: Launch = serde_json::from_slice(&raw)
+            .map_err(|_| local("UPDATE_RUNTIME_ARTIFACT_UNCONFIRMED"))?;
+        if launch.launcher.as_ref() != Some(artifact)
+            || !alive(launch.pid.unwrap_or(0), launch.process_token.as_deref())? {
+            return Err(local("UPDATE_RUNTIME_ARTIFACT_UNCONFIRMED"));
+        }
         Ok(())
     }
     async fn restart_using(&self, committed:&RuntimeConfig, executable:Option<&Path>)->Result<()> {
