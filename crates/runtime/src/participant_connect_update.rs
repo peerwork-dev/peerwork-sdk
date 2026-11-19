@@ -69,6 +69,20 @@ fn save(store: &SecureStateStore, update: &Update) -> Result<()> {
         .write_exact(&serde_json::to_vec(update).map_err(|_| local("UPDATE_STATE_INVALID"))?)
         .map_err(|_| local("UPDATE_STATE_WRITE_FAILED"))
 }
+fn verify_engines(config: &crate::communication_runtime::RuntimeConfig, status: &Value) -> Result<()> {
+    let engines = status["engines"].as_array()
+        .filter(|engines| engines.len() == config.engines.len())
+        .ok_or_else(|| local("HOST_RUNTIME_BINDING_MISMATCH"))?;
+    for engine in &config.engines {
+        let digest = engine.binding_digest()?;
+        if !engines.iter().any(|observed| observed["name"] == engine.name
+            && observed["actor_id"] == engine.expected_actor
+            && observed["engine_digest"] == digest) {
+            return Err(local("HOST_RUNTIME_BINDING_MISMATCH"));
+        }
+    }
+    Ok(())
+}
 async fn observation(owned: &bootstrap::OwnedRuntime) -> Result<Value> {
     let response = crate::communication_runtime::call(
         &owned.config.state_directory.join("admin.json"),
@@ -79,16 +93,7 @@ async fn observation(owned: &bootstrap::OwnedRuntime) -> Result<Value> {
         return Err(local("UPDATE_RUNTIME_STATUS_UNAVAILABLE"));
     }
     let status = &response["value"];
-    for engine in &owned.config.engines {
-        let digest = engine.binding_digest()?;
-        if !status["engines"].as_array().is_some_and(|engines| {
-            engines
-                .iter()
-                .any(|e| e["actor_id"] == engine.expected_actor && e["engine_digest"] == digest)
-        }) {
-            return Err(local("HOST_RUNTIME_BINDING_MISMATCH"));
-        }
-    }
+    verify_engines(&owned.config, status)?;
     let client = RuntimeClient::connect(
         owned.registration.endpoint_path.clone(),
         &owned.registration.origin,

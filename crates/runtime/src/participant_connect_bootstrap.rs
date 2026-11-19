@@ -609,8 +609,14 @@ impl OwnedRuntime {
         let mut result=crate::communication_runtime::call(&admin,json!({"method":"stop","maintenance":true})).await;
         // An authenticated old runtime rejects the new field before effect.
         // Its stop implementation cannot change the new startup intent.
-        if result.as_ref().is_ok_and(|v|v["ok"]==false && v["error"]["code"]=="ADMIN_COMMAND_INVALID") {
+        if self.config_path.is_none()
+            && result.as_ref().is_ok_and(|v|v["ok"]==false && v["error"]["code"]=="ADMIN_COMMAND_INVALID") {
             result=crate::communication_runtime::call(&admin,json!({"method":"stop"})).await;
+        }
+        if let Ok(response) = &result {
+            if response["ok"] == false && response["error"]["effect_certainty"] == "NOT_SUBMITTED" {
+                return Err(local(response["error"]["code"].as_str().unwrap_or("ORIGINAL_RUNTIME_STOP_REJECTED")));
+            }
         }
         for _ in 0..100 {
             if let Ok(_fence)=SecureStateStore::open(&self.config.state_directory.join("runtime.state")) {return Ok(());}
