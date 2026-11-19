@@ -740,6 +740,8 @@ mod process_tests {
             &fixture.registration.origin, &fixture.registration.actor_id).await.unwrap()
             .call(json!({"method":"binding"})).await.unwrap();
         let mut connect = Connect::open(&fixture.root.path().join("registry")).unwrap();
+        connect.registry.participants.get_mut("peer").unwrap().origin =
+            binding["origin"].as_str().unwrap().to_owned();
         connect.registry.verified_bindings.insert("peer".into(),
             crate::communication_runtime::canonical_binding(&binding));
         connect.save().unwrap();
