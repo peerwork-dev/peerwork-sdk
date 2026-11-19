@@ -189,6 +189,23 @@ pub(crate) fn maintenance_launch_guard(directory: &Path, expected: &Option<Polic
     }
     Ok(store)
 }
+pub(crate) fn commit_maintenance_launcher(directory: &Path, expected: &Option<Policy>, launcher: &Launcher) -> Result<()> {
+    let Some(original) = expected else { return Ok(()); };
+    let store = SecureStateStore::open(&directory.join("startup.state"))
+        .map_err(|_| error("RUNTIME_STARTUP_POLICY_BUSY"))?;
+    let active = store.read_exact().map_err(|_| error("RUNTIME_STARTUP_POLICY_UNAVAILABLE"))?
+        .as_deref().map(decode).transpose()?;
+    let mut next = original.clone();
+    next.launcher = Some(launcher.clone());
+    if active.as_ref() == Some(&next) {
+        return Ok(());
+    }
+    if active != *expected {
+        return Err(error("RUNTIME_STARTUP_POLICY_CHANGED"));
+    }
+    store.write_exact(&serde_json::to_vec(&next).map_err(|_| error("RUNTIME_STARTUP_POLICY_INVALID"))?)
+        .map_err(|_| error("RUNTIME_STARTUP_POLICY_WRITE_FAILED"))
+}
 pub(crate) fn recovery_fence(directory: &Path) -> Result<SecureStateStore> {
     SecureStateStore::open(&directory.join("startup-recovery.state"))
         .map_err(|_| error("RUNTIME_RECOVERY_ALREADY_OWNED"))

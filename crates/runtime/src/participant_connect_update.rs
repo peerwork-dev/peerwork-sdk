@@ -305,6 +305,7 @@ impl Connect {
         }
         let hosts = host_inventory(&update.original, Some(&status))?;
         let installations = install::update_owned(self, &handle, &update.target.executable)?;
+        crate::runtime_startup::commit_maintenance_launcher(directory, &update.policy, &update.target)?;
         update.phase = SharedPhase::Complete;
         save_shared(&store, &update)?;
         Ok(json!({"state":"SHARED_RUNTIME_UPDATE_COMPLETE","runtime_version":status["sdk_version"],
