@@ -296,27 +296,52 @@ impl Hub {
             return Ok(None);
         }
         let mut heads = Vec::new();
+        let mut unavailable = Vec::new();
+        let mut failure = None;
         for options in &bindings {
-            let head = client.inbox_metadata(options).await?;
-            // A stream failure is not an empty inbox. Preserve it without claiming readiness.
+            let key = source(client, options);
+            let head = match client.inbox_metadata(options).await {
+                Ok(value) => value,
+                Err(problem) => {
+                    failure.get_or_insert(problem);
+                    unavailable.push(key);
+                    continue;
+                }
+            };
+            // One unavailable source must not retire its cursor or prevent
+            // existing healthy peers from presenting a new authorized batch.
             if head["receiver_link_verified"] != true || !head["verification_failure"].is_null() {
                 let mut problem = error("NOTIFICATION_RECEIVER_NOT_VERIFIED");
                 problem.details = Some(
                     json!({"state":head["state"],"code":head["code"],"verification_failure":head["verification_failure"]}),
                 );
-                return Err(problem);
+                failure.get_or_insert(problem);
+                unavailable.push(key);
+                continue;
             }
             heads.push(SourceHead {
-                key: source(client, options),
+                key,
                 checkpoint: head["checkpoint"].as_u64().unwrap_or(0),
                 has_pending: head["has_pending"] == true,
             });
         }
-        Ok(self
-            .store
-            .due_checked(&key, &heads, crate::participant_store::now(),Some(admission))?
-            .map(|wake| (key, wake)))
+        let wake = self.store.due_with_unavailable(&key, &heads, &unavailable,
+            crate::participant_store::now(), Some(admission))?;
+        match (wake, failure) {
+            (Some(wake), _) => Ok(Some((key, wake))),
+            (None, Some(problem)) if !heads.is_empty() => {
+                let mut partial = error("NOTIFICATION_RECEIVER_PARTIALLY_AVAILABLE");
+                let detail = problem.details.unwrap_or_default();
+                partial.details = Some(json!({"state": detail["state"],
+                    "code": detail["code"].as_str().unwrap_or(&problem.code),
+                    "verification_failure": detail["verification_failure"]}));
+                Err(partial)
+            }
+            (None, Some(problem)) => Err(problem),
+            (None, None) => Ok(None),
+        }
     }
+
     pub(crate) async fn wait_poll(
         &self,
         client: &ParticipantClient,

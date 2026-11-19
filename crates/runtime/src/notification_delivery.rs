@@ -293,19 +293,29 @@ impl Store {
         self.due_checked(owner,heads,now,None)
     }
     pub(crate) fn due_checked(&self,owner:&str,heads:&[SourceHead],now:i64,admission:Option<&activation::Admission>)->Result<Option<Wake>> {
+        self.due_with_unavailable(owner, heads, &[], now, admission)
+    }
+    pub(crate) fn due_with_unavailable(&self, owner: &str, heads: &[SourceHead],
+        unavailable: &[String], now: i64, admission: Option<&activation::Admission>) -> Result<Option<Wake>> {
         self.transaction_checked(owner, |db|match admission {Some(admission)=>admission.check(db),None=>Ok(())}, |s| {
-            if heads.len() > 8 {
+            if heads.len() + unavailable.len() > 8 {
                 return Err(error("NOTIFICATION_SOURCE_LIMIT"));
             }
             let mut selected = BTreeMap::new();
             for h in heads {
                 valid(&h.key)?;
-                if selected.insert(h.key.clone(), h).is_some() {
+                if selected.insert(h.key.clone(), Some(h)).is_some() {
                     return Err(error("NOTIFICATION_SOURCE_DUPLICATE"));
                 }
             }
-            // `heads` is the complete authorized binding snapshot, never a
-            // partial healthy subset. Retire presentation metadata only.
+            for key in unavailable {
+                valid(key)?;
+                if selected.insert(key.clone(), None).is_some() {
+                    return Err(error("NOTIFICATION_SOURCE_DUPLICATE"));
+                }
+            }
+            // Unavailable sources still belong to the authorized snapshot.
+            // They retain their cursors and never contribute unverified heads.
             let removed: Vec<_> = s
                 .sources
                 .keys()
@@ -342,6 +352,9 @@ impl Store {
                 }
             }
             if s.mode == "PAUSED" && !s.probe {
+                return Ok(None);
+            }
+            if s.probe && !unavailable.is_empty() {
                 return Ok(None);
             }
             if s.active.is_none() {
@@ -402,6 +415,9 @@ impl Store {
                 .iter_mut()
                 .find(|b| &b.wake.batch == id)
                 .ok_or_else(|| error("NOTIFICATION_STATE_INVALID"))?;
+            if b.wake.ranges.iter().any(|range| unavailable.contains(&range.key)) {
+                return Ok(None);
+            }
             b.wake.attempt = b
                 .wake
                 .attempt
@@ -550,6 +566,30 @@ mod tests {
         assert_eq!(next.ranges[0].after, 68);
         assert_eq!(next.ranges[0].through, 634);
         assert!(!next.ranges[0].backlog);
+    }
+    #[test]
+    fn unavailable_source_keeps_its_cursor_while_healthy_source_delivers() {
+        let f = Fixture::new();
+        let s = f.open();
+        let make = |key: &str, checkpoint| SourceHead { key: key.into(), checkpoint, has_pending: false };
+        ready(&s, "owner", &[make("first", 5), make("second", 10)]);
+
+        let first = s.due_with_unavailable("owner", &[make("second", 11)], &["first".into()], 1, None)
+            .unwrap().unwrap();
+        assert_eq!(first.ranges.len(), 1);
+        assert_eq!(first.ranges[0].key, "second");
+        s.observed("owner", &first.batch).unwrap();
+
+        let next = s.due("owner", &[make("first", 6), make("second", 11)], 2).unwrap().unwrap();
+        assert_eq!(next.ranges.len(), 1);
+        assert_eq!((next.ranges[0].after, next.ranges[0].through), (5, 6));
+        assert!(s.due_with_unavailable("owner", &[make("second", 12)], &["first".into()], 6000, None)
+            .unwrap().is_none());
+        assert_eq!(s.current("owner").unwrap().unwrap().batch, next.batch);
+        s.observed("owner", &next.batch).unwrap();
+        let healthy = s.due_with_unavailable("owner", &[make("second", 12)], &["first".into()], 6001, None)
+            .unwrap().unwrap();
+        assert_eq!(healthy.ranges[0].key, "second");
     }
     #[test]
     fn host_recovery_reverifies_once_and_preserves_pending_and_pause() {

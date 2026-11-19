@@ -97,7 +97,7 @@ impl State {
 }
 
 fn notification_failure(error: &ParticipantError) -> Option<Value> {
-    if error.code != "NOTIFICATION_RECEIVER_NOT_VERIFIED" {
+    if !matches!(error.code.as_str(), "NOTIFICATION_RECEIVER_NOT_VERIFIED" | "NOTIFICATION_RECEIVER_PARTIALLY_AVAILABLE") {
         return None;
     }
     error.details.as_ref().map(|detail| {

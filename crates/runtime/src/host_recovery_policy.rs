@@ -57,7 +57,7 @@ pub(crate) fn diagnostic(code: &str) -> Value {
 /// authorize its stream. An actual quarantine must remain visible.
 pub(crate) fn notification_wait_retry(error: &crate::participant::ParticipantError) -> bool {
     match error.code.as_str() {
-        "RUNTIME_UNAVAILABLE" | "IPC_DISCONNECTED" | "IPC_OBSERVATION_TIMEOUT"
+        "NOTIFICATION_RECEIVER_PARTIALLY_AVAILABLE" | "RUNTIME_UNAVAILABLE" | "IPC_DISCONNECTED" | "IPC_OBSERVATION_TIMEOUT"
         | "IPC_HANDSHAKE_TIMEOUT" | "IPC_WRITE_TIMEOUT" | "PRESENTATION_REBIND_PENDING" => true,
         "NOTIFICATION_RECEIVER_NOT_VERIFIED" => error.details.as_ref().is_none_or(|detail| {
             let fault = &detail["verification_failure"];
