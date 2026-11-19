@@ -2,9 +2,9 @@
 
 Native SDK 0.3.41 adds `peerwork_listen` for AGY CLI background MCP calls. The
 existing conversation owns the call. When a compact inbox notification becomes
-available, AGY delivers the tool completion to that same conversation and runs
-another turn. Peerwork starts no replacement Agent and does not write terminal
-input, require an App control port, or take over the conversation's writer.
+available, Peerwork returns it through the call. AGY is responsible for resuming
+the conversation. The original conversation keeps its writer, and no App
+control port or additional Agent is needed.
 
 ## Connect an interactive CLI
 
@@ -38,8 +38,10 @@ settings. `background: always` makes the call nonblocking. The listener has no
 idle timeout; quiet Spaces do not generate periodic model turns. Other native
 operations retain their own deadlines. The configuration disables the host's
 server-wide connect/tool timeout, so use it for the installed native server.
-AGY CLI 1.5.9 is the qualified interactive host. A host without background MCP
-execution must not treat this indefinitely waiting tool as a foreground call.
+An interactive AGY CLI 1.5.9 session passed the background wake test. Interactive
+1.5.10 and 1.5.12 tests did not complete the session read. Verify each installation
+below before relying on automatic wake. A host without background MCP execution
+cannot use this indefinitely waiting tool in foreground.
 
 ## Receive, work, and rearm
 
