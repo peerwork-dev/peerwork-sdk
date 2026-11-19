@@ -111,6 +111,22 @@ fn host_inventory(owned: &bootstrap::OwnedRuntime, status: Option<&Value>) -> Re
     }
     crate::communication_runtime::host_configuration_snapshot(&owned.config.state_directory, &owned.config.hosts)
 }
+async fn external_runtime_status(connect: &Connect, handle: &str, required: &[String]) -> Value {
+    let observed = match connect.original_client(handle).await {
+        Ok(client) => client.call(json!({"method":"capabilities"})).await,
+        Err(error) => Err(error),
+    };
+    match observed {
+        Ok(value) if value["sdk_version"].is_string() => {
+            let compatible = value["features"].as_array().is_some_and(|features|
+                required.iter().all(|wanted| features.iter().any(|feature| feature == wanted)));
+            json!({"ownership":"EXTERNAL","state":"RUNNING","loaded_version":value["sdk_version"],
+                "compatible":compatible,"observation":"AUTHENTICATED_CLIENT_IPC"})
+        }
+        Ok(_) => json!({"ownership":"EXTERNAL","state":"UNKNOWN","loaded_version":"UNKNOWN"}),
+        Err(error) => json!({"ownership":"EXTERNAL","state":"UNKNOWN","loaded_version":"UNKNOWN","code":error.code}),
+    }
+}
 fn continuation(
     connect: &Connect,
     participant: &str,
@@ -127,9 +143,9 @@ fn continuation(
         })
         .collect();
     if external_runtime || !installations.is_empty() || !external_hosts.is_empty() {
-        json!({"action":"COMPLETE_ORIGINAL_STACK_UPDATE","runtime":if external_runtime{"USE_ORIGINAL_RUNTIME_SUPERVISOR"}else{"OWNED_WORK_COMPLETE"},
+        json!({"action":"COMPLETE_ORIGINAL_STACK_UPDATE","runtime":if external_runtime{"USE_ORIGINAL_RUNTIME_LIFECYCLE"}else{"OWNED_WORK_COMPLETE"},
             "integrations":installations,"hosts":external_hosts,
-            "instructions":"Refresh the listed original MCP integrations using their host-supported reload. Verify each listed independent bridge through its original owning installation; use its original launcher and state only when replacement is needed. An external runtime stays with its original supervisor. Then call peerwork_context and peerwork_delivery status in that same host; preserve its session.",
+            "instructions":"Refresh the listed original MCP integrations using their host-supported reload. Verify each listed independent bridge through its original owning installation; use its original launcher and state only when replacement is needed. Use the original supervisor when it owns a shared runtime. For a directly launched runtime, its operator can explicitly select the original config, admin endpoint and rollback binary with update apply. Then call peerwork_context and peerwork_delivery status in that same host; preserve its session.",
             "guide":"docs/host-bridge-recovery.md#upgrade-the-original-receiving-stack",
             "host_reload_performed":false,"model_wake":"NOT_ATTESTED"})
     } else {
@@ -324,10 +340,7 @@ impl Connect {
                     json!({"ownership":"OWNED","state":"STOPPED","loaded_version":"NOT_RUNNING"}),
                     host_inventory(o, None)?,
                 ),
-                None => (
-                    json!({"ownership":"EXTERNAL","state":"UNKNOWN","loaded_version":"UNKNOWN"}),
-                    Vec::new(),
-                ),
+                None => (external_runtime_status(self, &handle, &required).await, Vec::new()),
             };
             let pending = if path.exists() {
                 let wire = SecureStateStore::read_snapshot(&path, 2 * 1024 * 1024)
@@ -350,7 +363,8 @@ impl Connect {
             let outputs = install::update_owned(self, &handle, &executable)?;
             return Ok(
                 json!({"state":"EXTERNAL_ACTION_REQUIRED","participant":handle,"installations":outputs,
-                "continuation":continuation(self,&handle,true,&[]),"runtime_restarted":false}),
+                "continuation":continuation(self,&handle,true,&[]),
+                "runtime":external_runtime_status(self,&handle,&required).await,"runtime_restarted":false}),
             );
         };
         let digest = executable_digest(&executable)?;

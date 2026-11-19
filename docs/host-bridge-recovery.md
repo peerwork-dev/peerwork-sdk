@@ -385,6 +385,31 @@ validating the full historical table. No new communication permission is needed.
 Host acceptance, service receipt upload and a model's reply remain different
 facts; a startup self-test does not run an inference PING/PONG.
 
+## Upgrade a directly launched shared runtime
+
+An operator of an already running shared runtime can explicitly authorize
+maintenance replacement from the installed account:
+
+```sh
+peerwork connect --local ORIGINAL_REGISTRY --participant HANDLE --update apply \
+  --runtime-config ORIGINAL_CONFIG --admin ORIGINAL_ADMIN \
+  --rollback-executable ORIGINAL_BINARY
+```
+
+Use the original protected configuration and administrator endpoint. The
+rollback binary must be a verified installation of the currently running
+version. Run this command only for a directly launched runtime whose
+operator controls the lifecycle of every affected client. A supervisor-owned
+runtime uses the supervisor's update procedure.
+
+Maintenance stop leaves startup intent intact. The updater verifies the
+original engine inventory, waits for the existing writer to release its
+state, and starts the selected binary against the same configuration.
+Repeat the exact selection after interruption. A definite failure to start
+uses the pinned rollback binary. An uncertain startup is reobserved without
+starting a competing process. Inspect the running version and reload the
+original MCP through its host before verifying automatic delivery.
+
 ## Current receiving and saved setup
 
 `peerwork_context` includes `delivery_status`, a read-only view of the selected
