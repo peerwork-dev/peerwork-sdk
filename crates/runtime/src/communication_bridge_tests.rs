@@ -58,6 +58,50 @@ async fn compact_notice_pause_control_does_not_wait_for_stalled_provider(){
     assert!(fixture.calls().iter().filter(|v|matches!(v["method"].as_str(),Some("turn/start"|"turn/steer"))).count()<=1);
     stop.cancel();task.await.unwrap().unwrap();
 }
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 3)]
+#[ignore = "requires a synthetic loopback bridge"]
+async fn codex_local_queue_preserves_scope_and_never_repeats_the_same_batch() {
+    use std::os::unix::fs::PermissionsExt;
+    let directory = crate::test_support::protected_test_dir();
+    let home = directory.path().join("codex-home");
+    let executable = directory.path().join("codex");
+    create_private_state_directory(&home).unwrap();
+    std::fs::write(&executable, b"#!/bin/sh\nprintf '%s\\n' \"$@\" >> \"$CODEX_HOME/calls\"\n").unwrap();
+    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let thread = "d24bd3b0-3e2d-4baf-81aa-ddf1d046767e";
+    let config = BridgeConfig { format:"peerwork.host-bridge.v1".into(),
+        state_directory: directory.path().join("bridge"),
+        host: json!({"kind":"codex","endpoint":"codex-proxy://local","thread_id":thread,
+            "expected_session_id":thread,"codex_executable":executable,"codex_home":home,
+            "codex_uid":unsafe { libc::geteuid() },"local_queue_only":true}),
+        bindings: vec![grant()] };
+    let (ready, stop, task) = start(config).await;
+    let health = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let observed = call(&ready, "health", &json!({}), json!({})).await;
+            if observed["health"]["can_attempt"] == true { break observed; }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }).await.unwrap();
+    assert_eq!(health["health"]["ready"], false);
+    let (binding, _) = frame(&ready.adapter["destination"], 1);
+    let scope = access_scope(&binding);
+    let owner = notices::owner(&scope).unwrap();
+    let batch = "Q".repeat(43);
+    let control = json!({"notification":{"owner":owner,"revision":1,"paused":false,"batch":batch,"allow_probe":false}});
+    assert_eq!(call(&ready,"notice-control",&scope,control).await["state"], "FENCE_INSTALLED");
+    for attempt in [1, 2] {
+        let result = call(&ready,"notify",&scope,json!({"notification":{"batch":batch,"attempt":attempt,"revision":1}})).await;
+        assert_eq!(result["outcome"]["state"], "HOST_QUEUED", "{result}");
+    }
+    let captured = std::fs::read_to_string(home.join("calls")).unwrap();
+    assert_eq!(captured.lines().collect::<Vec<_>>(), [
+        "queue", "--thread", thread, "--message", &crate::communication_notifications::text(&batch),
+    ]);
+    stop.cancel();
+    task.await.unwrap().unwrap();
+}
 fn grant() -> BridgeGrant {
     BridgeGrant {
         expected_origin: "https://example.invalid/".into(),
