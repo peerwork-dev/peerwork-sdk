@@ -199,14 +199,19 @@ impl Connect {
     /// Its original state directory serializes updates across all registries.
     pub(super) async fn update_shared(&mut self, participant: Option<&str>,
         selection: &bootstrap::RuntimeSelection, rollback_path: &Path) -> Result<Value> {
+        let target = Launcher::capture(install::persistent_executable(
+            &std::env::current_exe().map_err(|_| local("EXECUTABLE_UNAVAILABLE"))?)?)?;
+        let rollback = Launcher::capture(install::persistent_executable(rollback_path)?)?;
+        self.update_shared_using(participant, selection, target, rollback).await
+    }
+
+    async fn update_shared_using(&mut self, participant: Option<&str>,
+        selection: &bootstrap::RuntimeSelection, target: Launcher, rollback: Launcher) -> Result<Value> {
         self.require_writer()?;
         let handle = self.selected_handle(participant)?.ok_or_else(|| local("LOCAL_SELECTION_REQUIRED"))?;
         let registration = self.registry.participants.get(&handle).cloned().ok_or_else(|| local("LOCAL_SELECTION_REQUIRED"))?;
         let config = read_shared_config(selection)?;
         let directory = &config.state_directory;
-        let target = Launcher::capture(install::persistent_executable(
-            &std::env::current_exe().map_err(|_| local("EXECUTABLE_UNAVAILABLE"))?)?)?;
-        let rollback = Launcher::capture(install::persistent_executable(rollback_path)?)?;
         let _fence = crate::runtime_startup::recovery_fence(directory)?;
         let store = SecureStateStore::open(&directory.join("shared-update.state"))
             .map_err(|_| local("UPDATE_ALREADY_OWNED_OR_UNSAFE"))?;
@@ -230,9 +235,12 @@ impl Connect {
                 return Err(local("UPDATE_ROLLBACK_RUNTIME_VERSION_MISMATCH"));
             }
             let hosts = host_inventory(&original, Some(&status))?;
+            let policy = crate::runtime_startup::read(directory)?;
+            if policy.as_ref().is_some_and(|policy| !policy.automatic) {
+                return Err(local("RUNTIME_AUTOMATIC_START_DISABLED"));
+            }
             let update = SharedUpdate {original, target, rollback, previous_version: version,
-                receivers: status["receivers"].clone(), hosts,
-                policy: crate::runtime_startup::read(directory)?, phase: SharedPhase::Stopping};
+                receivers: status["receivers"].clone(), hosts, policy, phase: SharedPhase::Stopping};
             save_shared(&store, &update)?;
             update
         };
@@ -694,6 +702,36 @@ mod process_tests {
                 .stderr(Stdio::null())
                 .status();
             let _ = self.child.try_wait();
+        }
+    }
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore = "requires the native CLI and a previous resident binary"]
+    async fn shared_update_rolls_back_definitive_launch_failure_and_repeats_safely() {
+        use std::os::unix::fs::PermissionsExt;
+        let fixture = Fixture::new().await;
+        let broken = fixture.root.path().join("broken-runtime");
+        write_private(&broken, b"#!/bin/sh\nexit 42\n").unwrap();
+        std::fs::set_permissions(&broken, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let target = Launcher::capture(broken).unwrap();
+        let rollback = Launcher::capture(fixture.previous.clone()).unwrap();
+        let directory = &fixture.config.state_directory;
+        let selection = bootstrap::RuntimeSelection {
+            admin_endpoint: directory.join("admin.json"), config_path: Some(directory.join("config.json")),
+        };
+        let original_config = std::fs::read(selection.config_path.as_ref().unwrap()).unwrap();
+        let binding = RuntimeClient::connect(fixture.registration.endpoint_path.clone(),
+            &fixture.registration.origin, &fixture.registration.actor_id).await.unwrap()
+            .call(json!({"method":"binding"})).await.unwrap();
+        let mut connect = Connect::open(&fixture.root.path().join("registry")).unwrap();
+        connect.registry.verified_bindings.insert("peer".into(),
+            crate::communication_runtime::canonical_binding(&binding));
+        connect.save().unwrap();
+        for _ in 0..2 {
+            let result = connect.update_shared_using(Some("peer"), &selection, target.clone(), rollback.clone()).await.unwrap();
+            assert_eq!(result["state"], "SHARED_RUNTIME_UPDATE_ROLLED_BACK");
+            assert_eq!(result["runtime_version"], rollback_version(&rollback).await.unwrap());
+            assert_eq!(std::fs::read(selection.config_path.as_ref().unwrap()).unwrap(), original_config);
+            assert!(crate::runtime_startup::read(directory).unwrap().is_none());
         }
     }
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
