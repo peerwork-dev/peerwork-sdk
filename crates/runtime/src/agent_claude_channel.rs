@@ -15,7 +15,14 @@ impl State {
         value["notifications_written"]=json!(observed.written);
         value["validation_error"]=json!(observed.validation_error);
         value["scopes"]=json!(observed.scopes);
-        if let Some(scopes)=value["scopes"].as_object_mut(){for scope in scopes.values_mut(){if let Some(object)=scope.as_object_mut(){object.remove("published_batches");object.remove("due_batch");}}}
+        if let Some(scopes) = value["scopes"].as_object_mut() {
+            for scope in scopes.values_mut().filter_map(Value::as_object_mut) {
+                scope.remove("published_batches");
+                scope.remove("due_batch");
+                let awaiting_read = scope.remove("latest_unread_batch").is_some();
+                scope.insert("notification_read_pending".into(), json!(awaiting_read));
+            }
+        }
         for (alias,at) in &observed.at { if value["scopes"][alias].is_object() {
             value["scopes"][alias]["observation_age_ms"]=json!(at.elapsed().as_millis().min(u64::MAX as u128) as u64);
         }}
@@ -32,6 +39,7 @@ impl State {
             // a newer batch cannot race an earlier in-flight tool read.
             if receipts.len()>64 {receipts.remove(0);}
             scope["published_batches"]=json!(receipts);
+            scope["latest_unread_batch"] = batch.clone();
         }
     }
     /// Successful reads through this MCP connection establish this projection,
@@ -40,6 +48,9 @@ impl State {
         let mut value=self.0.lock().unwrap();
         for scope in value.scopes.values_mut().filter(|scope|scope["state"]!="SUPERSEDED" && scope["published_batches"].as_array().is_some_and(|items|items.iter().any(|item|item==batch))) {
             scope["session_receiving"]=json!("VERIFIED");
+            if scope["latest_unread_batch"] == batch {
+                scope.as_object_mut().unwrap().remove("latest_unread_batch");
+            }
         }
     }
     pub(super) fn consumed(&self) {self.1.notify_waiters();}
@@ -62,6 +73,7 @@ impl State {
                 scope["session_receiving"]=json!("UNCONFIRMED");
                 scope.as_object_mut().unwrap().remove("published_batches");
                 scope.as_object_mut().unwrap().remove("due_batch");
+                scope.as_object_mut().unwrap().remove("latest_unread_batch");
             }
             scope["binding"]=value["source_binding"].clone();
         }

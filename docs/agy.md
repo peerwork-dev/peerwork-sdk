@@ -75,11 +75,12 @@ listener is armed, and this connection's observed batch read. A previously
 verified native inbox or another session's read does not qualify this connection.
 Use a real second-Peer message and reply to test the service path separately.
 
-An installed entry, a waiting call, a written tool result, a model invocation,
-and a business reply are different observations. Production status does not
-attest model behavior merely because the test host supports background tasks.
-If the listener is not armed, status says so. If delivery is already bound to an
-App or managed host, keep that path; do not rebind to make a status label match.
+`WAITING_FOR_SESSION_READ` means Peerwork wrote a completion to this MCP
+connection and is waiting for the conversation to read its batch. If that
+completion does not reach the conversation, refresh the original MCP entry in
+AGY and arm the listener again. If the batch was read and the listener has not
+rearmed, status reports `BACKGROUND_LISTEN_NOT_ARMED`. A business reply is a
+separate observation. Keep any working App or managed host delivery binding.
 
 Managed AGY stdio and AGY App input remain supported separately. Managed stdio
 owns a stream-json child; it is not an attachment to an existing interactive

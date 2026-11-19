@@ -30,11 +30,16 @@ impl State {
             if let Some(scopes) = value["scopes"].as_object_mut() {
                 for scope in scopes.values_mut() {
                     scope["listener_armed"] = json!(false);
-                    if scope["state"]=="BLOCKED" || scope["state"]=="SUPERSEDED" {continue;}
+                    if matches!(scope["state"].as_str(), Some("BLOCKED" | "SUPERSEDED" | "PAUSED")) {continue;}
                     scope["retry_at_ms"] = Value::Null;
                     scope["recovery"] = Value::Null;
-                    scope["state"] = json!("UNKNOWN");
-                    scope["code"] = json!("BACKGROUND_LISTEN_NOT_ARMED");
+                    if scope["notification_read_pending"] == true {
+                        scope["state"] = json!("WAITING_FOR_SESSION_READ");
+                        scope["code"] = json!("BACKGROUND_NOTIFICATION_READ_PENDING");
+                    } else {
+                        scope["state"] = json!("UNKNOWN");
+                        scope["code"] = json!("BACKGROUND_LISTEN_NOT_ARMED");
+                    }
                 }
             }
         }
@@ -302,6 +307,11 @@ mod tests {
         state.projection.scope_observed("space",&json!({"state":"NOTIFICATION_DUE","batch":"a","source_binding":{"client_generation":1}}));
         state.batch_read("a");assert_eq!(state.status()["scopes"]["space"]["session_receiving"],"UNCONFIRMED");
         state.written(&json!({"result":{"structuredContent":{"format":"peerwork.background-notification.v1","batch":"a"}}}));
+        state.batch_read("different-batch");
+        let status = state.status();
+        assert_eq!(status["scopes"]["space"]["state"], "WAITING_FOR_SESSION_READ");
+        assert_eq!(status["scopes"]["space"]["session_receiving"], "UNCONFIRMED");
+        assert!(status["scopes"]["space"].get("latest_unread_batch").is_none());
         state.batch_read("a");assert_eq!(state.status()["scopes"]["space"]["session_receiving"],"VERIFIED");
         assert_eq!(state.status()["listener_armed"],false);
         assert_eq!(state.status()["scopes"]["space"]["code"],"BACKGROUND_LISTEN_NOT_ARMED");
