@@ -48,6 +48,9 @@ impl State {
         let mut observed=self.0.lock().unwrap();
         let mut value=observed.scopes.get(alias).cloned().unwrap_or_else(||json!({"binding":null,"session_receiving":"UNCONFIRMED"}));
         value["state"]=json!(state);value["code"]=json!(code);
+        for field in ["error", "recovery", "failure", "retry_at_ms"] {
+            value.as_object_mut().unwrap().remove(field);
+        }
         observed.scopes.insert(alias.into(),value);
         observed.at.insert(alias.into(),std::time::Instant::now());
     }
@@ -66,16 +69,43 @@ impl State {
             self.0.lock().unwrap().scopes.get_mut(alias).unwrap()["due_batch"]=value["batch"].clone();
         }
     }
+    pub(super) fn scope_retry(&self, alias: &str, error: &ParticipantError, delay: Duration) {
+        self.scope(alias, "RECOVERING", Some(&error.code));
+        let mut observed = self.0.lock().unwrap();
+        let scope = observed.scopes.get_mut(alias).unwrap();
+        scope["retry_at_ms"] = json!(crate::participant_store::now().saturating_add(
+            i64::try_from(delay.as_millis()).unwrap_or(i64::MAX),
+        ));
+        scope["recovery"] = crate::host_recovery_policy::diagnostic(&error.code);
+        if let Some(failure) = notification_failure(error) {
+            scope["failure"] = failure;
+        }
+    }
     pub(super) fn scope_failed(&self,alias:&str,error:&ParticipantError) {
         let mut value=json!({"state":if superseded(error){"SUPERSEDED"}else{"BLOCKED"},"code":error.code,"recovery":crate::host_recovery_policy::diagnostic(&error.code),"session_receiving":"UNCONFIRMED"});
         if error.details.as_ref().and_then(|details|details.get("local_state")).is_some() {
             value["error"]=json!(error);
+        }
+        if let Some(failure) = notification_failure(error) {
+            value["failure"] = failure;
         }
         let mut observed=self.0.lock().unwrap();
         value["binding"]=observed.scopes.get(alias).map(|v|v["binding"].clone()).unwrap_or(Value::Null);
         observed.scopes.insert(alias.into(),value);
         observed.at.insert(alias.into(),std::time::Instant::now());
     }
+}
+
+fn notification_failure(error: &ParticipantError) -> Option<Value> {
+    if error.code != "NOTIFICATION_RECEIVER_NOT_VERIFIED" {
+        return None;
+    }
+    error.details.as_ref().map(|detail| {
+        let fault = &detail["verification_failure"];
+        json!({"phase":"NOTIFICATION_RECEIVER_OBSERVATION","receiver_state":detail["state"],
+            "receiver_code":detail["code"],"verification_code":fault["code"],
+            "verification_phase":fault["phase"]})
+    })
 }
 
 pub(super) fn superseded(error:&ParticipantError)->bool {

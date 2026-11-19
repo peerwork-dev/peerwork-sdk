@@ -13,14 +13,16 @@ pub(crate) fn evaluate(receiver: &Value, notification: &Value, transport: &str, 
     let host_code=health["code"].as_str().or_else(||health["reason"].as_str());
     let blocked=matches!(health["state"].as_str(),Some("BLOCKED"|"FAILED"|"STOPPED"|"RECONNECTING")) || health["ready"]==false && health["can_attempt"]!=true;
     let capable=if transport=="MCP_STDIO_CHANNEL" {
-        fresh && !matches!(health["state"].as_str(),None|Some("UNKNOWN"|"BLOCKED"|"STARTING"|"STOPPED"))
+        fresh && !matches!(health["state"].as_str(),None|Some("UNKNOWN"|"BLOCKED"|"STARTING"|"STOPPED"|"RECOVERING"))
     } else { fresh && (health["ready"]==true || health["can_attempt"]==true) };
     let (state,code)=if receiver["state"]=="LOCAL_STOPPED" {("STOPPED","RECEIVER_STOPPED")}
         else if automatic && control==Some("PAUSED") {("PAUSED","DELIVERY_PAUSED")}
         else if !receiver["verification_failure"].is_null() || receiver["state"]=="BLOCKED" {("BLOCKED",receiver["code"].as_str().unwrap_or("RECEIVER_NOT_VERIFIED"))}
+        else if receiver["state"]=="RECONNECTING" {("RECOVERING",receiver["code"].as_str().unwrap_or("RECEIVER_RECONNECTING"))}
         else if !linked {("UNKNOWN",receiver["code"].as_str().unwrap_or("RECEIVER_NOT_VERIFIED"))}
         else if !automatic {("READY","READY")}
         else if !keys {("BLOCKED","BODY_KEYS_NOT_READY")}
+        else if health["state"]=="RECOVERING" {("RECOVERING",host_code.unwrap_or("HOST_RECONNECTING"))}
         else if blocked {("BLOCKED",host_code.unwrap_or("HOST_NOT_READY"))}
         else if !capable {("UNKNOWN",host_code.unwrap_or("CURRENT_TRANSPORT_OBSERVATION_UNAVAILABLE"))}
         // Only the active Channel frontend can qualify its own session. Native
@@ -29,11 +31,12 @@ pub(crate) fn evaluate(receiver: &Value, notification: &Value, transport: &str, 
         else if !verified {("VERIFYING","DELIVERY_SELF_TEST_PENDING")}
         else {("READY","READY")};
     json!({"state":state,"code":code,"receiver_link_verified":linked,"body_keys_ready":keys,
-        "transport":transport,"transport_ready":capable&&!blocked,"phase":health["phase"],"observation_age_ms":age,
+        "transport":transport,"transport_ready":capable&&!blocked,
+        "retry_at_ms":health["retry_at_ms"],"failure":health["failure"],"phase":health["phase"],"observation_age_ms":age,
         "automatic_receiving":if !automatic{"NOT_CONFIGURED"}else if state=="READY"{"VERIFIED"}else{state},
         "last_verified_at":notification["last_verified_at"],"verification_evidence":"BOUND_LOCAL_INBOX_READ",
         "verification_scope":"HISTORICAL_SELECTED_DESTINATION","acceptance":if !automatic{"LOCAL_INBOX"}else if transport=="MCP_STDIO_CHANNEL"{"CHANNEL_OUTPUT"}else if health["can_attempt"]==true && health["ready"]!=true{"QUEUED_ONLY"}else{"HOST_INPUT_CAPABILITY"},"model_response":"NOT_ATTESTED",
-        "recovery":if state=="BLOCKED"{crate::host_recovery_policy::diagnostic(code)}else{Value::Null},
+        "recovery":if matches!(state,"BLOCKED"|"RECOVERING"){crate::host_recovery_policy::diagnostic(code)}else{Value::Null},
         "next_action":match state {"READY"=>"CONTINUE_COLLABORATION","PAUSED"=>"RESUME_WHEN_REQUESTED","STOPPED"=>"RESTART_ORIGINAL_RECEIVER_WHEN_REQUESTED","VERIFYING" if code=="CURRENT_CHANNEL_READ_NOT_OBSERVED"=>"OBSERVE_CURRENT_CHANNEL_BATCH_OR_RUN_DELIVERY_SELF_TEST","VERIFYING"=>"OBSERVE_EXISTING_SELF_TEST",_=>crate::host_recovery_policy::action(code)}})
 }
 

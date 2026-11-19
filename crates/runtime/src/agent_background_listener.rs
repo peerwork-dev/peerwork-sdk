@@ -29,7 +29,10 @@ impl State {
         if self.active.available_permits() != 0 {
             if let Some(scopes) = value["scopes"].as_object_mut() {
                 for scope in scopes.values_mut() {
+                    scope["listener_armed"] = json!(false);
                     if scope["state"]=="BLOCKED" || scope["state"]=="SUPERSEDED" {continue;}
+                    scope["retry_at_ms"] = Value::Null;
+                    scope["recovery"] = Value::Null;
                     scope["state"] = json!("UNKNOWN");
                     scope["code"] = json!("BACKGROUND_LISTEN_NOT_ARMED");
                 }
@@ -103,12 +106,13 @@ where F:FnMut()->Fut, Fut:std::future::Future<Output=Result<Value>> {
         let value=match poll().await {
             Ok(value)=>{failures=0;value},
             Err(error)=>{
-                state.scope_failed(alias,&error);
-                let recovering_stream=error.code=="NOTIFICATION_RECEIVER_NOT_VERIFIED"
-                    && error.details.as_ref().is_none_or(|value|value["verification_failure"].is_null());
-                if !recovering_stream&&!matches!(error.code.as_str(),"RUNTIME_UNAVAILABLE"|"IPC_DISCONNECTED"|"IPC_OBSERVATION_TIMEOUT"|"IPC_HANDSHAKE_TIMEOUT"|"IPC_WRITE_TIMEOUT"|"PRESENTATION_REBIND_PENDING") {return Err(error);}
-                failures=failures.saturating_add(1);
-                tokio::time::sleep(crate::host_recovery_policy::delay(&error.code,failures,alias)).await;
+                if !crate::host_recovery_policy::notification_wait_retry(&error) {
+                    return Err(error);
+                }
+                failures = failures.saturating_add(1);
+                let delay = crate::host_recovery_policy::delay(&error.code, failures, alias);
+                state.scope_retry(alias, &error, delay);
+                tokio::time::sleep(delay).await;
                 continue;
             },
         };
@@ -198,6 +202,34 @@ mod tests {
         assert_eq!(out["batch"],"same-original");assert_eq!(calls.load(Ordering::Relaxed),2);
         let error=wait("space",&state,||async {Err(ParticipantError::local("LOCAL_SCOPE_DENIED","MCP"))}).await.unwrap_err();
         assert_eq!(error.code,"LOCAL_SCOPE_DENIED");
+    }
+    #[tokio::test]
+    async fn authenticated_time_retry_clears_failure_on_next_real_batch() {
+        let state = claude_channel::State::default();
+        let mut count = 0;
+        let out = tokio::time::timeout(Duration::from_secs(5), wait("space", &state, || {
+            count += 1;
+            let first = count == 1;
+            let status = state.status();
+            async move {
+                if first {
+                    let mut error = ParticipantError::local("NOTIFICATION_RECEIVER_NOT_VERIFIED", "LOCAL_IPC");
+                    error.details = Some(json!({"state":"BLOCKED","code":"STREAM_VERIFICATION_FAILED",
+                        "verification_failure":{"phase":"FRAME_VERIFICATION","code":"STREAM_TIME_WINDOW_INVALID",
+                            "scope_authenticated":true}}));
+                    Err(error)
+                } else {
+                    let recovering = &status["scopes"]["space"];
+                    assert_eq!(recovering["state"], "RECOVERING");
+                    assert_eq!(recovering["failure"]["verification_code"], "STREAM_TIME_WINDOW_INVALID");
+                    assert!(recovering["retry_at_ms"].is_number());
+                    Ok(json!({"state":"NOTIFICATION_DUE","batch":"next-business-message","revision":2,"self_test":false}))
+                }
+            }
+        })).await.unwrap().unwrap();
+        assert_eq!(out["batch"], "next-business-message");
+        assert_eq!(state.status()["scopes"]["space"]["state"], "NOTIFICATION_DUE");
+        assert!(state.status()["scopes"]["space"]["failure"].is_null());
     }
     #[tokio::test]
     async fn pending_rebind_keeps_original_background_activation_until_abort_recovers() {

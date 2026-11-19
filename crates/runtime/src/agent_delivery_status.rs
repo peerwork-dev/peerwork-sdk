@@ -37,7 +37,8 @@ fn refresh_at(context: &mut Value, now: i64) {
             let candidate = &context["host_channel"]["scopes"][alias];
             let channel_matches = candidate["binding"] == expected;
             let channel = if channel_matches && candidate["observation_age_ms"].as_u64().is_some_and(|age|age<10_000) {
-                json!({"state":candidate["state"],"code":candidate["code"],"observation_age_ms":candidate["observation_age_ms"],"session_receiving":candidate["session_receiving"]})
+                json!({"state":candidate["state"],"code":candidate["code"],"observation_age_ms":candidate["observation_age_ms"],"session_receiving":candidate["session_receiving"],
+                    "retry_at_ms":candidate["retry_at_ms"],"failure":candidate["failure"]})
             } else { json!({"state":"UNKNOWN","reason":if candidate.is_null(){"NOT_OBSERVED"}else if !channel_matches{"BINDING_MISMATCH"}else{"STALE_OBSERVATION"}}) };
             let selected_binding=observation.map(|v|v["binding"].clone()).unwrap_or(Value::Null);
             let hosts=context["host_status"]["hosts"].as_array().map(Vec::as_slice).unwrap_or(&[]);

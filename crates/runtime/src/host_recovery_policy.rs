@@ -53,6 +53,27 @@ pub(crate) fn diagnostic(code: &str) -> Value {
     }
     value
 }
+/// A notification wait observes the original receiver; it does not reset or
+/// authorize its stream. An actual quarantine must remain visible.
+pub(crate) fn notification_wait_retry(error: &crate::participant::ParticipantError) -> bool {
+    match error.code.as_str() {
+        "RUNTIME_UNAVAILABLE" | "IPC_DISCONNECTED" | "IPC_OBSERVATION_TIMEOUT"
+        | "IPC_HANDSHAKE_TIMEOUT" | "IPC_WRITE_TIMEOUT" | "PRESENTATION_REBIND_PENDING" => true,
+        "NOTIFICATION_RECEIVER_NOT_VERIFIED" => error.details.as_ref().is_none_or(|detail| {
+            let fault = &detail["verification_failure"];
+            if !fault.is_null() {
+                return fault["code"] == "STREAM_TIME_WINDOW_INVALID"
+                    && fault["phase"] == "FRAME_VERIFICATION"
+                    && fault["scope_authenticated"] == true;
+            }
+            !matches!(detail["state"].as_str(), Some("BLOCKED" | "LOCAL_STOPPED" | "PAUSED"))
+                || detail["state"] == "BLOCKED" && matches!(detail["code"].as_str(),
+                    Some("RESOURCE_EXHAUSTED" | "CAPACITY_RESERVATION_EXHAUSTED" | "KEY_SYNC_TIMEOUT"))
+        }),
+        _ => false,
+    }
+}
+
 /// Structured host categories win; bounded legacy text is classified locally
 /// and discarded. Never retain arbitrary host errors, paths, prompts or tokens.
 pub(crate) fn rpc_error(value: &Value) -> &'static str {
@@ -69,6 +90,22 @@ pub(crate) fn rpc_error(value: &Value) -> &'static str {
 
 #[cfg(test)] mod tests {
     use super::*;
+    #[test]
+    fn waiting_does_not_treat_invalid_evidence_or_revocation_as_transient() {
+        let mut error = crate::participant::ParticipantError::local("NOTIFICATION_RECEIVER_NOT_VERIFIED", "LOCAL_IPC");
+        for detail in [
+            json!({"state":"BLOCKED","code":"MEMBER_REVOKED"}),
+            json!({"state":"BLOCKED","verification_failure":{"code":"STREAM_SIGNATURE_INVALID"}}),
+            json!({"state":"BLOCKED","verification_failure":{"code":"STREAM_TIME_WINDOW_INVALID",
+                "phase":"FRAME_VERIFICATION","scope_authenticated":false}}),
+            json!({"state":"LOCAL_STOPPED"}),
+        ] {
+            error.details = Some(detail);
+            assert!(!notification_wait_retry(&error));
+        }
+        error.details = Some(json!({"state":"RECONNECTING","code":"RESOURCE_EXHAUSTED"}));
+        assert!(notification_wait_retry(&error));
+    }
     #[test] fn ownership_and_unsupported_api_are_not_transport_retries() {
         assert_eq!(rpc_error(&json!({"code":-32600,"message":"session has an active writer: SECRET"})),"HOST_SESSION_OWNERSHIP_CONFLICT");
         assert_eq!(rpc_error(&json!({"code":-32600,"data":{"type":"activeWriter"}})),"HOST_SESSION_OWNERSHIP_CONFLICT");
