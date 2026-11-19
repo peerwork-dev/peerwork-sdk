@@ -563,6 +563,20 @@ async fn codex_bridge_loss_recovers_and_the_original_thread_reads_a_fresh_probe(
     }
     let first = verified_after(&client, &watch, 0).await;
     println!("CODEX_BRIDGE_RECOVERY_INITIAL_READ_VERIFIED");
+    if std::env::var_os("PEERWORK_CODEX_LOCAL_QUEUE_TEST").is_some() {
+        assert!(bridge.try_wait().unwrap().is_none());
+        write_private(&root.join("proof.json"), &serde_json::to_vec(&json!({
+            "state":"PASS","local_queue_read_verified":true,"observed_at":first
+        })).unwrap()).unwrap();
+        tokio::time::timeout(Duration::from_secs(15), async {
+            while !root.join("tool-read-confirmed").is_file() {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        }).await.expect("controller did not confirm the tool result");
+        cancel.cancel();
+        running.await.unwrap().unwrap();
+        return;
+    }
     let route_change = std::env::var_os("PEERWORK_CODEX_RECOVERY_ROUTE_CHANGE").is_some();
     if route_change {
         // The controller now transfers the original thread between real
