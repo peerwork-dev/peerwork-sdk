@@ -624,6 +624,20 @@ impl BackgroundFixture {
         let value=self.client.call(json!({"method":"invoke","request":request,"wait_ms":5000})).await.unwrap();
         assert_eq!(value["state"],"ACCEPTED","{value}");
     }
+    async fn disconnect_until_observed(&self) {
+        let selection = &self.profile.scopes["main"];
+        let options = WatchOptions { workspace_id: selection.workspace_id.clone(),
+            mailbox_id: selection.mailbox_id.clone(), membership_id: selection.membership_id.clone(),
+            consumer_id: "background-fixture".into(), host_destination: None };
+        self.cohort.service.config(json!({"offline":true,"close_connections":true})).await;
+        tokio::time::timeout(Duration::from_secs(15), async {
+            loop {
+                let value = self.client.call(json!({"method":"watch","options":options})).await.unwrap();
+                if value["receiver_link_verified"] == false { break; }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        }).await.expect("the selected receiver did not observe the injected outage");
+    }
     async fn finish(self){self.stop.cancel();self.task.await.unwrap().unwrap();}
 }
 /// Real signed product HTTP, native runtime and MCP; no model is used.
@@ -658,6 +672,8 @@ async fn background_mcp_wait_keeps_tools_available_and_cancellation_preserves_in
     tokio::time::sleep(Duration::from_millis(100)).await;
     send(&mut cw,call(6,"listen",json!({}))).await;
     let duplicate=read(&mut cr).await;assert_eq!(duplicate["id"],6);assert_eq!(duplicate["result"]["structuredContent"]["error"]["code"],"BACKGROUND_LISTEN_ALREADY_ARMED");
+    setup.disconnect_until_observed().await;
+    setup.cohort.service.config(json!({"offline":false})).await;
     setup.send("new-private-synthetic-content").await;
     let notice=read(&mut cr).await;assert_eq!(notice["id"],5);
     let notice=&notice["result"]["structuredContent"];
@@ -700,18 +716,7 @@ async fn selected_real_agy_background_fixture() {
     }).await.unwrap();
     let transient_fault = std::env::var_os("PEERWORK_AGY_BACKGROUND_TRANSIENT_FAULT").is_some();
     if transient_fault {
-        let selection = &selected.scopes["main"];
-        let options = WatchOptions { workspace_id: selection.workspace_id.clone(),
-            mailbox_id: selection.mailbox_id.clone(), membership_id: selection.membership_id.clone(),
-            consumer_id: "background-fixture".into(), host_destination: None };
-        setup.cohort.service.config(json!({"offline":true,"close_connections":true})).await;
-        tokio::time::timeout(Duration::from_secs(15), async {
-            loop {
-                let value = setup.client.call(json!({"method":"watch","options":options})).await.unwrap();
-                if value["receiver_link_verified"] == false { break; }
-                tokio::time::sleep(Duration::from_millis(25)).await;
-            }
-        }).await.expect("the selected receiver did not observe the injected outage");
+        setup.disconnect_until_observed().await;
         setup.cohort.service.config(json!({"offline":false})).await;
     }
     setup.send("PW-NATIVE-AGY-BACKGROUND-EVENT").await;
