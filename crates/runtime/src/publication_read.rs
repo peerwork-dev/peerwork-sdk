@@ -135,7 +135,7 @@ pub fn read_json(input:&str,cancel:&CancellationToken)->String{
   use ed25519_dalek::SigningKey;
   let fixture=human_public_fixture(member);let listener=TcpListener::bind("127.0.0.1:0").unwrap();listener.set_nonblocking(true).unwrap();let origin=format!("http://{}",listener.local_addr().unwrap());let service=SigningKey::from_bytes(&[77;32]);let service_key=base64url(&service.verifying_key().to_bytes());
   let mut discovery:Value=serde_json::from_str(include_str!("../../../tests/fixtures/human-source-transport-v1.json")).unwrap();discovery=discovery["discovery"].clone();discovery["audience"]=fixture["audience"].clone();discovery["receipt_public_key"]=json!(service_key);discovery["protocol_features"].as_array_mut().unwrap().push(json!("owner-selected-publication-v1"));
-  if short_links{discovery["protocol_features"].as_array_mut().unwrap().push(json!("short-record-locators-v1"));}
+  if short_links{discovery["extensions"]["protocol_features"].as_array_mut().unwrap().push(json!("short-record-locators-v1"));}
   let served=fixture.clone();let base=origin.clone();let server=std::thread::spawn(move||{
    let until=Instant::now()+Duration::from_secs(10);let mut count=0;
    while count<3&&Instant::now()<until{
