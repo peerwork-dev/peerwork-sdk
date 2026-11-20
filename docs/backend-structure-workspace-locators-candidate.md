@@ -80,3 +80,16 @@ journey fetched a workspace journal. Instance and record IDs themselves remain
 full identifiers; this change shortens the workspace portion of those links.
 Exact supported service and SDK release versions will accompany publication;
 development0.1.11 packages must not replace published0.1.11.
+
+## Exact record share links
+
+A service advertising `short-record-locators-v1` serves `/r/<code>` on its
+paired browser origin. The code is the first 16 characters of the immutable
+record ID. It selects the exact record revision. An ambiguous code fails closed.
+Keep the full workspace, instance, record and revision URL for exact recovery
+if a short code cannot resolve.
+
+Verified publication reads and Changelog use this link when discovery advertises
+the capability. Offline URL builders can set `short_record_links: true` with
+that capability established. The browser resolves the opaque route and applies
+normal publication and member permissions to the target.

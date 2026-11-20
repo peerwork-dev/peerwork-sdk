@@ -82,6 +82,7 @@ async fn run(r:PublicRequest,cancel:&CancellationToken)->R<Value>{
  let mut config=TransportConfig::new(&s.control_origin).with_options(s.transport.clone());config.allow_loopback_http=s.allow_loopback_http;let transport=HttpTransport::new(config).map_err(fail_transport)?;
  let discovery=transport.discovery(cancel).await.map_err(fail_transport)?;if discovery.status!=200{return Err("PUBLIC_DISCOVERY_UNAVAILABLE")}
  let d=parse_discovery_wire(&discovery.wire,262144).map_err(|_|"PUBLIC_DISCOVERY_INVALID")?;if !d.protocol_features().contains(&"owner-selected-publication-v1".encode_utf16().collect::<Vec<_>>()){return Err("CAPABILITY_UNAVAILABLE")}
+ let short_record_links=d.protocol_features().contains(&"short-record-locators-v1".encode_utf16().collect::<Vec<_>>());
  let audience=String::from_utf16(d.audience_utf16()).map_err(|_|"PUBLIC_DISCOVERY_INVALID")?;let key=d.receipt_public_key();
  if s.audience.as_ref().is_some_and(|a|a!=&audience)||s.service_key.as_ref().is_some_and(|k|k!=key){return Err("PUBLIC_SERVICE_IDENTITY_CHANGED")}
  let view=page(&transport,s,"WORKSPACE","RECORD_ID_ASC",None,None,20,None,&audience,key,cancel).await?;let view_proofs=AuthorProofContext::from_json_container(&view).map_err(|_|"PUBLIC_SOURCE_INVALID")?;let c=publisher(&view["publication"],s,&audience,view_proofs.as_ref())?;let b=&c["body"];let current=revision(&view["revision"])?;
@@ -112,7 +113,7 @@ async fn run(r:PublicRequest,cancel:&CancellationToken)->R<Value>{
     b["body"].clone()
    };
    entry["text"]=json!(public_text(&body)?);
-   entry["url"]=workspace_urls::build(&WorkspaceUrlInput{browser_origin:s.browser_origin.clone(),control_origin:s.control_origin.clone(),workspace_id:s.workspace_id.clone(),workspace_alias:workspace_alias.clone(),visibility:"PUBLIC".into(),kind:"record".into(),instance_id:Some(text(entry,"instance_id")?),record_id:Some(text(entry,"record_id")?),entity_id:None,revision:Some(revision(&entry["source"]["revision"])?),allow_loopback_http:s.allow_loopback_http})?["browser_url"].clone();
+   entry["url"]=workspace_urls::build(&WorkspaceUrlInput{browser_origin:s.browser_origin.clone(),control_origin:s.control_origin.clone(),workspace_id:s.workspace_id.clone(),workspace_alias:workspace_alias.clone(),visibility:"PUBLIC".into(),kind:"record".into(),instance_id:Some(text(entry,"instance_id")?),record_id:Some(text(entry,"record_id")?),entity_id:None,revision:Some(revision(&entry["source"]["revision"])?),short_record_links,allow_loopback_http:s.allow_loopback_http})?["browser_url"].clone();
   }
   if used.len()!=sources.as_object().unwrap().len(){return Err("PUBLIC_SOURCE_INVALID")}
  }
