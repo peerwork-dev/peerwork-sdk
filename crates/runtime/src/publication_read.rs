@@ -130,11 +130,12 @@ pub fn read_json(input:&str,cancel:&CancellationToken)->String{
  #[test]fn public_body_is_bounded_utf8_and_explicit(){assert_eq!(public_text(&json!({"format":"PUBLIC_UTF8_BASE64","chunks":[]})).unwrap(),"");assert!(public_text(&json!({"format":"PUBLIC_UTF8_BASE64","chunks":[base64url(&[255])]})).is_err());assert!(public_text(&json!({"format":"PUBLIC_UTF8_BASE64","chunks":["A".repeat(8193)]})).is_err());assert_eq!(public_text(&json!({"format":"PUBLIC_UTF8_BASE64","chunks":[base64url(b"Public text")]})).unwrap(),"Public text");}
  #[test]fn invalid_input_never_needs_identity_or_network(){let v:Value=serde_json::from_str(&read_json("{}",&CancellationToken::new())).unwrap();assert_eq!(v["ok"],false);assert_eq!(v["code"],"PUBLIC_INPUT_INVALID");}
  fn human_public_fixture(member:bool)->Value{serde_json::from_str(if member{include_str!("../../../tests/fixtures/human-publication-member-v1.json")}else{include_str!("../../../tests/fixtures/human-publication-owner-v1.json")}).unwrap()}
- fn human_public_http(member:bool,strip_proofs:bool)->Value{
+ fn human_public_http(member:bool,strip_proofs:bool,short_links:bool)->Value{
   use std::{io::{Read,Write},net::TcpListener,time::{Duration,Instant}};
   use ed25519_dalek::SigningKey;
   let fixture=human_public_fixture(member);let listener=TcpListener::bind("127.0.0.1:0").unwrap();listener.set_nonblocking(true).unwrap();let origin=format!("http://{}",listener.local_addr().unwrap());let service=SigningKey::from_bytes(&[77;32]);let service_key=base64url(&service.verifying_key().to_bytes());
   let mut discovery:Value=serde_json::from_str(include_str!("../../../tests/fixtures/human-source-transport-v1.json")).unwrap();discovery=discovery["discovery"].clone();discovery["audience"]=fixture["audience"].clone();discovery["receipt_public_key"]=json!(service_key);discovery["protocol_features"].as_array_mut().unwrap().push(json!("owner-selected-publication-v1"));
+  if short_links{discovery["protocol_features"].as_array_mut().unwrap().push(json!("short-record-locators-v1"));}
   let served=fixture.clone();let base=origin.clone();let server=std::thread::spawn(move||{
    let until=Instant::now()+Duration::from_secs(10);let mut count=0;
    while count<3&&Instant::now()<until{
@@ -147,7 +148,18 @@ pub fn read_json(input:&str,cancel:&CancellationToken)->String{
   });
   let request=json!({"source":{"control_origin":origin,"browser_origin":origin,"workspace_id":fixture["workspace_id"],"owner_actor_id":fixture["owner_actor_id"],"owner_key_id":fixture["owner_key_id"],"audience":fixture["audience"],"service_key":service_key,"allow_loopback_http":true},"kind":"ENTRIES","limit":32});let result:Value=serde_json::from_str(&read_json(&request.to_string(),&CancellationToken::new())).unwrap();server.join().unwrap();result
  }
- #[test]fn human_owner_publication_survives_device_revocation_through_actual_http(){let result=human_public_http(false,false);assert_eq!(result["ok"],true,"{result}");assert_eq!(result["value"]["result"]["entries"][0]["text"],human_public_fixture(false)["text"]);assert_eq!(result["value"]["metrics"]["history_reads"],0);}
- #[test]fn human_member_selected_public_output_uses_the_unchanged_native_owner_policy(){let result=human_public_http(true,false);assert_eq!(result["ok"],true,"{result}");assert_eq!(result["value"]["result"]["entries"][0]["text"],human_public_fixture(true)["text"]);assert_eq!(result["value"]["metrics"]["public_requests"],2);}
- #[test]fn fresh_service_receipts_cannot_replace_human_publication_author_proofs(){for member in [false,true]{let result=human_public_http(member,true);assert_eq!(result["ok"],false);assert_eq!(result["code"],"PUBLIC_SOURCE_INVALID");}}
+ #[test]fn human_owner_publication_survives_device_revocation_through_actual_http(){let result=human_public_http(false,false,false);assert_eq!(result["ok"],true,"{result}");assert_eq!(result["value"]["result"]["entries"][0]["text"],human_public_fixture(false)["text"]);assert_eq!(result["value"]["metrics"]["history_reads"],0);}
+ #[test]fn human_member_selected_public_output_uses_the_unchanged_native_owner_policy(){let result=human_public_http(true,false,false);assert_eq!(result["ok"],true,"{result}");assert_eq!(result["value"]["result"]["entries"][0]["text"],human_public_fixture(true)["text"]);assert_eq!(result["value"]["metrics"]["public_requests"],2);}
+ #[test]fn verified_publication_links_follow_the_service_capability(){
+  for enabled in [false,true]{
+   let value=human_public_http(false,false,enabled);
+   assert_eq!(value["ok"],true,"{value}");
+   let item=&value["value"]["result"]["entries"][0];
+   let url=reqwest::Url::parse(item["url"].as_str().unwrap()).unwrap();
+   let id=item["record_id"].as_str().unwrap();
+   if enabled{assert_eq!(url.path(),format!("/r/{}",&id[..16]));assert!(url.query().is_none());}
+   else{assert!(url.path().ends_with(&format!("/records/{id}")));assert!(url.query().unwrap().starts_with("revision="));}
+  }
+ }
+ #[test]fn fresh_service_receipts_cannot_replace_human_publication_author_proofs(){for member in [false,true]{let result=human_public_http(member,true,false);assert_eq!(result["ok"],false);assert_eq!(result["code"],"PUBLIC_SOURCE_INVALID");}}
 }
