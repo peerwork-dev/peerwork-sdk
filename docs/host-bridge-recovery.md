@@ -99,17 +99,20 @@ An ownership conflict does not identify the other writer or establish that the
 current conversation is standalone. Native0.3.40 reports
 `VERIFY_SELECTED_CODEX_ROUTE_AND_ORIGINAL_SESSION_OWNER`, with owner identity
 and the need to exit explicitly undetermined. First verify the selected existing
-route. A healthy shared host needs no exit/relaunch. Only a confirmed standalone
-owner without a supported control endpoint needs a one-time handover using that
-Codex installation's standard resume flow. After its writer exits, explicitly
-load the exact saved thread on the selected shared host; merely exiting does not
-reset the SDK's resume suppression. No project Python launcher is required.
-Do not remove locks, kill the session or change sandbox/model settings to repair
-an unverified route.
+route. A healthy shared host can keep its current session. For a confirmed
+standalone owner, check whether the
+[local queue](#use-the-local-queue-for-an-existing-codex-thread) can serve the
+original thread. If the operator chooses the control-endpoint path and a
+handover is required, use the installation's standard resume flow after the
+original writer exits. Load the exact saved thread on the selected shared host.
+The SDK keeps its resume suppression across exit. Keep locks, the original
+session and sandbox/model settings intact during diagnosis.
 
 After a destination has been persisted, a restarted dispatcher or bridge checks
 the original Codex thread without requesting its writer. If the thread is not
 loaded, delivery reports `HOST_SESSION_NOT_LOADED` and keeps the inbox available.
+After an upgrade, this code still describes the selected App Server route.
+Confirm the actual owner and delivery mode before restarting any component.
 
 A protected Codex host configuration can opt in to route discovery by listing
 one to four additional Unix control endpoints in `codex_routes` and pinning
@@ -118,7 +121,8 @@ normal interface. Peerwork discovers the exact original thread and session
 among the configured endpoints when attaching or recovering. The original
 destination digest and inbox stay fixed. An ambiguous route blocks attachment.
 Select only endpoints controlled by the original host user. A session without
-a supported control endpoint keeps inbox access while automatic wake is unavailable.
+a supported control endpoint keeps inbox access and can use the local queue
+when its prerequisites are met.
 
 For a running Codex Bridge, the local host integration can update the allowlist
 with `peerwork bridge codex-routes CONFIG.json unix://SOCKET`. The command
@@ -133,25 +137,58 @@ daemon socket. The exact original thread and session must be loaded there.
 Peerwork verifies the local socket's peer UID and never starts a Codex daemon
 or resumes the thread while finding its owner.
 
-An operator can select the ordinary local Codex queue on an existing
-same-user bridge by setting `local_queue_only: true` in its protected Codex
-host configuration. Use the existing exact thread UUID for both `thread_id`
-and `expected_session_id`, and retain the original destination endpoint
-and pinned Codex executable, home and UID. The bridge uses `codex queue`
-without remote or resume flags. Make this selection explicitly because a
-local queue can accept input while its conversation is offline.
+### Use the local queue for an existing Codex thread
+
+An operator can select the local queue for the original thread on the same OS
+account that owns Codex. Check that the original Codex home is on an
+owner-controlled, protected path before selecting a Bridge. Use an existing
+authorized queue Bridge when available.
+Otherwise start a queue Bridge with its own protected state and the original
+selected receiver's grants. Keep the App Server Bridge and its existing
+configuration, ledger and pending receipts intact. An initialized Bridge pins
+its host configuration and rejects an in-place mode edit with
+`BRIDGE_BINDING_CHANGED_REQUIRES_REVIEW`.
+
+Set `local_queue_only: true` in the queue Bridge's protected `host`
+configuration. Use the exact original thread UUID for both `thread_id` and
+`expected_session_id`, and retain the original Codex destination endpoint and
+pinned executable, home and UID. The Bridge uses `codex queue` without remote or
+resume flags. Select this mode explicitly because the queue can accept input
+while the conversation is offline.
+
+Starting with 0.3.49, the original runtime can stay running while the operator
+rebinds the existing receiver to the authenticated queue Bridge. Use
+`peerwork runtime admin ORIGINAL_ADMIN.json status` to identify the selected
+engine and host group. Put the matching `adapter` from the queue Bridge's
+`BRIDGE_READY` output in the original runtime's private rebind request. For a
+multi-principal Bridge, use the adapter for the exact selected principal.
+Keep the same request and operation ID when resuming a pending rebind.
+
+```json
+{
+  "method": "host_rebind",
+  "rebind": {
+    "format": "peerwork.host-rebind.v1",
+    "operation_id": "UNIQUE_ID_FOR_THIS_REBIND",
+    "engine": "ORIGINAL_ENGINE_NAME",
+    "host": "ORIGINAL_HOST_GROUP_NAME",
+    "adapter": "REPLACE_WITH_SELECTED_BRIDGE_ADAPTER_OBJECT"
+  }
+}
+```
+
+```sh
+peerwork runtime call ORIGINAL_ADMIN.json PRIVATE_REBIND_REQUEST.json
+```
+
+Use the original configuration and its state. Reserve `initial_subscriptions`
+for a first host binding.
 
 Queue submission carries only an opaque notification reference. The bridge
 persists the admission before starting Codex and suppresses later submissions
 of the same batch, including when the first result is unknown. Check that the
 original thread reads a fresh test batch before relying on automatic wake.
 A queued receipt confirms submission only.
-
-Starting with 0.3.49, resident receiver rebind accepts this authenticated queue
-when it can accept input. The original runtime can stay running during the
-switch to the explicitly selected Bridge. The queue still requires an owner
-controlled Codex home with a protected path. Check that path before scheduling
-host maintenance.
 
 For `BRIDGE_UNAVAILABLE`, the runtime can relaunch the original same-user Codex
 bridge while automatic receiving is enabled. Run the original protected
@@ -238,7 +275,7 @@ credentials. An old observation becomes UNKNOWN; it cannot prove current health.
 | --- | --- |
 | Receiver custody | The local durable inbox has the message; host delivery may still be pending. |
 | HOST_ACCEPTED | The selected host acknowledged input; model processing/completion is not attested. |
-| HOST_SESSION_NOT_LOADED | The exact saved Codex session is unloaded. Start or resume the original thread through its host. Recovery observes the selected host and any configured alternatives without claiming the thread writer. |
+| HOST_SESSION_NOT_LOADED | The selected App Server has not loaded the exact saved thread. Confirm the selected route and current owner. For a running standalone thread, check the [local queue](#use-the-local-queue-for-an-existing-codex-thread) prerequisites. If using the App Server route, load the original thread through that host. |
 | HOST_SESSION_ERROR / HOST_STATUS_UNSUPPORTED | The host reports a distinct session condition. Inspect the original host; successful reconnect does not claim to repair every system error. |
 | Approval wait / busy turn | Respect the host's approval and input policy. Do not launch a replacement conversation. |
 | HOST_PREFLIGHT_DEADLINE / HOST_LOCK_TIMEOUT | This attempt did not hand input to the host. The original work can be retried under its original identity and scope. |
@@ -324,8 +361,10 @@ for every component actually used, including components that need no change.
 `NOT_SENT` is a delivery fact, not proof that version skew caused it; retain its
 specific failure evidence and verify recovery on the same destination.
 
-For an authorized upgrade, install the current Linux executable and run its
-selected-client update entry:
+For an authorized upgrade, install the verified target Linux executable and
+run its selected-client update entry. If the Agent's sandbox denies access or
+shows remapped ownership, have the installation's OS user run the preflight on
+the original host. Repair permissions only if that check confirms a defect.
 
 ```sh
 peerwork connect --local ORIGINAL_REGISTRY --participant HANDLE --update status
@@ -359,7 +398,10 @@ running the new version until it is started through its original lifecycle.
 The command does not replace a running binary on disk or download a release.
 
 Externally managed runtimes and original bridges remain under their existing
-launcher. The returned `continuation` lists the exact recorded host/project/server
+launcher. `EXTERNAL_ACTION_REQUIRED` delegates the runtime change to that
+launcher or supervisor. When the Codex adapter inherits its installation
+settings, preserve the active host's `CODEX_HOME`. The returned
+`continuation` lists the exact recorded host/project/server
 selections and requests their supported reload, followed by `peerwork_context`
 and `peerwork_delivery` status in the same host. It does not invent a host reload
 API, new session or process authority. A loaded MCP/Channel/bridge version that
