@@ -557,7 +557,8 @@ async fn qualify_native_reply(mcp_only: bool) {
         );
         crate::communication_store::private_json(&host_path, 65536).unwrap()
     };
-    let compact_opencode = !mcp_only && host["kind"] == "opencode";
+    let compact_host = !mcp_only && (host["kind"] == "opencode"
+        || host["kind"] == "codex" && host["local_queue_only"] == true);
     let root = PathBuf::from(
         std::env::var("PEERWORK_LIVE_HOST_STATE_DIR")
             .expect("explicit empty protected fixture root required"),
@@ -824,6 +825,8 @@ async fn qualify_native_reply(mcp_only: bool) {
         observed_host_state_gate(&root, "observed-initial-idle").await;
     }
     let require_consumption = std::env::var("PEERWORK_LIVE_HOST_REQUIRE_CONSUMED").as_deref() == Ok("1");
+    let observe_reads_only = std::env::var("PEERWORK_LIVE_HOST_OBSERVE_READS_ONLY").as_deref() == Ok("1");
+    assert!(!observe_reads_only || compact_host && !require_consumption);
     result["consumption_required"] = json!(require_consumption);
     let rounds = std::env::var("PEERWORK_LIVE_HOST_ROUNDS").ok()
         .map(|v| v.parse::<usize>().expect("explicit round count"))
@@ -875,10 +878,10 @@ async fn qualify_native_reply(mcp_only: bool) {
             // same-observer upper bound is not an internal host-only span.
             let early_ack = tokio::time::timeout(Duration::from_secs(20), async {
                 loop {
-                    let status = worker_client.call(if compact_opencode {
+                    let status = worker_client.call(if compact_host {
                         json!({"method":"delivery","mode":"status","options":worker_watch})
                     } else {json!({"method":"delivery_status","options":worker_watch,"item":item})}).await.unwrap();
-                    let observed = if compact_opencode {
+                    let observed = if compact_host {
                         status["destinations"].as_array().is_some_and(|all| !all.is_empty() && all.iter().all(|d|d["automatic_receiving"]=="VERIFIED"))
                     } else {status["host"] == "HOST_ACCEPTED"};
                     if observed {
@@ -890,7 +893,7 @@ async fn qualify_native_reply(mcp_only: bool) {
             .await;
             result["host_ack_observed_ms"] = json!(early_ack.as_ref().ok().copied());
             result["host_ack_observation_state"] = json!(if early_ack.is_ok() {
-                if compact_opencode {"COMPACT_NOTIFICATION_VERIFIED"} else {"HOST_ACCEPTED"}
+                if compact_host {"COMPACT_NOTIFICATION_VERIFIED"} else {"HOST_ACCEPTED"}
             } else {
                 "OBSERVATION_BUDGET_EXCEEDED"
             });
@@ -899,6 +902,19 @@ async fn qualify_native_reply(mcp_only: bool) {
                 "LIVE_HOST_ACK {}",
                 json!({"nonce":nonce,"host_ack_observed_ms":result["host_ack_observed_ms"],"state":result["host_ack_observation_state"]})
             );
+        }
+        if observe_reads_only {
+            // The isolated host driver records the exact item returned by its
+            // own MCP tool call. Match the signed service delivery, not just
+            // the existence of an arbitrary inbox read or a queue receipt.
+            let evidence = root.join(format!("observed-host-read-{round}.json"));
+            observed_host_state_gate(&root, evidence.file_name().unwrap().to_str().unwrap()).await;
+            let host_read: Value = serde_json::from_slice(&std::fs::read(evidence).unwrap()).unwrap();
+            assert_eq!(host_read["item"], item);
+            assert_eq!(host_read["message_id"], message_id);
+            let qualified = result["host_ack_observation_state"] == "COMPACT_NOTIFICATION_VERIFIED";
+            samples.push(json!({"round":round,"exact_signed_inbox_read":true,"qualified":qualified}));
+            continue;
         }
         let observed = tokio::time::timeout(Duration::from_secs(180), async {
             loop {
@@ -928,7 +944,7 @@ async fn qualify_native_reply(mcp_only: bool) {
         })
         .await;
         result["reply_observed_ms"] = json!(started.elapsed().as_millis());
-        let local = if compact_opencode {
+        let local = if compact_host {
             // Compact delivery deliberately retires old per-item host proofs.
             // Require its actual notification self-test plus the correlated
             // fresh signed reply and consumption, not a retired legacy proof.
@@ -946,7 +962,7 @@ async fn qualify_native_reply(mcp_only: bool) {
         result["host_fact"] = local["host"].clone();
         let model_reply_observed = observed.as_ref().is_ok_and(|v| v.is_object());
         result["model_reply_observed"] = json!(model_reply_observed);
-        let mut qualified = model_reply_observed && (mcp_only || local["host"] == "HOST_ACCEPTED" || compact_opencode && local["host"]=="COMPACT_NOTIFICATION_VERIFIED");
+        let mut qualified = model_reply_observed && (mcp_only || local["host"] == "HOST_ACCEPTED" || compact_host && local["host"]=="COMPACT_NOTIFICATION_VERIFIED");
         let consumed = if require_consumption && qualified {
             let done = tokio::time::timeout(Duration::from_secs(30), async {
                 loop {
