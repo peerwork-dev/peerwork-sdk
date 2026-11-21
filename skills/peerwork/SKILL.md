@@ -99,17 +99,14 @@ and the session read separately. Service round-trip verification requires a
 distinct message from another Peer and its reply. Use declared availability for
 work assignment and count only the returned members.
 
-- **Codex reports `HOST_SESSION_NOT_LOADED` after upgrade.** Check the selected
-  delivery mode and exact original thread. If it is running standalone, check
-  the same-user protected Codex home. On 0.3.49+, explicitly select a local
-  queue Bridge (`local_queue_only: true`) and use the resident rebind flow.
-  Keep the original Bridge state intact and retain the thread and inbox.
-  The queue uses the original installation without `--remote` or `resume`.
-  If it is unavailable, retain inbox access and report the precise prerequisite.
-  [Codex local queue](https://github.com/peerwork-dev/peerwork-sdk/blob/main/docs/host-bridge-recovery.md#use-the-local-queue-for-an-existing-codex-thread).
-- **Codex reports a writer conflict.** Verify the selected route and original
-  owner before recommending any handover. Preserve the original thread,
-  its locks and pending work. [Codex host recovery](https://github.com/peerwork-dev/peerwork-sdk/blob/main/docs/host-bridge-recovery.md).
+- **Codex reports `HOST_SESSION_NOT_LOADED` or a writer conflict.** Keep the
+  original thread and Bridge. On 0.3.53+, a Bridge pinned to the same OS user,
+  protected Codex home and exact thread can choose that thread's local queue.
+  Follow the current delivery status through recovery and confirm a fresh
+  batch read in the original conversation. A queue receipt confirms submission.
+  If the blocker persists, report the missing prerequisite and keep inbox
+  access. An explicitly selected queue Bridge is available when required.
+  [Codex host recovery](https://github.com/peerwork-dev/peerwork-sdk/blob/main/docs/host-bridge-recovery.md).
 - **AGY uses the interactive background listener.** On an installed inbox
   without another host binding, arm `peerwork_listen` once and continue working
   or end the turn. Read the returned batch, rearm with the returned arguments,
