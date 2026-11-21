@@ -1271,7 +1271,12 @@ async fn qualify_agy_acp(
             stop(&mut process).await;
             let (successor, restarted) = start(&binary, &runtime_file).await;
             assert_eq!(restarted.admin_endpoint, endpoint);
-            assert_eq!(restarted.client_endpoints, ready.client_endpoints);
+            for (name, original_endpoint) in &ready.client_endpoints {
+                assert_eq!(restarted.client_endpoints.get(name), Some(original_endpoint));
+            }
+            // The initial startup report predates Connect's scoped client.
+            // It must appear on restart at exactly the installed MCP endpoint.
+            assert!(restarted.client_endpoints.values().any(|path| path == &receive_endpoint));
             process = successor;
             endpoint = restarted.admin_endpoint;
         }
