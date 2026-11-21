@@ -548,7 +548,7 @@ async fn observed_host_state_gate(root: &std::path::Path, name: &str) {
 }
 
 #[cfg(unix)]
-async fn run_candidate_bridge(
+pub(crate) async fn run_candidate_bridge(
     config: PathBuf,
     stop: KernelCancellationToken,
     ready: oneshot::Sender<std::result::Result<communication_bridge::BridgeReady, &'static str>>,

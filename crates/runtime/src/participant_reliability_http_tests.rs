@@ -622,7 +622,7 @@ async fn codex_lost_ack_preserves_the_original_batch_and_dispatches_fresh_signed
     create_private_state_directory(&home).unwrap();
     let bridge_stop = KernelCancellationToken::new();
     let (tx, rx) = tokio::sync::oneshot::channel();
-    let bridge = tokio::spawn(communication_bridge::serve(BridgeConfig {
+    let bridge_config = BridgeConfig {
         format: "peerwork.host-bridge.v1".into(),
         state_directory: root.join("bridge"),
         host: json!({"kind":"codex","endpoint":"codex-proxy://local","thread_id":thread,
@@ -637,8 +637,21 @@ async fn codex_lost_ack_preserves_the_original_batch_and_dispatches_fresh_signed
             mailbox_id: mailbox["mailbox_id"].as_str().unwrap().into(),
             membership_id: mailbox["membership_id"].as_str().unwrap().into(),
         }],
-    }, bridge_stop.clone(), tx));
-    let adapter = rx.await.unwrap().unwrap().adapter;
+    };
+    let bridge = if std::env::var_os("PEERWORK_PARTICIPANT_CLI").is_some() {
+        let config = root.join("bridge.json");
+        crate::communication_host::write_private(&config, &serde_json::to_vec(&bridge_config).unwrap())
+            .unwrap();
+        tokio::spawn(crate::participant_live_host_tests::run_candidate_bridge(
+            config, bridge_stop.clone(), tx,
+        ))
+    } else {
+        tokio::spawn(communication_bridge::serve(bridge_config, bridge_stop.clone(), tx))
+    };
+    let adapter = match rx.await {
+        Ok(result) => result.unwrap().adapter,
+        Err(_) => panic!("qualification Bridge exited before ready: {:?}", bridge.await),
+    };
     let options = WatchOptions {
         workspace_id: workspace.into(),
         mailbox_id: mailbox["mailbox_id"].as_str().unwrap().into(),
