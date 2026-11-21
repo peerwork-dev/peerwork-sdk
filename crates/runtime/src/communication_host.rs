@@ -822,9 +822,6 @@ impl Host {
         self.config["kind"] == "codex" && self.config["local_queue_only"] == true
     }
 
-    pub(crate) fn single_bridge_admission(&self) -> bool {
-        self.codex_queue_active() || codex_proxy::pinned_queue_recovery(&self.config)
-    }
 
     pub fn open(config: Value, executor: tokio::runtime::Handle) -> R<Self> {
         Self::open_progress(config,executor,Budget::new(Duration::from_secs(10)))
@@ -1073,7 +1070,7 @@ impl Host {
     }
     fn health_inner(&mut self, binding: &Value) -> R<Value> {
         if self.config["kind"]=="opencode" {return opencode::health(self)}
-        if self.config["kind"]=="codex" && self.config["local_queue_only"] == true {
+        if self.codex_queue_active() {
             codex_proxy::validate_queue_target(&self.config)?;
             let route = json!(["local_queue",self.config["codex_home"],self.config["thread_id"]]);
             return Ok(json!({"ready":false,"can_attempt":true,"execution_state":"UNKNOWN",
@@ -1142,7 +1139,7 @@ impl Host {
             }
             return host.deliver(message);
         }
-        if self.config["kind"] == "codex" && self.config["local_queue_only"] == true {
+        if self.codex_queue_active() {
             return codex_proxy::queue_notification(&self.config, &self.executor, &self.progress, message);
         }
         if self.config["kind"] == "bridge" {

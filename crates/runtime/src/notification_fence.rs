@@ -15,6 +15,8 @@ struct Record {
     batch: Option<String>,
     paused: bool,
     attempt: u64,
+    #[serde(default)]
+    queue_attempt: bool,
     outcome: Option<Value>,
 }
 struct Inner {
@@ -117,6 +119,7 @@ impl Fence {
             }
         }
         if old.as_ref().is_none_or(|old| old.revision != revision) {
+            let previous = old.as_ref().filter(|old| batch.is_some() && old.batch.as_deref() == batch);
             save(
                 &tx,
                 &Record {
@@ -124,14 +127,9 @@ impl Fence {
                     revision,
                     batch: batch.map(str::to_owned),
                     paused,
-                    attempt: old
-                        .as_ref()
-                        .filter(|old| batch.is_some() && old.batch.as_deref() == batch)
-                        .map_or(0, |old| old.attempt),
-                    outcome: old
-                        .as_ref()
-                        .filter(|old| batch.is_some() && old.batch.as_deref() == batch)
-                        .and_then(|old| old.outcome.clone()),
+                    attempt: previous.map_or(0, |old| old.attempt),
+                    queue_attempt: previous.is_some_and(|old| old.queue_attempt),
+                    outcome: previous.and_then(|old| old.outcome.clone()),
                 },
             )?;
         }
@@ -172,7 +170,7 @@ impl Fence {
         self.begin_with_policy(owner, revision, batch, attempt, false)
     }
     pub(crate) fn begin_with_policy(&self, owner: &str, revision: u64, batch: &str,
-        attempt: u64, once: bool) -> R<Option<Value>> {
+        attempt: u64, queue: bool) -> R<Option<Value>> {
         valid(owner)?;
         valid(batch)?;
         if attempt == 0 {
@@ -198,7 +196,9 @@ impl Fence {
             outcome["state"] == "NOT_SENT"
                 && matches!(outcome["proof"].as_str(), Some("LOCAL_PREFLIGHT_NO_IO" | "BOUND_HOST_RECONCILIATION"))
         });
-        if attempt == row.attempt || once && row.attempt > 0 && !known_not_sent {
+        // Queue writes have no App Server message-ID reconciliation. Do not
+        // replay between transports in either direction, even after a restart.
+        if attempt == row.attempt || (queue || row.queue_attempt) && row.attempt > 0 && !known_not_sent {
             return Ok(Some(row.outcome.unwrap_or_else(
                 || json!({"state":"RESULT_UNKNOWN","code":"NOTIFICATION_INPUT_UNRESOLVED"}),
             )));
@@ -207,6 +207,7 @@ impl Fence {
             return Err("NOTIFICATION_INPUT_IN_FLIGHT");
         }
         row.attempt = attempt;
+        row.queue_attempt = queue;
         row.outcome =
             Some(json!({"state":"RESULT_UNKNOWN","code":"NOTIFICATION_INPUT_UNRESOLVED"}));
         save(&tx, &row)?;
@@ -304,12 +305,12 @@ mod tests {
         assert!(fence.begin_with_policy("owner", 1, "original", 1, true).unwrap().is_none());
         drop(fence);
         let fence = Fence::open(&directory).unwrap();
-        assert_eq!(fence.begin_with_policy("owner", 1, "original", 2, true).unwrap().unwrap()["state"],
+        assert_eq!(fence.begin("owner", 1, "original", 2).unwrap().unwrap()["state"],
             "RESULT_UNKNOWN");
         fence.control("owner", 2, Some("next"), false).unwrap();
         assert!(fence.begin_with_policy("owner", 2, "next", 1, true).unwrap().is_none());
         fence.finish("owner", "next", 1, &json!({"state":"HOST_QUEUED","receipt":"original"})).unwrap();
-        assert_eq!(fence.begin_with_policy("owner", 2, "next", 2, true).unwrap().unwrap()["state"],
+        assert_eq!(fence.begin("owner", 2, "next", 2).unwrap().unwrap()["state"],
             "HOST_QUEUED");
     }
     #[test]

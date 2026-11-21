@@ -728,7 +728,7 @@ fn provider_loop(config:Value,executor:tokio::runtime::Handle,progress:crate::co
                     let owner=n["owner"].as_str().ok_or("BRIDGE_REQUEST_INVALID")?;
                     let batch=n["batch"].as_str().ok_or("BRIDGE_REQUEST_INVALID")?;
                     if let Some(known)=notice_fence.begin_with_policy(owner,n["revision"].as_u64().ok_or("BRIDGE_REQUEST_INVALID")?,batch,
-                        n["attempt"].as_u64().ok_or("BRIDGE_REQUEST_INVALID")?,selected.single_bridge_admission())? {
+                        n["attempt"].as_u64().ok_or("BRIDGE_REQUEST_INVALID")?,selected.codex_queue_active())? {
                         return Ok((selected.destination.clone(),known));
                     }
                     notice_admitted=true;

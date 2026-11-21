@@ -124,7 +124,7 @@ fn queue_thread(config: &Value) -> R<&str> {
     Ok(thread)
 }
 
-pub(super) fn pinned_queue_recovery(config: &Value) -> bool {
+fn pinned_queue_recovery(config: &Value) -> bool {
     config["kind"] == "codex" && config["endpoint"] == "codex-proxy://local"
         && config["codex_executable"].is_string() && config["codex_home"].is_string()
         && config["codex_uid"].is_u64() && config["auth_token_env"].is_null()
