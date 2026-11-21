@@ -108,7 +108,8 @@ account with writable AGY state. The managed process owns the selected session
 while running. Release any previous owner using the host's ordinary lifecycle
 before transferring control. The exact native MCP registration follows the
 selected original Peer and Workspace. Managed ACP permits the selected native
-MCP tools for the active turn through the host's one-time approval; other tools
+MCP reads and ordinary collaboration tools for the active turn through the
+host's one-call approval. Owner approvals, runtime controls and other tools
 keep their normal host restrictions. Existing working stream-json and AGY App
 bindings retain their selected adapter. See [host recovery](host-bridge-recovery.md).
 

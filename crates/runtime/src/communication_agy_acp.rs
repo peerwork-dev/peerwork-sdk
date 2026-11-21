@@ -50,7 +50,16 @@ impl Session {
                 "env":[]}]);
             exact_tools = crate::agent_tools::catalog()
                 .iter()
-                .filter_map(|tool| tool["name"].as_str())
+                .filter_map(|tool| {
+                    let name = tool["name"].as_str()?;
+                    let ordinary_read = tool["annotations"]["readOnlyHint"] == true
+                        && !matches!(name, "peerwork_listen" | "peerwork_wait");
+                    let ordinary_work = matches!(name,
+                        "peerwork_send" | "peerwork_reply" | "peerwork_consume" | "peerwork_post"
+                        | "peerwork_act" | "peerwork_availability" | "peerwork_member_name"
+                        | "peerwork_subscriptions" | "peerwork_recover");
+                    (ordinary_read || ordinary_work).then_some(name)
+                })
                 .map(|tool| format!("mcp_{name}_{tool}"))
                 .collect();
         } else if config.get("mcp_server").is_some() {
@@ -173,6 +182,10 @@ mod tests {
         assert_eq!(request("original-session", inbox, true), json!({"outcome":"selected","optionId":"once"}));
         assert_eq!(request("another-session", inbox, true), json!({"outcome":"cancelled"}));
         assert_eq!(request("original-session", "run_command", true), json!({"outcome":"cancelled"}));
+        for action in ["connect", "connect_approve", "delivery", "manage", "listen"] {
+            let name = format!("mcp_peerwork_1234567890abcdef_peerwork_{action}");
+            assert_eq!(request("original-session", &name, true), json!({"outcome":"cancelled"}));
+        }
         assert_eq!(request("original-session", inbox, false), json!({"outcome":"cancelled"}));
         assert_eq!(session.resume()["params"]["mcpServers"][0]["args"][4], "original-peer");
     }
