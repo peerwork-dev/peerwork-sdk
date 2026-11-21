@@ -750,3 +750,44 @@ async fn selected_real_agy_background_fixture() {
         "application_consumption":"UNCHANGED","transient_receiver_fault_injected":transient_fault});
     crate::communication_host::write_private(&directory.join("result.json"), &serde_json::to_vec(&result).unwrap()).unwrap();
 }
+
+#[tokio::test(flavor="multi_thread",worker_threads=2)]
+#[ignore="requires isolated TEST PostgreSQL and a signed product HTTP fixture"]
+async fn channel_admission_wait_keeps_mcp_responsive_and_delivers_the_original_batch() {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    let root = crate::test_support::protected_test_dir();
+    let setup = BackgroundFixture::start(root.path()).await;
+    let (mcp, host) = tokio::io::duplex(65536);
+    let (reader, writer) = tokio::io::split(mcp);
+    let frontend = tokio::spawn(crate::agent_mcp::serve_claude(setup.profile.clone(), BufReader::new(reader), writer));
+    let (reader, mut writer) = tokio::io::split(host);
+    let mut lines = BufReader::new(reader).lines();
+    writer.write_all(format!("{}\n", json!({"jsonrpc":"2.0","id":1,"method":"initialize",
+        "params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"fixture","version":"1"}}})).as_bytes()).await.unwrap();
+    assert_eq!(serde_json::from_str::<Value>(&lines.next_line().await.unwrap().unwrap()).unwrap()["id"], 1);
+    writer.write_all(b"{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n").await.unwrap();
+    let held = root.path().join("runtime/fixture-notification-validation-held");
+    let attempted = root.path().join("runtime/fixture-notification-validation-attempted");
+    std::fs::write(&held, b"").unwrap();
+    setup.send("signed message while the local Channel admission is delayed").await;
+    tokio::time::timeout(Duration::from_secs(15), async {
+        while !attempted.exists() { tokio::time::sleep(Duration::from_millis(10)).await; }
+    }).await.unwrap();
+    writer.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"ping\"}\n").await.unwrap();
+    let control = tokio::time::timeout(Duration::from_secs(2), lines.next_line()).await;
+    std::fs::remove_file(held).unwrap();
+    assert_eq!(serde_json::from_str::<Value>(&control.unwrap().unwrap().unwrap()).unwrap()["id"], 2);
+    let notice = tokio::time::timeout(Duration::from_secs(10), lines.next_line()).await.unwrap().unwrap().unwrap();
+    let notice: Value = serde_json::from_str(&notice).unwrap();
+    assert_eq!(notice["method"], "notifications/claude/channel");
+    assert!(notice["params"]["meta"]["revision"].is_string());
+    let read = json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"peerwork_inbox",
+        "arguments":{"batch":notice["params"]["meta"]["batch"]}}});
+    writer.write_all(format!("{read}\n").as_bytes()).await.unwrap();
+    let page = tokio::time::timeout(Duration::from_secs(5), lines.next_line()).await.unwrap().unwrap().unwrap();
+    assert!(page.contains("signed message while the local Channel admission is delayed"), "{page}");
+    drop(writer);
+    drop(lines);
+    tokio::time::timeout(Duration::from_secs(2), frontend).await.unwrap().unwrap().unwrap();
+    setup.finish().await;
+}
