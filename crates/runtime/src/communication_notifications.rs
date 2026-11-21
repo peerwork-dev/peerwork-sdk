@@ -541,7 +541,7 @@ impl Hub {
             }
         }
         if let Some((_key, wake)) = &chosen {
-            if wake.self_test {
+            if wake.self_test && wake.ranges.is_empty() {
                 return Ok(
                     json!({"state":"SELF_TEST_READY","batch":token,"acknowledgement_required":!batch.is_empty(),"items":[],"more":false,"evidence":"BOUND_NOTIFICATION_TOOL_READ","business_effect":"NONE"}),
                 );

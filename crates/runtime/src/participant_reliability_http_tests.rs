@@ -576,6 +576,130 @@ async fn direct_codex_lost_acceptance_retries_compact_batch_and_read_stops_wakes
 }
 
 
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires an isolated PostgreSQL service and synthetic Codex host"]
+async fn codex_lost_ack_preserves_the_original_batch_and_dispatches_fresh_signed_mail() {
+    use crate::{
+        communication_bridge::{self, BridgeConfig, BridgeGrant},
+        communication_host::tests::codex_proxy_fixture_for,
+        kernel_identity::KernelIdentity,
+        participant_dispatch::{self, HostConfig, HostSubscription, RunningHost},
+        participant_inbox::HostBinding,
+        secure_state::create_private_state_directory,
+    };
+    use std::sync::atomic::Ordering;
+
+    async fn notice(host: &RunningHost, match_notice: impl Fn(&Value) -> bool) -> Value {
+        tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                let current = host.status.lock().unwrap()["notification"].clone();
+                if current["batch"].is_string() && match_notice(&current) {
+                    return current;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        }).await.unwrap_or_else(|_| panic!("latest host status: {}", host.status.lock().unwrap()))
+    }
+
+    let c = Cohort::start(0).await;
+    let root = c._temp.path();
+    let space = mutate(&c.client, "uncertain-create", "structure.workspace.create",
+        &Scope::default(), json!({"name":"Uncertain notification recovery"})).await;
+    let workspace = space["workspace_id"].as_str().unwrap();
+    let scope = Scope { workspace_id: Some(workspace.into()), ..Default::default() };
+    let member = selected(&c.client, "structure.workspace.get", &scope, json!({})).await;
+    let mailbox = mutate(&c.client, "uncertain-grant", "structure.communication.grant.set", &scope,
+        json!({"actor_id":c.client.actor_id(),"membership_id":member["membership"]["membership_id"],
+            "expected_revision":null,"send":true,"receive":true})).await["mailbox"].clone();
+    let key = install_synthetic_key(&c.config, workspace, &[42;32], None);
+    mutate(&c.client, "uncertain-key", "structure.content-key.set", &scope,
+        json!({"key_id":key,"expected_epoch":0,"expected_head_revision":null})).await;
+    let thread = "6ce5fad5-edfc-4d0f-862a-eb3165953db0";
+    let (executable, fixture) = codex_proxy_fixture_for(root, Some(thread));
+    fixture.emit_events.store(false, Ordering::SeqCst);
+    let home = root.join("codex-home");
+    create_private_state_directory(&home).unwrap();
+    let bridge_stop = KernelCancellationToken::new();
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let bridge = tokio::spawn(communication_bridge::serve(BridgeConfig {
+        format: "peerwork.host-bridge.v1".into(),
+        state_directory: root.join("bridge"),
+        host: json!({"kind":"codex","endpoint":"codex-proxy://local","thread_id":thread,
+            "expected_session_id":thread,"codex_executable":executable,"codex_home":home,
+            "codex_uid":unsafe {libc::geteuid()}}),
+        bindings: vec![BridgeGrant {
+            expected_origin: c.config.origin.clone(),
+            expected_actor: c.client.actor_id().into(),
+            expected_key_id: KernelIdentity::open(&c.config.identity_path).unwrap().key_id().into(),
+            namespace: c.client.local_namespace().into(),
+            workspace_id: workspace.into(),
+            mailbox_id: mailbox["mailbox_id"].as_str().unwrap().into(),
+            membership_id: mailbox["membership_id"].as_str().unwrap().into(),
+        }],
+    }, bridge_stop.clone(), tx));
+    let adapter = rx.await.unwrap().unwrap().adapter;
+    let options = WatchOptions {
+        workspace_id: workspace.into(),
+        mailbox_id: mailbox["mailbox_id"].as_str().unwrap().into(),
+        membership_id: mailbox["membership_id"].as_str().unwrap().into(),
+        consumer_id: "original-notification-receiver".into(),
+        host_destination: Some(HostBinding::new(adapter["destination"].clone()).unwrap().digest),
+    };
+    let mut watch = c.client.watch(options.clone()).await.unwrap();
+    watch_until(&mut watch, |snapshot| snapshot.receiver_link_verified).await;
+    let runtime = root.join("runtime");
+    create_private_state_directory(&runtime).unwrap();
+    let stop = KernelCancellationToken::new();
+    let hosts = participant_dispatch::start(&[HostConfig {
+        name:"original-codex".into(), adapter,
+        subscriptions: vec![HostSubscription {
+            client:"original".into(), client_generation:None, watch:options.clone(),
+        }],
+    }], &BTreeMap::from([("original".into(), c.client.clone())]), &runtime, stop.clone()).unwrap();
+    let hub = crate::communication_notifications::Hub::open(&runtime).unwrap();
+    let probe = notice(&hosts[0], |n| n["outcome"]["state"]=="HOST_ACCEPTED").await;
+    let probe = probe["batch"].as_str().unwrap();
+    assert_eq!(hub.read(&c.client, probe, "fresh", None, 0, None, 8, 16384).await.unwrap()["state"],
+        "SELF_TEST_READY");
+    hub.observe(&c.client, probe).await.unwrap();
+
+    fixture.lose_next_ack.store(true, Ordering::SeqCst);
+    let original = structure(&c.client.invoke(native_message("uncertain-old", &scope, &mailbox,
+        &mailbox, &"v".repeat(43), "original encrypted item"), Duration::from_secs(5)).await.unwrap());
+    let lost = notice(&hosts[0], |n| n["outcome"]["state"]=="RESULT_UNKNOWN").await;
+    let lost_batch = lost["batch"].as_str().unwrap();
+    *fixture.status_override.lock().unwrap() = Some("notLoaded".into());
+    let held = notice(&hosts[0], |n| n["batch"]==lost["batch"] && n["outcome"]["replay_blocked"]==true).await;
+    assert_eq!(held["outcome"]["state"], "RESULT_UNKNOWN");
+    assert!(!home.join("calls").exists());
+
+    let fresh = structure(&c.client.invoke(native_message("uncertain-new", &scope, &mailbox,
+        &mailbox, &"v".repeat(43), "fresh encrypted item"), Duration::from_secs(5)).await.unwrap());
+    let next = notice(&hosts[0], |n| n["batch"]!=lost["batch"] && n["outcome"]["state"]=="HOST_QUEUED").await;
+    let next_batch = next["batch"].as_str().unwrap();
+    let new_page = hub.read(&c.client, next_batch, "fresh", None, 0, None, 8, 16384).await.unwrap();
+    assert_eq!(new_page["backlog_available"], true);
+    assert_eq!(new_page["items"].as_array().unwrap().len(), 1);
+    assert_eq!(new_page["items"][0]["message"]["message_id"], fresh["message_id"]);
+    assert_eq!(new_page["items"][0]["message"]["assurance"], "AUTHOR_SIGNATURE_AND_AEAD");
+    let original_page = hub.read(&c.client, lost_batch, "fresh", None, 0, None, 8, 16384).await.unwrap();
+    assert_eq!(original_page["items"][0]["message"]["message_id"], original["message_id"]);
+    assert_eq!(original_page["items"][0]["message"]["assurance"], "AUTHOR_SIGNATURE_AND_AEAD");
+    assert_eq!(hub.observe(&c.client, lost_batch).await.unwrap()["accepted_generation"], false);
+    assert_eq!(hub.observe(&c.client, next_batch).await.unwrap()["accepted_generation"], true);
+    let queued = std::fs::read_to_string(home.join("calls")).unwrap();
+    assert!(queued.contains(next_batch) && !queued.contains(lost_batch));
+    assert_eq!(fixture.calls().iter().filter(|call| matches!(
+        call["method"].as_str(), Some("turn/start" | "turn/steer"))).count(), 2);
+    assert_eq!(c.service.counts().await["actions"]["structure.message.send"], 2);
+    stop.cancel();
+    for host in hosts { host.task.await.unwrap(); }
+    bridge_stop.cancel();
+    bridge.await.unwrap().unwrap();
+    c.client.close().await.unwrap();
+}
+
 // One synthetic Space on the selected TEST database. The actual receiver must
 // verify the real service stream; cached content never substitutes for that.
 struct BackgroundFixture {

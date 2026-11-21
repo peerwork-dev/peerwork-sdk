@@ -38,6 +38,15 @@ struct Batch {
     wake: Wake,
     observed: bool,
     retired: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    replay_blocked: Option<ReplayBlocked>,
+}
+#[derive(Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+enum ReplayBlocked {
+    HostAccepted,
+    HostQueued,
+    ResultUnknown,
 }
 #[derive(Serialize, Deserialize)]
 struct State {
@@ -289,6 +298,30 @@ impl Store {
         })
     }
 
+    /// Called only for a Bridge result already authenticated and bound to this
+    /// delivery attempt by the host adapter.
+    pub(crate) fn record_replay_block(&self, owner: &str, wake: &Wake, outcome: &Value) -> Result<()> {
+        if outcome["replay_blocked"] != true {
+            return Ok(());
+        }
+        let disposition = match outcome["state"].as_str() {
+            Some("HOST_ACCEPTED") => ReplayBlocked::HostAccepted,
+            Some("HOST_QUEUED") => ReplayBlocked::HostQueued,
+            Some("RESULT_UNKNOWN") => ReplayBlocked::ResultUnknown,
+            _ => return Ok(()),
+        };
+        self.transaction(owner, |s| {
+            if s.revision == wake.revision && s.active.as_deref() == Some(wake.batch.as_str()) {
+                if let Some(batch) = s.batches.iter_mut().find(|b| {
+                    b.wake.batch == wake.batch && b.wake.attempt == wake.attempt
+                }) {
+                    batch.replay_blocked = Some(disposition);
+                }
+            }
+            Ok(())
+        })
+    }
+
     pub fn due(&self, owner: &str, heads: &[SourceHead], now: i64) -> Result<Option<Wake>> {
         self.due_checked(owner,heads,now,None)
     }
@@ -357,8 +390,25 @@ impl Store {
             if s.probe && !unavailable.is_empty() {
                 return Ok(None);
             }
+            if s.retry_at > now.saturating_add(300_000) {
+                s.retry_at = now;
+            }
+            let replace_with_fresh = s.batches.iter().any(|b| {
+                s.active.as_deref() == Some(b.wake.batch.as_str()) && b.replay_blocked.is_some()
+            });
+            if replace_with_fresh {
+                // Advancing the presentation cursor is independent of reading
+                // or consuming the original inbox items. Keep its token usable
+                // and start a new reference only for a genuinely newer head.
+                if s.mode == "PAUSED" || now < s.retry_at || !heads.iter().any(|h| {
+                    h.has_pending && h.checkpoint > s.sources[&h.key].cursor
+                }) {
+                    return Ok(None);
+                }
+                invalidate(s);
+            }
             if s.active.is_none() {
-                let ranges = if s.probe {
+                let ranges = if s.probe && !replace_with_fresh {
                     vec![]
                 } else {
                     heads
@@ -399,11 +449,9 @@ impl Store {
                     },
                     observed: false,
                     retired: false,
+                    replay_blocked: None,
                 });
                 s.active = Some(batch);
-                s.retry_at = now;
-            }
-            if s.retry_at > now.saturating_add(300_000) {
                 s.retry_at = now;
             }
             if now < s.retry_at {
@@ -505,8 +553,12 @@ fn invalidate(s: &mut State) {
         if let Some(b) = s.batches.iter_mut().find(|b| b.wake.batch == id) {
             for r in &b.wake.ranges {
                 if let Some(source) = s.sources.get_mut(&r.key) {
-                    source.cursor = source.cursor.min(r.after);
-                    source.backlog |= r.backlog;
+                    if b.replay_blocked.is_some() {
+                        source.backlog = true;
+                    } else {
+                        source.cursor = source.cursor.min(r.after);
+                        source.backlog |= r.backlog;
+                    }
                 }
             }
             b.retired = true; // Retirement is not an assertion of model observation.
@@ -519,7 +571,7 @@ fn status(s: &State) -> Value {
         .active
         .as_ref()
         .and_then(|id| s.batches.iter().find(|b| &b.wake.batch == id));
-    json!({"state":s.mode,"revision":s.revision,"self_test_requested":s.probe,"automatic_receiving":if s.mode=="PAUSED"{"PAUSED"}else if s.mode=="RUNNING"&&s.last_self_test_at_ms.is_some(){"VERIFIED"}else{"VERIFYING"},"last_verified_at":s.last_self_test_at_ms,"verification_time_basis":"LOCAL_OBSERVATION","pending":pending.map(|b| json!({"attempt":b.wake.attempt,"self_test":b.wake.self_test,"source_count":b.wake.ranges.len(),"retry_at":s.retry_at})),"source_count":s.sources.len(),"retained_batches":s.batches.len()})
+    json!({"state":s.mode,"revision":s.revision,"self_test_requested":s.probe,"automatic_receiving":if s.mode=="PAUSED"{"PAUSED"}else if s.mode=="RUNNING"&&s.last_self_test_at_ms.is_some(){"VERIFIED"}else{"VERIFYING"},"last_verified_at":s.last_self_test_at_ms,"verification_time_basis":"LOCAL_OBSERVATION","pending":pending.map(|b| json!({"attempt":b.wake.attempt,"self_test":b.wake.self_test,"source_count":b.wake.ranges.len(),"retry_at":b.replay_blocked.is_none().then_some(s.retry_at),"replay_blocked":b.replay_blocked})),"source_count":s.sources.len(),"retained_batches":s.batches.len()})
 }
 
 #[cfg(test)]
@@ -566,6 +618,46 @@ mod tests {
         assert_eq!(next.ranges[0].after, 68);
         assert_eq!(next.ranges[0].through, 634);
         assert!(!next.ranges[0].backlog);
+    }
+    #[test]
+    fn fresh_head_advances_past_a_non_replayable_batch_after_restart() {
+        let fixture = Fixture::new();
+        let store = fixture.open();
+        ready(&store, "owner", &head(5));
+        let original = store.due("owner", &head(6), 0).unwrap().unwrap();
+        store.record_replay_block("owner", &original, &json!({
+            "state":"RESULT_UNKNOWN","replay_blocked":true
+        })).unwrap();
+        drop(store);
+
+        let store = fixture.open();
+        assert!(store.due("owner", &head(8), 1).unwrap().is_none());
+        assert!(store.due("owner", &head(6), 8000).unwrap().is_none());
+        assert_eq!(store.status("owner").unwrap()["pending"]["replay_blocked"], "RESULT_UNKNOWN");
+        let next = store.due("owner", &head(8), 8001).unwrap().unwrap();
+        assert_ne!(next.batch, original.batch);
+        assert_eq!((next.ranges[0].after, next.ranges[0].through), (6, 8));
+        assert!(next.ranges[0].backlog);
+        assert_eq!(store.batch("owner", &original.batch).unwrap().ranges[0].through, 6);
+        assert!(!store.admission("owner", &original.batch, original.revision).unwrap());
+        assert_eq!(store.observed("owner", &original.batch).unwrap()["accepted_generation"], false);
+        assert_eq!(store.current("owner").unwrap().unwrap().batch, next.batch);
+    }
+
+    #[test]
+    fn a_fresh_notification_can_qualify_the_host_after_an_unread_probe() {
+        let fixture = Fixture::new();
+        let store = fixture.open();
+        let probe = store.due("owner", &head(5), 0).unwrap().unwrap();
+        store.record_replay_block("owner", &probe, &json!({
+            "state":"HOST_QUEUED","replay_blocked":true
+        })).unwrap();
+        assert!(store.due("owner", &head(5), 8000).unwrap().is_none());
+        let next = store.due("owner", &head(6), 8001).unwrap().unwrap();
+        assert!(next.self_test);
+        assert_eq!((next.ranges[0].after, next.ranges[0].through), (5, 6));
+        assert_eq!(store.observed("owner", &probe.batch).unwrap()["state"], "VERIFYING");
+        assert_eq!(store.observed("owner", &next.batch).unwrap()["state"], "RUNNING");
     }
     #[test]
     fn unavailable_source_keeps_its_cursor_while_healthy_source_delivers() {

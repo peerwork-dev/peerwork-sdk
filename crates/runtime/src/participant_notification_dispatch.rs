@@ -67,6 +67,11 @@ pub(super) async fn step(
         })
         .await
         .unwrap_or(Err("HOST_ACK_UNKNOWN"));
+        if config.adapter["kind"] == "bridge" {
+            if let Ok(outcome) = &result {
+                hub.store.record_replay_block(&owner, &wake, outcome)?;
+            }
+        }
         if let Ok(mut value) = status.lock() {
             value["notification"] = json!({"batch":wake.batch,"attempt":wake.attempt,"revision":wake.revision,"outcome":result.as_ref().ok(),"code":result.as_ref().err(),"content":"REFERENCE_ONLY","model_response":"NOT_ATTESTED"});
             value["delivery_control"] = hub

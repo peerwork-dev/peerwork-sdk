@@ -146,6 +146,14 @@ uncertain notification stays fenced across both paths. A confirmed no-input
 attempt remains retryable. A fresh queue receipt does not establish that the
 thread is active or has read the inbox.
 
+When the Bridge confirms that a notice cannot safely be repeated, a newer
+verified inbox head can produce a separate notice after the existing backoff.
+The new reference covers new items. Unread original work remains in the
+inbox, and the original batch reference is readable while retained. A late
+read of that reference does not acknowledge its successor. When the original
+reference was a verification probe, an explicit read of the new bound notice
+can verify the same destination. A paused receiver stays paused.
+
 ### Use the local queue for an existing Codex thread
 
 An operator can select the local queue for the original thread on the same OS

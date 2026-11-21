@@ -743,7 +743,12 @@ fn provider_loop(config:Value,executor:tokio::runtime::Handle,progress:crate::co
                 }
                 let destination=selected.destination.clone();
                 #[cfg(test)] if config["_test_panic_after_input"]==true&&!injected {injected=true;panic!("injected provider failure after possible input");}
-                let value=serde_json::to_value(crate::participant_dispatch::host_outcome(config["kind"].as_str().unwrap_or(""),delivered)).map_err(|_|"BRIDGE_OUTCOME_INVALID")?;
+                let mut value=serde_json::to_value(crate::participant_dispatch::host_outcome(config["kind"].as_str().unwrap_or(""),delivered)).map_err(|_|"BRIDGE_OUTCOME_INVALID")?;
+                if notice_admitted && selected.codex_queue_active()
+                    && matches!(value["state"].as_str(), Some("HOST_QUEUED" | "RESULT_UNKNOWN"))
+                {
+                    value["replay_blocked"] = json!(true);
+                }
                 if disconnect{drop(host.take());}
                 return Ok((destination,value));
             }else{

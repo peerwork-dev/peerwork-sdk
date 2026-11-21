@@ -198,10 +198,15 @@ impl Fence {
         });
         // Queue writes have no App Server message-ID reconciliation. Do not
         // replay between transports in either direction, even after a restart.
-        if attempt == row.attempt || (queue || row.queue_attempt) && row.attempt > 0 && !known_not_sent {
-            return Ok(Some(row.outcome.unwrap_or_else(
+        let replay_blocked = (queue || row.queue_attempt) && row.attempt > 0 && !known_not_sent;
+        if attempt == row.attempt || replay_blocked {
+            let mut outcome = row.outcome.unwrap_or_else(
                 || json!({"state":"RESULT_UNKNOWN","code":"NOTIFICATION_INPUT_UNRESOLVED"}),
-            )));
+            );
+            if replay_blocked {
+                outcome["replay_blocked"] = json!(true);
+            }
+            return Ok(Some(outcome));
         }
         if busy {
             return Err("NOTIFICATION_INPUT_IN_FLIGHT");
