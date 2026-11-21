@@ -103,6 +103,91 @@ async fn codex_local_queue_preserves_scope_and_never_repeats_the_same_batch() {
     stop.cancel();
     task.await.unwrap().unwrap();
 }
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 3)]
+#[ignore = "requires a synthetic loopback bridge"]
+async fn codex_original_bridge_recovers_without_replaying_an_uncertain_input() {
+    let directory = crate::test_support::protected_test_dir();
+    let home = directory.path().join("codex-home");
+    create_private_state_directory(&home).unwrap();
+    let thread = "ee439dd3-6f14-4ea2-9d2b-aa16589fa4c8";
+    let (executable, fixture) = crate::communication_host::tests::codex_proxy_fixture_for(directory.path(), Some(thread));
+    fixture.emit_events.store(false, Ordering::SeqCst);
+    let config = BridgeConfig {
+        format: "peerwork.host-bridge.v1".into(),
+        state_directory: directory.path().join("bridge"),
+        host: json!({"kind":"codex","endpoint":"codex-proxy://local","thread_id":thread,
+            "expected_session_id":thread,"codex_executable":executable,"codex_home":home,
+            "codex_uid":unsafe { libc::geteuid() }}),
+        bindings: vec![grant()],
+    };
+    let (ready, stop, task) = start(config.clone()).await;
+    wait_ready(&ready).await;
+    let original = ready.adapter.clone();
+    let (binding, _) = frame(&original["destination"], 1);
+    let scope = access_scope(&binding);
+    let owner = notices::owner(&scope).unwrap();
+    let old = "O".repeat(43);
+    assert_eq!(call(&ready,"notice-control",&scope,json!({"notification":{"owner":owner,"revision":1,
+        "paused":false,"batch":old,"allow_probe":false}})).await["state"], "FENCE_INSTALLED");
+    fixture.lose_next_ack.store(true, Ordering::SeqCst);
+    assert_eq!(call(&ready,"notify",&scope,json!({"notification":{"batch":old,"attempt":1,"revision":1}}))
+        .await["outcome"]["state"], "RESULT_UNKNOWN");
+    stop.cancel();
+    task.await.unwrap().unwrap();
+
+    *fixture.actual_session.lock().unwrap() = "wrong-session".into();
+    *fixture.status_override.lock().unwrap() = Some("notLoaded".into());
+    let (ready, stop, task) = start(config.clone()).await;
+    assert_eq!(ready.adapter, original);
+    let blocked = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let result = call(&ready,"health",&scope,json!({})).await;
+            if result["health"]["reason"] != "HOST_ATTACHING" { break result; }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }).await.unwrap();
+    assert_eq!(blocked["health"]["reason"], "HOST_BINDING_MISMATCH", "{blocked}");
+    assert!(!home.join("calls").exists());
+
+    *fixture.actual_session.lock().unwrap() = thread.into();
+    let recovered = tokio::time::timeout(Duration::from_secs(8), async {
+        loop {
+            let result = call(&ready,"health",&scope,json!({})).await;
+            if result["health"]["input_delivery"] == "DURABLE_QUEUE" { break result; }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }).await.unwrap();
+    assert_eq!(recovered["destination"], original["destination"]);
+    assert_eq!(recovered["health"]["ready"], false);
+    assert_eq!(call(&ready,"notify",&scope,json!({"notification":{"batch":old,"attempt":2,"revision":1}}))
+        .await["outcome"]["state"], "RESULT_UNKNOWN");
+    assert!(!home.join("calls").exists());
+
+    let fresh = "F".repeat(43);
+    assert_eq!(call(&ready,"notice-control",&scope,json!({"notification":{"owner":owner,"revision":2,
+        "paused":false,"batch":fresh,"allow_probe":false}})).await["state"], "FENCE_INSTALLED");
+    assert_eq!(call(&ready,"notify",&scope,json!({"notification":{"batch":fresh,"attempt":1,"revision":2}}))
+        .await["outcome"]["state"], "HOST_QUEUED");
+    stop.cancel();
+    task.await.unwrap().unwrap();
+
+    // A later App Server attachment must also respect the queue's receipt.
+    *fixture.status_override.lock().unwrap() = Some("idle".into());
+    let (ready, stop, task) = start(config).await;
+    wait_ready(&ready).await;
+    assert_eq!(call(&ready,"notify",&scope,json!({"notification":{"batch":fresh,"attempt":2,"revision":2}}))
+        .await["outcome"]["state"], "HOST_QUEUED");
+    stop.cancel();
+    task.await.unwrap().unwrap();
+    assert_eq!(std::fs::read_to_string(home.join("calls")).unwrap().lines().collect::<Vec<_>>(), [
+        "queue", "--thread", thread, "--message", &crate::communication_notifications::text(&fresh),
+    ]);
+    let calls = fixture.calls();
+    assert_eq!(calls.iter().filter(|call|matches!(call["method"].as_str(),Some("turn/start"|"turn/steer"))).count(), 1);
+    assert!(calls.iter().all(|call|call["method"] != "thread/resume"));
+}
 fn grant() -> BridgeGrant {
     BridgeGrant {
         expected_origin: "https://example.invalid/".into(),

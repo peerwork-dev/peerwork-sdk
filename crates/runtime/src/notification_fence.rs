@@ -194,7 +194,11 @@ impl Fence {
         if attempt < row.attempt {
             return Err("NOTIFICATION_FENCE_ATTEMPT_STALE");
         }
-        if attempt == row.attempt || once && row.attempt > 0 {
+        let known_not_sent = row.outcome.as_ref().is_some_and(|outcome| {
+            outcome["state"] == "NOT_SENT"
+                && matches!(outcome["proof"].as_str(), Some("LOCAL_PREFLIGHT_NO_IO" | "BOUND_HOST_RECONCILIATION"))
+        });
+        if attempt == row.attempt || once && row.attempt > 0 && !known_not_sent {
             return Ok(Some(row.outcome.unwrap_or_else(
                 || json!({"state":"RESULT_UNKNOWN","code":"NOTIFICATION_INPUT_UNRESOLVED"}),
             )));
@@ -307,6 +311,17 @@ mod tests {
         fence.finish("owner", "next", 1, &json!({"state":"HOST_QUEUED","receipt":"original"})).unwrap();
         assert_eq!(fence.begin_with_policy("owner", 2, "next", 2, true).unwrap().unwrap()["state"],
             "HOST_QUEUED");
+    }
+    #[test]
+    fn single_admission_can_retry_a_proven_no_input_attempt() {
+        let fixture = Fixture::new();
+        let fence = Fence::open(&fixture.0.path().join("state")).unwrap();
+        fence.control("owner", 1, Some("batch"), false).unwrap();
+        assert!(fence.begin_with_policy("owner", 1, "batch", 1, true).unwrap().is_none());
+        let not_sent = json!({"state":"NOT_SENT","proof":"LOCAL_PREFLIGHT_NO_IO"});
+        fence.finish("owner", "batch", 1, &not_sent).unwrap();
+        assert_eq!(fence.begin_with_policy("owner", 1, "batch", 1, true).unwrap(), Some(not_sent));
+        assert!(fence.begin_with_policy("owner", 1, "batch", 2, true).unwrap().is_none());
     }
     #[test]
     fn pause_is_independent_of_inflight_and_old_finish_cannot_overwrite_successor() {

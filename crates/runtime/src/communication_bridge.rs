@@ -710,7 +710,7 @@ fn provider_loop(config:Value,executor:tokio::runtime::Handle,progress:crate::co
                 let mut selected=config.clone();
                 if selected["kind"]=="codex" {if let Some(expected)=&request.destination{selected["expected_session_id"]=expected["session_id"].clone();}}
                 let blocker=resume_blocker.or_else(|| (selected["kind"]=="codex" && request.destination.is_some()).then_some("HOST_SESSION_NOT_LOADED"));
-                match Host::open_recovery(selected,executor.clone(),progress.clone(),blocker) {
+                match Host::open_bridge_recovery(selected,executor.clone(),progress.clone(),blocker,request.destination.is_some()) {
                     Ok(opened)=>host=Some(opened),
                     Err(code)=>{if code=="HOST_SESSION_OWNERSHIP_CONFLICT"{resume_blocker=Some("HOST_SESSION_OWNERSHIP_CONFLICT");}return if request.frame.is_some(){Ok((request.destination.clone().unwrap_or(Value::Null),json!({"state":"NOT_SENT","code":code,"proof":"BOUND_HOST_RECONCILIATION"})))}else{Err(code)}},
                 }
@@ -728,11 +728,11 @@ fn provider_loop(config:Value,executor:tokio::runtime::Handle,progress:crate::co
                     let owner=n["owner"].as_str().ok_or("BRIDGE_REQUEST_INVALID")?;
                     let batch=n["batch"].as_str().ok_or("BRIDGE_REQUEST_INVALID")?;
                     if let Some(known)=notice_fence.begin_with_policy(owner,n["revision"].as_u64().ok_or("BRIDGE_REQUEST_INVALID")?,batch,
-                        n["attempt"].as_u64().ok_or("BRIDGE_REQUEST_INVALID")?,config["local_queue_only"]==true)? {
+                        n["attempt"].as_u64().ok_or("BRIDGE_REQUEST_INVALID")?,selected.single_bridge_admission())? {
                         return Ok((selected.destination.clone(),known));
                     }
                     notice_admitted=true;
-                }else if config["local_queue_only"]==true || request.binding["format"]=="peerwork.host-call.v1"&&!notice_fence.legacy_allowed(&notices::owner(&request.binding)?)?{
+                }else if selected.codex_queue_active() || request.binding["format"]=="peerwork.host-call.v1"&&!notice_fence.legacy_allowed(&notices::owner(&request.binding)?)?{
                     return Ok((selected.destination.clone(),json!({"state":"NOT_SENT","code":"COMPACT_NOTIFICATION_DELIVERY_REQUIRED","proof":"LOCAL_PREFLIGHT_NO_IO"})));
                 }
                 let delivered=selected.deliver(&request.binding,frame);
@@ -747,7 +747,14 @@ fn provider_loop(config:Value,executor:tokio::runtime::Handle,progress:crate::co
                 if disconnect{drop(host.take());}
                 return Ok((destination,value));
             }else{
-                let observed=selected.health(&request.binding);
+                let mut observed=selected.health(&request.binding);
+                let blocker=match &observed {
+                    Ok(health)=>health["reason"].as_str(),
+                    Err(code)=>Some(*code),
+                };
+                if request.destination.is_some() && blocker.is_some_and(|code|selected.recover_bridge_queue(code)) {
+                    observed=selected.health(&request.binding);
+                }
                 let recovered=if let Some((binding,frame))=&pending_receipt {
                     selected.reconcile(binding,frame["message_id"].as_str().unwrap_or(""),binding["frame_digest"].as_str().unwrap_or("")).ok().flatten().map(|outcome|json!({"binding":binding,"message_id":frame["message_id"],"frame_digest":binding["frame_digest"],"outcome":crate::participant_dispatch::host_outcome("agy-stdio",Ok(outcome))}))
                 }else{None};

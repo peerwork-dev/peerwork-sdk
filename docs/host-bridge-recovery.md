@@ -137,6 +137,15 @@ daemon socket. The exact original thread and session must be loaded there.
 Peerwork verifies the local socket's peer UID and never starts a Codex daemon
 or resumes the thread while finding its owner.
 
+An initialized Bridge with a pinned, same-user Codex installation can use that
+installation's local queue when the original App Server no longer loads the
+exact thread, reports another writer, or its explicitly pinned socket is gone.
+The original thread UUID must also be the original session ID. Peerwork keeps
+the Bridge, destination and admission records. An earlier accepted, queued or
+uncertain notification stays fenced across both paths. A confirmed no-input
+attempt remains retryable. A fresh queue receipt does not establish that the
+thread is active or has read the inbox.
+
 ### Use the local queue for an existing Codex thread
 
 An operator can select the local queue for the original thread on the same OS

@@ -7,12 +7,21 @@ use std::sync::{
 
 #[cfg(unix)]
 pub(crate) fn codex_proxy_fixture(directory:&Path)->(std::path::PathBuf,CodexFixture) {
+    codex_proxy_fixture_for(directory, None)
+}
+
+#[cfg(unix)]
+pub(crate) fn codex_proxy_fixture_for(directory: &Path, thread: Option<&str>) -> (std::path::PathBuf, CodexFixture) {
     use std::os::unix::fs::PermissionsExt;
     let socket=directory.join("codex-control.sock");
-    let fixture=CodexFixture::start_unix(&socket);
+    let fixture=CodexFixture::start_unix_thread(&socket, thread);
     let executable=directory.join("codex");
     let source=format!(r##"#!/usr/bin/python3
 import sys,os,socket,select
+if sys.argv[1]=='queue':
+    with open(os.path.join(os.environ['CODEX_HOME'],'calls'),'a') as calls:
+        calls.write('\n'.join(sys.argv[1:])+'\n')
+    sys.exit(0)
 assert sys.argv[1:]==['app-server','proxy'],sys.argv
 connection=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM)
 connection.connect({socket})
@@ -265,6 +274,7 @@ impl FixtureListener {
 
 pub(crate) struct CodexFixture {
     endpoint: String,
+    thread_id: String,
     session: String,
     pub actual_session: Arc<Mutex<String>>,
     calls: Arc<Mutex<Vec<Value>>>,
@@ -285,22 +295,29 @@ impl CodexFixture {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let endpoint = format!("ws://{}", listener.local_addr().unwrap());
-        Self::start_on(FixtureListener::Tcp(listener), endpoint)
+        Self::start_on(FixtureListener::Tcp(listener), endpoint, None)
     }
     #[cfg(unix)]
     pub fn start_unix(path: &Path) -> Self {
+        Self::start_unix_thread(path, None)
+    }
+    #[cfg(unix)]
+    fn start_unix_thread(path: &Path, thread_id: Option<&str>) -> Self {
         let listener = std::os::unix::net::UnixListener::bind(path).unwrap();
         listener.set_nonblocking(true).unwrap();
         Self::start_on(
             FixtureListener::Unix(listener),
             format!("unix://{}", path.display()),
+            thread_id,
         )
     }
-    fn start_on(listener: FixtureListener, endpoint: String) -> Self {
-        let session = format!(
+    fn start_on(listener: FixtureListener, endpoint: String, thread_id: Option<&str>) -> Self {
+        let session = thread_id.map(str::to_owned).unwrap_or_else(||format!(
             "fixture-{}",
             peerwork_core::crypto::sha256_hex(endpoint.as_bytes())
-        );
+        ));
+        let thread_id = thread_id.unwrap_or("existing-thread").to_owned();
+        let selected_thread = thread_id.clone();
         let actual_session=Arc::new(Mutex::new(session.clone()));
         let host_session = actual_session.clone();
         let calls = Arc::new(Mutex::new(Vec::new()));
@@ -318,7 +335,7 @@ impl CodexFixture {
         let status_override=Arc::new(Mutex::new(None::<String>));let override_status=status_override.clone();
         let stall_health=Arc::new(AtomicBool::new(false));let stall=stall_health.clone();
         let rpc_error=Arc::new(Mutex::new(None::<(String,Value)>));let rejected=rpc_error.clone();
-        let loaded_pages=Arc::new(Mutex::new(vec![json!({"data":["existing-thread"],"nextCursor":null})]));let pages=loaded_pages.clone();
+        let loaded_pages=Arc::new(Mutex::new(vec![json!({"data":[thread_id],"nextCursor":null})]));let pages=loaded_pages.clone();
         let stop = Arc::new(AtomicBool::new(false));
         let done = stop.clone();
         let thread = std::thread::spawn(move || {
@@ -373,7 +390,7 @@ impl CodexFixture {
                             for _ in 0..if emit.load(Ordering::SeqCst) { 300 } else { 0 } {
                                 if ws.send(Message::Text(json!({"method":"thread/status/changed","params":{"threadId":"existing-thread"}}).to_string().into())).is_err(){break;}
                             }
-                            json!({"thread":{"id":"existing-thread","sessionId":host_session.lock().unwrap().clone(),"name":"Worker","status":{"type":override_status.lock().unwrap().as_deref().unwrap_or(if active||waiting.load(Ordering::SeqCst){"active"}else{"idle"}),"activeFlags":if waiting.load(Ordering::SeqCst){vec!["waitingOnApproval"]}else{Vec::<&str>::new()}}}})
+                            json!({"thread":{"id":selected_thread,"sessionId":host_session.lock().unwrap().clone(),"name":"Worker","status":{"type":override_status.lock().unwrap().as_deref().unwrap_or(if active||waiting.load(Ordering::SeqCst){"active"}else{"idle"}),"activeFlags":if waiting.load(Ordering::SeqCst){vec!["waitingOnApproval"]}else{Vec::<&str>::new()}}}})
                         }
                         "thread/turns/list" => {
                             if query_approval.swap(false, Ordering::SeqCst) {
@@ -415,6 +432,7 @@ impl CodexFixture {
         });
         Self {
             endpoint,
+            thread_id,
             session,
             actual_session,
             calls,
@@ -432,7 +450,7 @@ impl CodexFixture {
         }
     }
     pub fn config(&self) -> Value {
-        json!({"kind":"codex","endpoint":self.endpoint,"thread_id":"existing-thread","expected_session_id":self.session})
+        json!({"kind":"codex","endpoint":self.endpoint,"thread_id":self.thread_id,"expected_session_id":self.session})
     }
     pub fn calls(&self) -> Vec<Value> {
         self.calls.lock().unwrap().clone()

@@ -558,7 +558,8 @@ async fn qualify_native_reply(mcp_only: bool) {
         crate::communication_store::private_json(&host_path, 65536).unwrap()
     };
     let compact_host = !mcp_only && (host["kind"] == "opencode"
-        || host["kind"] == "codex" && host["local_queue_only"] == true);
+        || host["kind"] == "codex" && (host["local_queue_only"] == true
+            || std::env::var("PEERWORK_LIVE_HOST_CODEX_ROUTE_RECOVERY").as_deref() == Ok("1")));
     let root = PathBuf::from(
         std::env::var("PEERWORK_LIVE_HOST_STATE_DIR")
             .expect("explicit empty protected fixture root required"),

@@ -113,7 +113,7 @@ fn configure_installation(command: &mut tokio::process::Command, config: &Value)
     Ok(())
 }
 
-pub(super) fn validate_queue_target(config: &Value) -> R<()> {
+fn queue_thread(config: &Value) -> R<&str> {
     let thread = super::text(config, "thread_id")?;
     let id = thread.as_bytes();
     if id.len() != 36 || id.iter().enumerate().any(|(index, byte)| {
@@ -121,6 +121,18 @@ pub(super) fn validate_queue_target(config: &Value) -> R<()> {
     }) || config["expected_session_id"] != thread {
         return Err("HOST_SESSION_BINDING_UNAVAILABLE");
     }
+    Ok(thread)
+}
+
+pub(super) fn pinned_queue_recovery(config: &Value) -> bool {
+    config["kind"] == "codex" && config["endpoint"] == "codex-proxy://local"
+        && config["codex_executable"].is_string() && config["codex_home"].is_string()
+        && config["codex_uid"].is_u64() && config["auth_token_env"].is_null()
+        && queue_thread(config).is_ok()
+}
+
+pub(super) fn validate_queue_target(config: &Value) -> R<()> {
+    queue_thread(config)?;
     if config["codex_executable"].as_str().is_none()
         || config["codex_home"].as_str().is_none()
         || config["codex_uid"].as_u64().is_none()
@@ -131,6 +143,19 @@ pub(super) fn validate_queue_target(config: &Value) -> R<()> {
     crate::onboarding_files::check_directory(home, true).map_err(|_| "CODEX_HOME_INVALID")?;
     let mut command = tokio::process::Command::new(executable(config["codex_executable"].as_str())?);
     configure_installation(&mut command, config)
+}
+
+pub(super) fn recoverable_queue_route(config: &Value, code: &str) -> bool {
+    if config["local_queue_only"] == true || !pinned_queue_recovery(config) {
+        return false;
+    }
+    matches!(code, "HOST_SESSION_NOT_LOADED" | "HOST_SESSION_OWNERSHIP_CONFLICT")
+        || code == "HOST_WEBSOCKET_HANDSHAKE_FAILED"
+            && config["control_socket"].as_str().is_some_and(|socket| {
+                let socket = Path::new(socket);
+                socket.is_absolute() && std::fs::symlink_metadata(socket)
+                    .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+            })
 }
 
 pub(super) fn queue_notification(config: &Value, executor: &tokio::runtime::Handle,
