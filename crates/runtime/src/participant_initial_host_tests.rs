@@ -599,8 +599,24 @@ async fn codex_bridge_loss_recovers_and_the_original_thread_reads_a_fresh_probe(
     println!("CODEX_BRIDGE_RECOVERY_INITIAL_READ_VERIFIED");
     if std::env::var_os("PEERWORK_CODEX_LOCAL_QUEUE_TEST").is_some() {
         assert!(bridge.try_wait().unwrap().is_none());
+        let mut observed = vec![first];
+        if std::env::var_os("PEERWORK_CODEX_QUEUE_RESTART_TEST").is_some() {
+            write_private(&root.join("queue-restart-ready"), b"1").unwrap();
+            tokio::time::timeout(Duration::from_secs(45), async {
+                while !root.join("queue-restarted").is_file() {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+            }).await.expect("the controller did not resume the exact standalone thread");
+            for _ in 0..2 {
+                client.call(json!({"method":"delivery","mode":"self_test","options":watch})).await.unwrap();
+                let latest = verified_after(&client, &watch, &ready.admin_endpoint, *observed.last().unwrap()).await;
+                observed.push(latest);
+            }
+            assert!(bridge.try_wait().unwrap().is_none(), "the original bridge stays live across host restart");
+        }
         write_private(&root.join("proof.json"), &serde_json::to_vec(&json!({
-            "state":"PASS","local_queue_read_verified":true,"observed_at":first
+            "state":"PASS","local_queue_read_verified":true,"observed_at":first,
+            "verified_read_count":observed.len(),"last_observed_at":observed.last()
         })).unwrap()).unwrap();
         tokio::time::timeout(Duration::from_secs(15), async {
             while !root.join("tool-read-confirmed").is_file() {
