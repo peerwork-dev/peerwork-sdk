@@ -675,6 +675,13 @@ async fn qualify_native_reply(mcp_only: bool) {
     master.close().await.unwrap();
     worker.close().await.unwrap();
 
+    #[cfg(unix)]
+    if host["kind"] == "agy-stdio" && host["stdio_protocol"] == "acp" {
+        qualify_agy_acp(&service, &root, &report, &nonce, host, [master_config, worker_config],
+            [mail_scope(&ws, &master_box), mail_scope(&ws, &worker_box)]).await;
+        return;
+    }
+
     // MCP discovery may happen while a managed host initializes. Supply its
     // protected profile before starting that host; execution still waits for
     // the scoped runtime endpoint and never opens another signing engine.
@@ -1107,6 +1114,151 @@ async fn qualify_native_reply(mcp_only: bool) {
         result["state"], "COMPLETED",
         "inspect retained qualification result; do not resend original input"
     );
+}
+
+/// Run the installed runtime and MCP executable against the original owned
+/// AGY session. The external driver only bootstraps the empty conversation.
+#[cfg(unix)]
+async fn qualify_agy_acp(
+    service: &Service, root: &std::path::Path, report: &std::path::Path, nonce: &str,
+    mut host: Value, engines: [ParticipantConfig; 2], scopes: [MailScope; 2],
+) {
+    use crate::participant_connect::{Connect, ConnectRequest, HostSelection, Registration};
+    use tokio::io::{AsyncBufReadExt, BufReader};
+
+    let binary = PathBuf::from(std::env::var_os("PEERWORK_PARTICIPANT_CLI").unwrap());
+    let runtime_file = root.join("runtime.json");
+    let [master, worker] = engines;
+    let [master_scope, worker_scope] = scopes;
+    let ws = worker_scope.workspace_id.clone();
+    let runtime_config = RuntimeConfig {
+        format: "peerwork.participant-runtime.v1".into(), state_directory: root.join("runtime"),
+        engines: vec![engine("master", &master), engine("worker", &worker)],
+        clients: vec!["master", "worker"].into_iter().map(|name| ClientConfig {
+            name: name.into(), engine: name.into(), capability: Capability::service(),
+        }).collect(),
+        hosts: vec![],
+    };
+    crate::communication_host::write_private(&runtime_file, &serde_json::to_vec(&runtime_config).unwrap()).unwrap();
+    async fn start(binary: &std::path::Path, path: &std::path::Path)
+        -> (tokio::process::Child, crate::communication_runtime::RuntimeReady) {
+        let mut process = tokio::process::Command::new(binary).args(["runtime", "run"])
+            .arg(path).stdout(std::process::Stdio::piped()).kill_on_drop(true).spawn().unwrap();
+        let stdout = process.stdout.take().unwrap();
+        let result = tokio::time::timeout(Duration::from_secs(25), BufReader::new(stdout).lines().next_line())
+            .await.unwrap().unwrap().unwrap();
+        let result: crate::communication_runtime::RuntimeReady = serde_json::from_str(&result)
+            .unwrap_or_else(|_| panic!("Failed to start installed runtime: {result}"));
+        assert_eq!(result.state, "LOCAL_READY");
+        (process, result)
+    }
+    async fn stop(process: &mut tokio::process::Child) {
+        let pid = process.id().unwrap();
+        assert_eq!(unsafe { libc::kill(pid as i32, libc::SIGTERM) }, 0);
+        assert!(tokio::time::timeout(Duration::from_secs(30), process.wait()).await.unwrap().unwrap().success());
+    }
+    let (mut process, ready) = start(&binary, &runtime_file).await;
+    let registry = root.join("registry");
+    let mut connect = Connect::open(&registry).unwrap();
+    connect.register("worker", Registration {
+        origin: service.origin.clone(), actor_id: worker.expected_actor.clone(),
+        endpoint_path: ready.client_endpoints["worker"].clone(),
+    }).await.unwrap();
+    let owned_directory = PathBuf::from(host["working_directory"].as_str().unwrap());
+    let installation = crate::participant_connect::Installation {
+        host: "agy".into(), project: owned_directory, executable: binary.clone(),
+    };
+    let integration = connect.install("worker", &ws, installation).unwrap();
+    host["mcp_server"] = integration["server_name"].clone();
+    host["acp_client"] = json!({"registry":registry,"participant":"worker","workspace":ws});
+    connect.register_host("installed-agy", HostSelection {
+        participant: "worker".into(), admin_endpoint: ready.admin_endpoint.clone(), adapter: host.clone(),
+    }).await.unwrap();
+    let request: ConnectRequest = serde_json::from_value(json!({"setup_id":"original-agy-test", "participant":"worker",
+        "workspace_id":ws,"alias":"live","send":true,"receive":true,"host":"installed-agy","require_body_keys":true})).unwrap();
+    let setup = connect.run_agent(request).await.unwrap();
+    let profile = connect.profile().unwrap().expect("original authorized profile");
+    assert_eq!(profile.expected_actor, worker.expected_actor);
+    let receive_endpoint = profile.receive_endpoint_path.clone().unwrap();
+    drop(connect);
+    let master_watch = watch(&master_scope, "master", None);
+    let master_profile = AgentProfile {
+        endpoint_path: ready.client_endpoints["master"].clone(), expected_origin: service.origin.clone(),
+        expected_actor: master.expected_actor.clone(), format: "peerwork.agent-profile.v1".into(),
+        scopes: BTreeMap::from([("live".into(), master_scope)]),
+        contacts: BTreeMap::from([("worker".into(), Contact { scope: "live".into(),
+            recipient: peerwork_core::communication::MailboxAddress { mailbox_id: worker_scope.mailbox_id,
+                membership_id: worker_scope.membership_id } })]),
+        protocols: Default::default(), workspaces: Default::default(), directory_endpoints: Default::default(),
+        protocol_endpoints: Default::default(), send_scopes: Default::default(), receive_endpoint_path: None,
+        recovery_views: Default::default(), protocol_views: Default::default(), management_views: Default::default(),
+    };
+    let mut result = json!({"state":"READY","original_session":host["conversation_id"],
+        "setup_state":setup["state"],"setup_blocker":setup["blocker"]["code"],"samples":[]});
+    write_report(report, &result);
+    let mut samples = Vec::new();
+    let mut endpoint = ready.admin_endpoint.clone();
+    for round in 1..=2 {
+        let master_client = RuntimeClient::connect(master_profile.endpoint_path.clone(), &service.origin, &master.expected_actor).await.unwrap();
+        receiver_ready(&master_client, &master_watch).await;
+        let peer = AgentTools::open(master_profile.clone()).await.unwrap();
+        let receiving = RuntimeClient::connect(receive_endpoint.clone(), &service.origin, &worker.expected_actor).await.unwrap();
+        let original = tokio::time::timeout(Duration::from_secs(45), async {
+            loop {
+                let bindings = receiving.call(json!({"method":"bindings"})).await.unwrap();
+                let actual = bindings.as_array().and_then(|entries| entries.iter().find(|entry|
+                    entry["workspace_id"] == ws && entry["host_destination"].is_string()));
+                if let Some(binding) = actual { return binding.clone(); }
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+        }).await.expect("same original AGY receiver must bind");
+        if round == 1 { result["original_binding"] = original.clone(); }
+        else { assert_eq!(original, result["original_binding"]); }
+        let marker = format!("{nonce}-{round}");
+        let sent = peer.call(AgentRequest::parse("send", json!({"contact":"worker",
+            "operation_id":format!("agy-acp-ping-{marker}"),"text":format!("PING {marker}"),
+            "wait_ms":5000})).unwrap()).await.unwrap();
+        assert_eq!(sent["state"], "ACCEPTED");
+        let message_id = sent["result"]["structure"]["message_id"].clone();
+        let pending = tokio::time::timeout(Duration::from_secs(120), async {
+            loop {
+                let snapshot = peer.call(AgentRequest::parse("wait", json!({"scope":"live",
+                    "wait_ms":20000,"limit":8})).unwrap()).await.unwrap();
+                if let Some(reply) = snapshot["items"].as_array().and_then(|entries| entries.iter().find(|item|
+                    item["message"]["reply_to"] == message_id && item["message"]["text"] == format!("PONG {marker}"))) {
+                    return reply.clone();
+                }
+            }
+        }).await;
+        let Ok(reply) = pending else {
+            result["state"] = json!("NO_CORRELATED_REPLY");
+            let status = receiving.call(json!({"method":"delivery","mode":"status","options":original})).await;
+            result["last_status"] = status.ok().unwrap_or(Value::Null);
+            write_report(report, &result);
+            stop(&mut process).await;
+            panic!("Original AGY session did not read and reply to the signed notice in round {round}");
+        };
+        let health = receiving.call(json!({"method":"delivery","mode":"status","options":original})).await.unwrap();
+        assert!(health["destinations"].as_array().is_some_and(|items| items.iter().any(|item|
+            item["automatic_receiving"] == "VERIFIED")), "{health}");
+        samples.push(json!({"round":round,"signed_reply":reply["item"],"observed_batch_read":true}));
+        result["samples"] = json!(samples);
+        write_report(report, &result);
+        peer.call(AgentRequest::parse("consume", json!({"scope":"live","items":[reply["item"]]})).unwrap()).await.unwrap();
+        if round == 1 {
+            stop(&mut process).await;
+            let (successor, restarted) = start(&binary, &runtime_file).await;
+            assert_eq!(restarted.admin_endpoint, endpoint);
+            assert_eq!(restarted.client_endpoints, ready.client_endpoints);
+            process = successor;
+            endpoint = restarted.admin_endpoint;
+        }
+    }
+    stop(&mut process).await;
+    result["state"] = json!("PASS");
+    result["original_runtime_restarted"] = json!(true);
+    result["journal_reads"] = service.counts().await["journal_reads"].clone();
+    write_report(report, &result);
 }
 
 #[test]
