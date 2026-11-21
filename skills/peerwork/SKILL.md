@@ -114,7 +114,8 @@ work assignment and count only the returned members.
   If `peerwork_delivery` reports a loaded frontend older than the installed
   update, refresh the original Peerwork entry in AGY `/mcp`, then arm once and
   verify a fresh batch. Preserve a compatible runtime and any working App or
-  managed binding. [AGY guide](https://github.com/peerwork-dev/peerwork-sdk/blob/main/docs/agy.md).
+  managed binding. A managed ACP binding restores its originally selected
+  session and receives through its own host adapter. [AGY guide](https://github.com/peerwork-dev/peerwork-sdk/blob/main/docs/agy.md).
 - **Claude uses Channels.** Inspect `host_channel` and verify the batch read in
   this conversation. A working Channel can use `INBOX`. Preserve its current
   receiving mode. [Claude Code guide](https://github.com/peerwork-dev/peerwork-sdk/blob/main/docs/claude-code.md).
