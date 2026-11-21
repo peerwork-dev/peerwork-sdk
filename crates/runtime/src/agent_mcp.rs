@@ -218,7 +218,8 @@ where R:AsyncBufRead+Send+Unpin+'static,W:AsyncWrite+Unpin {
         tokio::select!{
             notification=channel_rx.recv(),if channel_task.is_some()=>if let Some(notification)=notification {
                 let meta=&notification["params"]["meta"];
-                let allowed=match (meta["batch"].as_str(),meta["revision"].as_u64()) {
+                let revision=meta["revision"].as_str().and_then(|value|value.parse::<u64>().ok());
+                let allowed=match (meta["batch"].as_str(),revision) {
                     (Some(batch),Some(revision))=>claude_channel::presentation_allowed(&tools,notification.get("_presentation"),batch,revision).await,
                     _=>Err(ParticipantError::local("CLAUDE_CHANNEL_BATCH_INVALID","CLAUDE_CHANNEL")),
                 };
@@ -354,7 +355,7 @@ mod tests {
     #[tokio::test]
     async fn queued_channel_notice_is_suppressed_when_final_admission_is_paused_or_stale() {
         let state=super::claude_channel::State::default();let mut wire=Vec::new();
-        let notice=serde_json::json!({"method":"notifications/claude/channel","params":{"meta":{"batch":"queued","revision":1}}});
+        let notice=serde_json::json!({"method":"notifications/claude/channel","params":{"meta":{"batch":"queued","revision":"1"}}});
         super::write_channel(&mut wire,notice.clone(),&state,async {Ok(false)}).await.unwrap();
         assert!(wire.is_empty());assert_eq!(state.status()["notifications_written"],0);
         super::write_channel(&mut wire,notice.clone(),&state,async {Err(crate::participant::ParticipantError::local("SYNTHETIC_VALIDATION_UNAVAILABLE","TEST"))}).await.unwrap();
@@ -365,7 +366,7 @@ mod tests {
     #[tokio::test]
     async fn successor_fences_queued_channel_output_and_keeps_activation_private() {
         let state=super::claude_channel::State::default();let mut wire=Vec::new();
-        let notice=serde_json::json!({"method":"notifications/claude/channel","params":{"meta":{"batch":"original","revision":1}},"_presentation":{"scope":"space","activation":{"operation_id":"private-decision","generation":1,"target":{"route":"private-host"}}}});
+        let notice=serde_json::json!({"method":"notifications/claude/channel","params":{"meta":{"batch":"original","revision":"1"}},"_presentation":{"scope":"space","activation":{"operation_id":"private-decision","generation":1,"target":{"route":"private-host"}}}});
         super::write_channel(&mut wire,notice.clone(),&state,async {Err(crate::participant::ParticipantError::local("PRESENTATION_ACTIVATION_SUPERSEDED","TEST"))}).await.unwrap();
         assert!(wire.is_empty());assert_eq!(state.status()["scopes"]["space"]["state"],"SUPERSEDED");
         let current=super::claude_channel::State::default();

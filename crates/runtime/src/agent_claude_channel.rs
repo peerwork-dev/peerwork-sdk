@@ -199,7 +199,7 @@ fn notification(value:&Value)->Result<Value> {
     let reference=json!({"tool":"peerwork_inbox","arguments":{"batch":batch}});
     let mut notification=json!({"jsonrpc":"2.0","method":"notifications/claude/channel","params":{
         "content":format!("Peerwork external data is ready. Read this bounded inbox batch: {reference}"),
-        "meta":{"batch":batch,"revision":revision}}});
+        "meta":{"batch":batch,"revision":revision.to_string()}}});
     if let Some(presentation)=value.get("_presentation"){notification["_presentation"]=presentation.clone();}
     Ok(notification)
 }
@@ -380,7 +380,8 @@ mod tests {
     fn notification_contains_only_batch_reference_even_if_source_has_a_body() {
         let input=json!({"state":"NOTIFICATION_DUE","batch":"opaque-batch","revision":7,"message":{"text":"private old document"},"binding":{"actor":"private-binding"}});
         let event=notification(&input).unwrap();
-        assert_eq!(event["params"]["meta"],json!({"batch":"opaque-batch","revision":7}));
+        assert_eq!(event["params"]["meta"],json!({"batch":"opaque-batch","revision":"7"}));
+        assert!(event["params"]["meta"].as_object().unwrap().values().all(Value::is_string));
         let wire=event.to_string();assert!(!wire.contains("private old document"));assert!(!wire.contains("private-binding"));
         assert!(wire.contains("peerwork_inbox"));assert_eq!(status()["host_acceptance"],"NOT_ATTESTED");
         assert!(notification(&json!({"state":"WAITING_READ","batch":"b","revision":1})).is_err());
