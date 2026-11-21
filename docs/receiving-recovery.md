@@ -24,6 +24,8 @@ drain before replacement; see
 Use the original host's normal reconnect or start flow. An armed listener keeps
 waiting through a temporary IPC or missing endpoint during an original runtime
 restart. A replacement endpoint still has to authenticate the original binding.
+Repeating Connect for the saved installed receiver uses the same automatic
+startup policy as its host, before proceeding with the original setup.
 `resume` reverses an explicit pause or stop. A destination change uses the
 existing rebind flow. A same-destination reconnect preserves both controls.
 

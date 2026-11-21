@@ -12,7 +12,7 @@ fn original(connect:&Connect,handle:&str,trigger:Trigger)->Result<Option<bootstr
         Err(error)=>Err(error),
     }
 }
-fn installed_receiver(connect:&Connect,handle:&str)->bool {
+pub(super) fn installed_receiver(connect:&Connect,handle:&str)->bool {
     connect.registry.installations.values().any(|i|i.committed&&i.participant==handle)
         && connect.registry.setups.values().any(|s|s.desired.participant==handle&&s.desired.receive)
 }
@@ -111,6 +111,15 @@ pub(crate) async fn recover_opened(mut connect:Connect,handle:Option<&str>,trigg
 }
 
 impl Connect {
+    pub(super) async fn recover_selected_startup(&mut self, handle: &str, trigger: Trigger) -> Result<Value> {
+        // Recovery can resume an updater that needs the original registry
+        // writer. Always reacquire and re-read the registry before continuing.
+        let writing = self.store.take().is_some();
+        let result = recover(&self.directory, Some(handle), trigger).await;
+        *self = if writing { Self::open(&self.directory)? } else { Self::inspect(&self.directory)? };
+        result
+    }
+
     pub(crate) fn startup_update(&self, handle: Option<&str>) -> Result<Option<(PathBuf, String, PathBuf)>> {
         let Some(handle) = self.selected_handle(handle)? else { return Ok(None); };
         Ok(update::startup_update(self, &handle)?.map(|executable| (self.directory.clone(), handle, executable)))

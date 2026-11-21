@@ -543,12 +543,7 @@ impl Connect {
     /// fences remain the only path to opening a signer; state is never copied.
     pub(crate) async fn adopt(&mut self, handle: &str) -> Result<()> {
         if bootstrap::owned_runtime(self,handle).is_ok() {
-            // The original update subprocess must own the registry itself. No
-            // local writer remains held across startup/endpoint waits.
-            let writer=self.store.take(); let writing=writer.is_some(); drop(writer);
-            let result=super::startup::recover(&self.directory,Some(handle),super::startup::Trigger::Adopt).await;
-            *self=if writing {Self::open(&self.directory)?}else{Self::inspect(&self.directory)?};
-            let value=result?;
+            let value=self.recover_selected_startup(handle,super::startup::Trigger::Adopt).await?;
             if value["state"]=="DISABLED" {return Err(local("RUNTIME_AUTOMATIC_START_DISABLED"));}
         }
         self.adopt_original(handle).await

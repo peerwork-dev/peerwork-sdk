@@ -625,15 +625,27 @@ impl Connect {
         }}
     }
     pub async fn resume_selected(&mut self,id:&str,participant:Option<&str>,workspace:Option<&str>)->Result<Value>{
-        if let Some(request)=self.saved_codex_setup(id) {
-            if participant.is_some_and(|p|p!=request.participant){return Err(local("FRONTEND_IDENTITY_PIN_MISMATCH"));}
-            if workspace.is_some_and(|w|w!=request.workspace_id){return Err(local("FRONTEND_WORKSPACE_PIN_MISMATCH"));}
-            return self.resume_saved_codex(id).await;
+        let input = ConnectInput::Resume(ResumeSetup { resume_setup_id: id.into() });
+        let (request, _) = self.resolve_input(input.clone())?;
+        if participant.is_some_and(|p|p!=request.participant){return Err(local("FRONTEND_IDENTITY_PIN_MISMATCH"));}
+        if workspace.is_some_and(|w|w!=request.workspace_id){return Err(local("FRONTEND_WORKSPACE_PIN_MISMATCH"));}
+        if request.receive && startup::installed_receiver(self, &request.participant) {
+            self.require_writer()?;
+            let registration = self.registry.participants.get(&request.participant).cloned();
+            let binding = self.registry.verified_bindings.get(&request.participant).cloned();
+            let startup = self.recover_selected_startup(&request.participant, startup::Trigger::Automatic).await?;
+            if startup["state"] == "DISABLED" {
+                return Err(local("RUNTIME_AUTOMATIC_START_DISABLED"));
+            }
+            if self.registry.participants.get(&request.participant) != registration.as_ref()
+                || self.registry.verified_bindings.get(&request.participant) != binding.as_ref()
+                || self.resolve_input(input)?.0 != request {
+                return Err(local("ORIGINAL_RUNTIME_BINDING_CHANGED"));
+            }
         }
-        let setup=self.registry.setups.get(id).ok_or_else(||local("SETUP_NOT_FOUND"))?;
-        if participant.is_some_and(|p|p!=setup.desired.participant){return Err(local("FRONTEND_IDENTITY_PIN_MISMATCH"));}
-        if workspace.is_some_and(|w|w!=setup.desired.workspace_id){return Err(local("FRONTEND_WORKSPACE_PIN_MISMATCH"));}
-        self.run_mode(setup.desired.clone(),setup.agent_host_required).await
+        if self.saved_codex_setup(id).is_some() {return self.resume_saved_codex(id).await;}
+        let agent = self.registry.setups[id].agent_host_required;
+        self.run_mode(request, agent).await
     }
     fn setup_conflict(old:&Setup,request:&ConnectRequest,selected:&Registration)->crate::participant::ParticipantError{
         let before=serde_json::to_value(&old.desired).unwrap_or(Value::Null);

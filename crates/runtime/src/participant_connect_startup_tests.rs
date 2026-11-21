@@ -236,6 +236,31 @@ async fn mcp_startup_and_runtime_crash_restore_without_any_tool_call() {
 
 #[tokio::test(flavor="multi_thread",worker_threads=2)]
 #[ignore="requires exact candidate CLI and synthetic process/loopback IPC"]
+async fn saved_connect_restores_original_receiver_but_preserves_explicit_stop() {
+    let mut fixture = Fixture::new().await;
+    let mut connect = Connect::open(&fixture.directory).unwrap();
+    connect.registry.setups.get_mut("original").unwrap().desired.receive = true;
+    connect.save().unwrap();
+    drop(connect);
+    let initial = fixture.launch()["pid"].as_u64().unwrap();
+    fixture.crash();
+
+    let mut connect = Connect::open(&fixture.directory).unwrap();
+    // The synthetic service is offline. The normal Connect attempt must still
+    // restore and authenticate exactly the originally installed client first.
+    let _ = connect.resume_selected("original", Some("peer"), None).await;
+    fixture.restored(initial).await;
+    drop(connect);
+    fixture.stop();
+    let stopped = fixture.launch();
+    let mut connect = Connect::open(&fixture.directory).unwrap();
+    let error = connect.resume_selected("original", Some("peer"), None).await.unwrap_err();
+    assert_eq!(error.code, "RUNTIME_AUTOMATIC_START_DISABLED");
+    assert_eq!(fixture.launch(), stopped);
+}
+
+#[tokio::test(flavor="multi_thread",worker_threads=2)]
+#[ignore="requires exact candidate CLI and synthetic process/loopback IPC"]
 async fn concurrent_frontends_wait_for_maintenance_then_restore_one_original_writer() {
     let mut fixture = Fixture::new().await;
     let first = fixture.launch()["pid"].as_u64().unwrap();
