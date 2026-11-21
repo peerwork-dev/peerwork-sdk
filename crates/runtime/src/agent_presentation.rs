@@ -1,13 +1,23 @@
 //! An opted-in host launch owns one frozen activation decision. Observation
 //! retries resume that decision; they never discover/adopt another launch token.
 use super::*;
-use crate::{communication_runtime::RuntimeClient, participant::WatchOptions};
-use std::{collections::{BTreeMap, BTreeSet}, path::PathBuf};
+use crate::{communication_runtime::RuntimeClient, participant::WatchOptions, secure_state::{SecureStateError, SecureStateStore}};
+use std::{collections::{BTreeMap, BTreeSet}, path::{Path, PathBuf}};
 use tokio::sync::Mutex;
 
 #[derive(Clone)]
 struct Selection { client:Arc<RuntimeClient>, options:WatchOptions, source:String }
-struct Decision { admin:PathBuf, request:Value, activation:Option<Value>, terminal:Option<String> }
+enum ChannelOwner {
+    Waiting(Selection),
+    Held { _guard: SecureStateStore },
+}
+struct Decision {
+    admin: PathBuf,
+    request: Value,
+    activation: Option<Value>,
+    terminal: Option<String>,
+    channel_owner: Option<ChannelOwner>,
+}
 type SharedDecision=Arc<Mutex<Decision>>;
 #[derive(Default)]
 pub(super) struct State {
@@ -25,22 +35,54 @@ fn operation_id()->Result<String> {
     let mut bytes=[0u8;24];OsRng.try_fill_bytes(&mut bytes).map_err(|_|error("ENTROPY_UNAVAILABLE"))?;
     Ok(format!("presentation_{}",peerwork_core::crypto::base64url(&bytes)))
 }
+fn channel_owner(admin: &Path, source: &str) -> Result<SecureStateStore> {
+    if source.len() != 64 || !source.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(error("PRESENTATION_RESPONSE_INVALID"));
+    }
+    let path = admin.with_file_name(format!("claude-channel-source-{source}.state"));
+    SecureStateStore::open(&path).map_err(|cause| match cause {
+        SecureStateError::Busy => error("CLAUDE_CHANNEL_STANDBY"),
+        _ => cause.diagnose(error("CLAUDE_CHANNEL_ALREADY_ACTIVE_OR_STATE_UNAVAILABLE"), "OPEN"),
+    })
+}
+
+fn superseded(code: &str) -> bool {
+    matches!(code, "PRESENTATION_GENERATION_CONFLICT" | "PRESENTATION_SOURCE_CHANGED" | "PRESENTATION_ACTIVATION_SUPERSEDED")
+}
+
 async fn complete(decision:&SharedDecision)->Result<Value> {
     let mut decision=decision.lock().await;
     if let Some(code)=&decision.terminal {return Err(error(code));}
     if let Some(activation)=&decision.activation {return Ok(activation.clone());}
-    // Freeze before IO. A lost reply repeats the exact native decision rather
-    // than refreshing expected_generation and competing with its successor.
+    if let Some(ChannelOwner::Waiting(selection)) = &decision.channel_owner {
+        // Claude may initialize several processes from one installation. One
+        // live Channel owns presentation for the whole original source group.
+        let guard = channel_owner(&decision.admin, &selection.source)?;
+        let observed = selection.client.call(json!({"method":"presentation_status","options":selection.options})).await?;
+        if observed["group"] != decision.request["activation"]["source_group"] {
+            decision.terminal = Some("PRESENTATION_SOURCE_CHANGED".into());
+            return Err(error("PRESENTATION_SOURCE_CHANGED"));
+        }
+        let generation = observed["current_generation"].as_u64().ok_or_else(|| error("PRESENTATION_RESPONSE_INVALID"))?;
+        decision.request["activation"]["expected_generation"] = generation.into();
+        decision.channel_owner = Some(ChannelOwner::Held { _guard: guard });
+    }
+    // Freeze before mutation. A lost reply repeats the exact native decision.
     let result=match unwrap(crate::communication_runtime::call(&decision.admin,decision.request.clone()).await?) {
         Ok(result)=>result,
         Err(failure)=>{
-            if matches!(failure.code.as_str(),"PRESENTATION_GENERATION_CONFLICT"|"PRESENTATION_SOURCE_CHANGED"|"PRESENTATION_ACTIVATION_SUPERSEDED") {
+            if superseded(&failure.code) {
                 decision.terminal=Some(failure.code.clone());
+                decision.channel_owner = None;
             }
             return Err(failure);
         },
     };
-    if result["state"]!="ACTIVE" {decision.terminal=Some("PRESENTATION_ACTIVATION_SUPERSEDED".into());return Err(error("PRESENTATION_ACTIVATION_SUPERSEDED"));}
+    if result["state"]!="ACTIVE" {
+        decision.terminal=Some("PRESENTATION_ACTIVATION_SUPERSEDED".into());
+        decision.channel_owner = None;
+        return Err(error("PRESENTATION_ACTIVATION_SUPERSEDED"));
+    }
     let activation=result["activation"].clone();
     if !activation.is_object() {return Err(error("PRESENTATION_RESPONSE_INVALID"));}
     decision.activation=Some(activation.clone());Ok(activation)
@@ -103,7 +145,8 @@ impl Lifecycle {
                 "options":selection.options,"source_group":observed["group"],
                 "target":{"kind":kind,"registration_id":registration_id,"host_destination":null},
                 "operation_id":operation_id()?,"expected_generation":observed["current_generation"]}});
-            Arc::new(Mutex::new(Decision{admin,request,activation:None,terminal:None}))
+            let channel_owner = (kind == "MCP_STDIO_CHANNEL").then(|| ChannelOwner::Waiting(selection.clone()));
+            Arc::new(Mutex::new(Decision{admin,request,activation:None,terminal:None,channel_owner}))
         };
         // Freeze exactly one decision for all aliases of the source. The
         // directory lock is released before any IPC, including a retry after a
@@ -120,13 +163,27 @@ impl Lifecycle {
         };
         complete(&decision).await.map(Some)
     }
+    async fn presentation_observe(&self, scope: &str, mut request: Value) -> Result<Value> {
+        let (selected, decision) = {
+            let state = self.presentation.lock().await;
+            let selected = state.scopes.get(scope).cloned().ok_or_else(|| error("PRESENTATION_ACTIVATION_REQUIRED"))?;
+            let decision = state.groups.get(&selected.source).cloned().ok_or_else(|| error("PRESENTATION_ACTIVATION_REQUIRED"))?;
+            (selected, decision)
+        };
+        request["options"] = serde_json::to_value(selected.options).map_err(|_| error("PRESENTATION_RESPONSE_INVALID"))?;
+        let result = selected.client.call(request).await;
+        if result.as_ref().is_err_and(|failure| superseded(&failure.code)) {
+            // A deliberately superseded connection still has tools, but no
+            // longer holds the Channel slot or competes for presentation.
+            decision.lock().await.channel_owner = None;
+        }
+        result
+    }
     pub(crate) async fn presentation_poll(&self,scope:&str,activation:&Value)->Result<Value> {
-        let selected=self.presentation.lock().await.scopes.get(scope).cloned().ok_or_else(||error("PRESENTATION_ACTIVATION_REQUIRED"))?;
-        selected.client.call(json!({"method":"notification_poll","options":selected.options,"activation":activation,"wait_ms":20000})).await
+        self.presentation_observe(scope,json!({"method":"notification_poll","activation":activation,"wait_ms":20000})).await
     }
     pub(crate) async fn presentation_allowed(&self,scope:&str,activation:&Value,batch:&str,revision:u64)->Result<bool> {
-        let selected=self.presentation.lock().await.scopes.get(scope).cloned().ok_or_else(||error("PRESENTATION_ACTIVATION_REQUIRED"))?;
-        let value=selected.client.call(json!({"method":"notification_validate","options":selected.options,"activation":activation,"batch":batch,"revision":revision})).await?;
+        let value=self.presentation_observe(scope,json!({"method":"notification_validate","activation":activation,"batch":batch,"revision":revision})).await?;
         Ok(value["allowed"]==true)
     }
 }
@@ -139,7 +196,7 @@ mod tests {
     #[tokio::test]
     async fn a_waiting_decision_does_not_hold_another_presentation_group() {
         let saved=|generation| Arc::new(Mutex::new(Decision{
-            admin:PathBuf::new(),request:Value::Null,activation:Some(json!({"generation":generation})),terminal:None,
+            admin:PathBuf::new(),request:Value::Null,activation:Some(json!({"generation":generation})),terminal:None,channel_owner:None,
         }));
         let waiting=saved(1);
         let available=saved(2);

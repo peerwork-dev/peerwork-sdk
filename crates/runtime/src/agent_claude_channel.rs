@@ -100,7 +100,12 @@ impl State {
         }
     }
     pub(super) fn scope_failed(&self,alias:&str,error:&ParticipantError) {
-        let mut value=json!({"state":if superseded(error){"SUPERSEDED"}else{"BLOCKED"},"code":error.code,"recovery":crate::host_recovery_policy::diagnostic(&error.code),"session_receiving":"UNCONFIRMED"});
+        let state = match error.code.as_str() {
+            "CLAUDE_CHANNEL_STANDBY" => "RECOVERING",
+            _ if superseded(error) => "SUPERSEDED",
+            _ => "BLOCKED",
+        };
+        let mut value=json!({"state":state,"code":error.code,"recovery":crate::host_recovery_policy::diagnostic(&error.code),"session_receiving":"UNCONFIRMED"});
         if error.details.as_ref().and_then(|details|details.get("local_state")).is_some() {
             value["error"]=json!(error);
         }
@@ -267,9 +272,9 @@ pub(super) async fn watch(tools:Arc<Tools>,output:mpsc::Sender<Value>,state:Stat
 async fn watch_scope(client:Arc<Tools>,profile:AgentProfile,alias:String,scope:MailScope,output:mpsc::Sender<Value>,observed:State)->Result<()> {
     let context=client.call(AgentRequest::Context).await?;
     validate_source(&context,&scope)?;
-    let projection=Projection::open(&client,&profile,&alias,&scope).await?;
     let binding=crate::agent_delivery_status::binding(&context,&serde_json::to_value(&scope).unwrap());
     observed.0.lock().unwrap().scopes.insert(alias.clone(),json!({"state":"STARTING","binding":binding,"session_receiving":"UNCONFIRMED"}));
+    let projection=Projection::open(&client,&profile,&alias,&scope).await?;
     project_scope(&alias,output,observed,||projection.poll(&client)).await
 }
 

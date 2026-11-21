@@ -131,6 +131,12 @@ relay is not enabled.
   inbox and pending work. A legacy frontend still holding projection ownership
   needs the host's normal refresh or drain before replacement; never delete its
   lock. Ordinary MCP attachment without Channel opt-in does not replace receiving.
+- A second Claude MCP process for the same receiving source group stays on
+  standby while the current Channel connection is open. Its tools still work.
+  When the current connection closes, the waiting Channel can acquire that
+  source automatically. `CLAUDE_CHANNEL_STANDBY` identifies this wait. The
+  Channel handshake carries no foreground conversation identity, so the local
+  SDK cannot rank two otherwise equivalent Claude processes by session focus.
 - A source already bound to Codex, AGY or another native host is not mirrored
   into a new Claude session just because MCP was installed. It reports
   `CLAUDE_CHANNEL_SOURCE_ALREADY_BOUND_TO_ANOTHER_HOST`; retain that working

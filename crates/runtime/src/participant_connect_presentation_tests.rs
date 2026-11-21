@@ -11,6 +11,73 @@ use crate::{
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt,AsyncWriteExt};
 
+struct InstalledChannel {
+    child: tokio::process::Child,
+    input: tokio::process::ChildStdin,
+    output: tokio::io::Lines<tokio::io::BufReader<tokio::process::ChildStdout>>,
+}
+
+impl InstalledChannel {
+    async fn start(project: &Path, entry: &Value) -> Self {
+        use std::process::Stdio;
+        let mut child = tokio::process::Command::new(entry["command"].as_str().unwrap())
+            .args(entry["args"].as_array().unwrap().iter().map(|arg| arg.as_str().unwrap()))
+            .current_dir(project)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn().unwrap();
+        let input = child.stdin.take().unwrap();
+        let output = tokio::io::BufReader::new(child.stdout.take().unwrap()).lines();
+        let mut channel = Self { child, input, output };
+        channel.send(json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{
+            "protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"installed-channel-fixture","version":"1"}}})).await;
+        let initialized = channel.next().await;
+        assert_eq!(initialized["id"], 1);
+        assert!(initialized["result"]["capabilities"]["experimental"]["claude/channel"].is_object());
+        channel.send(json!({"jsonrpc":"2.0","method":"notifications/initialized"})).await;
+        channel
+    }
+
+    async fn send(&mut self, request: Value) {
+        self.input.write_all(format!("{request}\n").as_bytes()).await.unwrap();
+    }
+
+    async fn next(&mut self) -> Value {
+        let line = tokio::time::timeout(Duration::from_secs(20), self.output.next_line())
+            .await.unwrap().unwrap().expect("installed MCP closed before responding");
+        serde_json::from_str(&line).unwrap()
+    }
+
+    async fn read_probe(&mut self) {
+        let notice = self.next().await;
+        self.observe_probe(notice).await;
+    }
+
+    async fn observe_probe(&mut self, notice: Value) {
+        assert_eq!(notice["method"], "notifications/claude/channel", "{notice}");
+        self.send(json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"peerwork_inbox",
+            "arguments":{"batch":notice["params"]["meta"]["batch"]}}})).await;
+        let response = self.next().await;
+        assert_eq!(response["id"], 2, "{response}");
+        assert_eq!(response["result"]["structuredContent"]["state"], "SELF_TEST_OBSERVED", "{response}");
+    }
+
+    async fn context(&mut self) -> Value {
+        self.send(json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"peerwork_context","arguments":{}}})).await;
+        let response = self.next().await;
+        assert_eq!(response["id"], 3, "{response}");
+        response["result"]["structuredContent"].clone()
+    }
+
+    async fn close(self) {
+        let Self { mut child, input, output: _ } = self;
+        drop(input);
+        let exit = tokio::time::timeout(Duration::from_secs(10), child.wait()).await.unwrap().unwrap();
+        assert!(exit.success(), "{exit}");
+    }
+}
+
 async fn start(config:RuntimeConfig)->(RuntimeReady,crate::KernelCancellationToken,tokio::task::JoinHandle<Result<()>>) {
     let stop=crate::KernelCancellationToken::new();
     let(tx,rx)=tokio::sync::oneshot::channel();
@@ -183,6 +250,7 @@ async fn original_two_space_presentations_replace_without_reclaim_or_pending_ope
     service.config(json!({"offline":false})).await;
     for watch in &options {ready(&original,watch).await;}
     tool(&ordinary,"delivery",json!({"mode":"self_test"})).await;
+    drop(current);
     let(server,host)=tokio::io::duplex(1024*1024);
     let(sr,sw)=tokio::io::split(server);let(hr,mut hw)=tokio::io::split(host);
     let mut hr=tokio::io::BufReader::new(hr);
@@ -195,7 +263,7 @@ async fn original_two_space_presentations_replace_without_reclaim_or_pending_ope
     let notice:Value=serde_json::from_str(&line).unwrap();
     assert_eq!(notice["method"],"notifications/claude/channel","{notice}");
     assert!(notice.get("_presentation").is_none());assert!(!line.contains("registration_id"));assert!(!line.contains("operation_id"));
-    assert_eq!(current.presentation_poll("one",&activation_c).await.unwrap_err().code,"PRESENTATION_ACTIVATION_SUPERSEDED");
+    assert_eq!(original.call(json!({"method":"presentation_resume","options":options[0],"activation":activation_c})).await.unwrap()["state"],"SUPERSEDED");
     hw.write_all(format!("{}\n",json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"peerwork_inbox","arguments":{"batch":notice["params"]["meta"]["batch"]}}})).as_bytes()).await.unwrap();
     let observed=tokio::time::timeout(Duration::from_secs(10),async {loop {
         line.clear();assert!(hr.read_line(&mut line).await.unwrap()>0);
@@ -206,5 +274,55 @@ async fn original_two_space_presentations_replace_without_reclaim_or_pending_ope
     assert_eq!(observed["result"]["structuredContent"]["state"],"SELF_TEST_OBSERVED","{observed}");
     drop(hw);drop(hr);tokio::time::timeout(Duration::from_secs(10),channel).await.unwrap().unwrap().unwrap();
     assert_eq!(tool(&ordinary,"delivery",json!({"mode":"status"})).await["destinations"][0]["control_state"],"PAUSED");
+
+    let installed: Value = serde_json::from_slice(&std::fs::read(project.join(".mcp.json")).unwrap()).unwrap();
+    let entry = |space: &str| installed["mcpServers"].as_object().unwrap().values()
+        .find(|entry| entry["args"].as_array().unwrap().iter().any(|arg| arg == space)).unwrap();
+    let host_cli = |entry: &str| {
+        let mut command = tokio::process::Command::new(&executable);
+        command.arg(entry).arg("--local").arg(&directory).current_dir(&project);
+        command
+    };
+    let connect_status = host_cli("connect").arg("--context").output().await.unwrap();
+    assert!(connect_status.status.success(), "{}", String::from_utf8_lossy(&connect_status.stdout));
+    let cli_context = host_cli("agent").args(["--participant", &handle, "context"]).output().await.unwrap();
+    let context: Value = serde_json::from_slice(&cli_context.stdout).unwrap();
+    assert_eq!(context["actor_id"], config.expected_actor);
+
+    let generation = || async {
+        original.call(json!({"method":"presentation_status","options":options[0]})).await.unwrap()["current_generation"].as_u64().unwrap()
+    };
+    let mut foreground = InstalledChannel::start(&project, entry(&spaces[0])).await;
+    tool(&ordinary,"delivery",json!({"mode":"self_test"})).await;
+    foreground.read_probe().await;
+    let selected = generation().await;
+    let mut standby = InstalledChannel::start(&project, entry(&spaces[1])).await;
+    tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            let standby_context = standby.context().await;
+            assert_eq!(standby_context["actor_id"], config.expected_actor);
+            if standby_context["host_channel"]["scopes"].as_object().is_some_and(|scopes|
+                scopes.values().any(|scope| scope["code"] == "CLAUDE_CHANNEL_STANDBY")) {break;}
+            assert_eq!(generation().await, selected, "handshake-only spare displaced the installed Channel");
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }).await.expect("overlapping installed Channels did not identify the standby");
+    // A spare that only initializes must not replace a working connection.
+    // A real batch exposes the ownership difference without changing the
+    // service consumer or treating the MCP handshake as a wake receipt.
+    tool(&ordinary,"delivery",json!({"mode":"self_test"})).await;
+    let notice = tokio::select! {
+        result = foreground.next() => result,
+        _ = standby.next() => panic!("an initialized standby intercepted the active Channel batch"),
+        _ = tokio::time::sleep(Duration::from_secs(12)) => panic!("neither Channel presented the pending batch"),
+    };
+    foreground.observe_probe(notice).await;
+    assert_eq!(generation().await, selected, "handshake-only spare displaced the installed Channel");
+    foreground.close().await;
+    tool(&ordinary,"delivery",json!({"mode":"self_test"})).await;
+    standby.read_probe().await;
+    assert_eq!(generation().await, selected + 1);
+    assert_eq!(tool(&ordinary,"delivery",json!({"mode":"status"})).await["destinations"][0]["control_state"],"PAUSED");
+    standby.close().await;
     stop.cancel();task.await.unwrap().unwrap();
 }
