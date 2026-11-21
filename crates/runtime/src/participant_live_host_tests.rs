@@ -527,6 +527,30 @@ fn write_report(path: &std::path::Path, value: &Value) {
     }
 }
 
+#[cfg(unix)]
+async fn start_installed_runtime(binary: &std::path::Path, path: &std::path::Path)
+    -> (tokio::process::Child, crate::communication_runtime::RuntimeReady) {
+    use tokio::io::{AsyncBufReadExt, BufReader};
+    let mut process = tokio::process::Command::new(binary).args(["runtime", "run"])
+        .arg(path).stdout(std::process::Stdio::piped()).kill_on_drop(true).spawn().unwrap();
+    let stdout = process.stdout.take().unwrap();
+    let mut lines = BufReader::new(stdout).lines();
+    let result = tokio::time::timeout(Duration::from_secs(25), lines.next_line())
+        .await.unwrap().unwrap().unwrap();
+    let result: crate::communication_runtime::RuntimeReady = serde_json::from_str(&result)
+        .unwrap_or_else(|_| panic!("Failed to start installed runtime: {result}"));
+    assert_eq!(result.state, "LOCAL_READY");
+    tokio::spawn(async move { while matches!(lines.next_line().await, Ok(Some(_))) {} });
+    (process, result)
+}
+
+#[cfg(unix)]
+async fn stop_installed_runtime(process: &mut tokio::process::Child) {
+    let pid = process.id().unwrap();
+    assert_eq!(unsafe { libc::kill(pid as i32, libc::SIGTERM) }, 0);
+    assert!(tokio::time::timeout(Duration::from_secs(30), process.wait()).await.unwrap().unwrap().success());
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires explicitly registered live host, isolated PostgreSQL and a real Agent reply through native CLI/MCP"]
 async fn program_master_existing_session_and_native_agent_reply() {
@@ -596,6 +620,8 @@ async fn qualify_native_reply(mcp_only: bool) {
     };
     let codex_recovery = host["kind"] == "codex"
         && std::env::var("PEERWORK_LIVE_HOST_CODEX_ROUTE_RECOVERY").as_deref() == Ok("1");
+    let opencode_restart = host["kind"] == "opencode"
+        && std::env::var("PEERWORK_LIVE_HOST_RESTART_OPENCODE").as_deref() == Ok("1");
     let compact_host = !mcp_only && (host["kind"] == "opencode" || codex_recovery
         || host["kind"] == "codex" && host["local_queue_only"] == true);
     let root = PathBuf::from(
@@ -807,9 +833,24 @@ async fn qualify_native_reply(mcp_only: bool) {
     )
     .unwrap();
     let runtime_stop = KernelCancellationToken::new();
-    let (tx, rx) = oneshot::channel();
-    let runtime = tokio::spawn(communication_runtime::serve(cfg, runtime_stop.clone(), tx));
-    let ready = rx.await.unwrap().unwrap();
+    let mut embedded_runtime = None;
+    #[cfg(unix)]
+    let mut installed_runtime = None;
+    let ready = if opencode_restart {
+        #[cfg(unix)]
+        {
+            let binary = PathBuf::from(std::env::var_os("PEERWORK_PARTICIPANT_CLI").unwrap());
+            let (process, ready) = start_installed_runtime(&binary, &root.join("runtime.json")).await;
+            installed_runtime = Some(process);
+            ready
+        }
+        #[cfg(not(unix))]
+        panic!("installed OpenCode restart qualification requires a Unix host");
+    } else {
+        let (tx, rx) = oneshot::channel();
+        embedded_runtime = Some(tokio::spawn(communication_runtime::serve(cfg, runtime_stop.clone(), tx)));
+        rx.await.unwrap().unwrap()
+    };
     let master_client = RuntimeClient::connect(
         ready.client_endpoints["master"].clone(),
         &service.origin,
@@ -866,6 +907,9 @@ async fn qualify_native_reply(mcp_only: bool) {
         "worker_profile":worker_profile_path,"expected_reply":format!("PONG {nonce}"),"fresh_agent_first_use":false,"first_use_requires_external_harness_evidence":mcp_only,
         "service":"LOCAL_SYNTHETIC_POSTGRES_HTTP","host":if mcp_only {"MCP_WAIT_ONLY_NO_HOST_PUSH"} else {"EXPLICIT_EXISTING_SESSION"},"body_mode":"WORKSPACE_E2EE",
         "timing_basis":"one observer monotonic clock; delivery observations are upper bounds, not isolated internal phase spans"});
+    if opencode_restart {
+        result["installed_runtime_exercised"] = json!(true);
+    }
     write_report(&report, &result);
     println!("LIVE_HOST_READY {}", result);
     if std::env::var("PEERWORK_LIVE_HOST_START_GATE").as_deref() == Ok("1") {
@@ -1045,6 +1089,11 @@ async fn qualify_native_reply(mcp_only: bool) {
         if !qualified {
             break;
         }
+        if opencode_restart && round == 1 {
+            result["samples"] = json!(samples);
+            write_report(&report, &result);
+            observed_host_state_gate(&root, "observed-opencode-restart").await;
+        }
         if restart_bridge && round == 1 {
             let restarted_at = Instant::now();
             let (stop, bridge) = bridge_lifecycle.take().unwrap();
@@ -1100,8 +1149,14 @@ async fn qualify_native_reply(mcp_only: bool) {
         observed_host_state_gate(&root, "observed-final-idle").await;
         result["maintainer_state_barriers_completed"] = json!(true);
     }
-    runtime_stop.cancel();
-    runtime.await.unwrap().unwrap();
+    if let Some(runtime) = embedded_runtime {
+        runtime_stop.cancel();
+        runtime.await.unwrap().unwrap();
+    }
+    #[cfg(unix)]
+    if let Some(mut process) = installed_runtime {
+        stop_installed_runtime(&mut process).await;
+    }
     if let Some((bridge_stop, bridge)) = bridge_lifecycle {
         bridge_stop.cancel();
         bridge.await.unwrap().unwrap();
@@ -1124,8 +1179,6 @@ async fn qualify_agy_acp(
     mut host: Value, engines: [ParticipantConfig; 2], scopes: [MailScope; 2],
 ) {
     use crate::participant_connect::{Connect, ConnectRequest, HostSelection, Registration};
-    use tokio::io::{AsyncBufReadExt, BufReader};
-
     let binary = PathBuf::from(std::env::var_os("PEERWORK_PARTICIPANT_CLI").unwrap());
     let runtime_file = root.join("runtime.json");
     let [master, worker] = engines;
@@ -1140,26 +1193,7 @@ async fn qualify_agy_acp(
         hosts: vec![],
     };
     crate::communication_host::write_private(&runtime_file, &serde_json::to_vec(&runtime_config).unwrap()).unwrap();
-    async fn start(binary: &std::path::Path, path: &std::path::Path)
-        -> (tokio::process::Child, crate::communication_runtime::RuntimeReady) {
-        let mut process = tokio::process::Command::new(binary).args(["runtime", "run"])
-            .arg(path).stdout(std::process::Stdio::piped()).kill_on_drop(true).spawn().unwrap();
-        let stdout = process.stdout.take().unwrap();
-        let mut lines = BufReader::new(stdout).lines();
-        let result = tokio::time::timeout(Duration::from_secs(25), lines.next_line())
-            .await.unwrap().unwrap().unwrap();
-        let result: crate::communication_runtime::RuntimeReady = serde_json::from_str(&result)
-            .unwrap_or_else(|_| panic!("Failed to start installed runtime: {result}"));
-        assert_eq!(result.state, "LOCAL_READY");
-        tokio::spawn(async move { while matches!(lines.next_line().await, Ok(Some(_))) {} });
-        (process, result)
-    }
-    async fn stop(process: &mut tokio::process::Child) {
-        let pid = process.id().unwrap();
-        assert_eq!(unsafe { libc::kill(pid as i32, libc::SIGTERM) }, 0);
-        assert!(tokio::time::timeout(Duration::from_secs(30), process.wait()).await.unwrap().unwrap().success());
-    }
-    let (mut process, ready) = start(&binary, &runtime_file).await;
+    let (mut process, ready) = start_installed_runtime(&binary, &runtime_file).await;
     let registry = root.join("registry");
     let mut connect = Connect::open(&registry).unwrap();
     connect.register("worker", Registration {
@@ -1237,7 +1271,7 @@ async fn qualify_agy_acp(
             let status = receiving.call(json!({"method":"delivery","mode":"status","options":original})).await;
             result["last_status"] = status.ok().unwrap_or(Value::Null);
             write_report(report, &result);
-            stop(&mut process).await;
+            stop_installed_runtime(&mut process).await;
             panic!("Original AGY session did not read and reply to the signed notice in round {round}");
         };
         // A signed reply can commit while the same ACP turn is still busy.
@@ -1255,7 +1289,7 @@ async fn qualify_agy_acp(
                 result["failed_round"] = json!(round);
                 result["last_delivery_code"] = health["code"].clone();
                 write_report(report, &result);
-                stop(&mut process).await;
+                stop_installed_runtime(&mut process).await;
                 panic!("Original AGY session did not return to verified idle readiness");
             }
             tokio::time::sleep(Duration::from_millis(250)).await;
@@ -1268,8 +1302,8 @@ async fn qualify_agy_acp(
         write_report(report, &result);
         peer.call(AgentRequest::parse("consume", json!({"scope":"live","items":[reply["item"]]})).unwrap()).await.unwrap();
         if round == 1 {
-            stop(&mut process).await;
-            let (successor, restarted) = start(&binary, &runtime_file).await;
+            stop_installed_runtime(&mut process).await;
+            let (successor, restarted) = start_installed_runtime(&binary, &runtime_file).await;
             assert_eq!(restarted.admin_endpoint, endpoint);
             for (name, original_endpoint) in &ready.client_endpoints {
                 assert_eq!(restarted.client_endpoints.get(name), Some(original_endpoint));
@@ -1281,7 +1315,7 @@ async fn qualify_agy_acp(
             endpoint = restarted.admin_endpoint;
         }
     }
-    stop(&mut process).await;
+    stop_installed_runtime(&mut process).await;
     result["state"] = json!("PASS");
     result["original_runtime_restarted"] = json!(true);
     result["journal_reads"] = service.counts().await["journal_reads"].clone();

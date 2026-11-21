@@ -201,7 +201,8 @@ def main():
             PEERWORK_POSTGRES_TEST_URL=args.postgres, PEERWORK_PARTICIPANT_CLI=args.cli,
             PEERWORK_LIVE_HOST_CONFIG=str(root / 'host.json'), PEERWORK_LIVE_HOST_STATE_DIR=str(state),
             PEERWORK_LIVE_HOST_REPORT=str(state / 'result.json'), PEERWORK_LIVE_HOST_NONCE='OPENCODE-V2-' + os.urandom(8).hex(),
-            PEERWORK_LIVE_HOST_ROUNDS='2', PEERWORK_LIVE_HOST_REQUIRE_CONSUMED='1', PEERWORK_LIVE_HOST_START_GATE='1')
+            PEERWORK_LIVE_HOST_ROUNDS='2', PEERWORK_LIVE_HOST_REQUIRE_CONSUMED='1',
+            PEERWORK_LIVE_HOST_START_GATE='1', PEERWORK_LIVE_HOST_RESTART_OPENCODE='1')
         with (root / 'native-fixture.log').open('w') as log:
             fixture = subprocess.Popen([args.test_binary, '--exact', 'participant_live_host_tests::program_master_existing_session_and_native_agent_reply',
                 '--ignored', '--nocapture', '--test-threads=1'], cwd=args.sdk, env=fixture_env, stdout=log, stderr=log, start_new_session=True)
@@ -230,12 +231,34 @@ def main():
             return any(s['name'] == 'peerwork' and s['status']['status'] == 'connected' for s in servers)
         wait_for(loaded)
         (state / 'observed-host-ready').write_text('Original selected session retained after service restart.\n')
+        def first_round():
+            assert fixture.poll() is None, 'INSPECT_NATIVE_FIRST_ROUND'
+            try:
+                sample = json.loads((state / 'result.json').read_text())
+            except (OSError, ValueError):
+                return False
+            return sample if len(sample.get('samples', [])) == 1 else False
+
+        first = wait_for(first_round, 90)
+        assert first['installed_runtime_exercised'] and first['samples'][0]['qualified']
+        assert first['samples'][0]['worker_consumed']
+        host.terminate()
+        host.wait(timeout=15)
+        host = start()
+        restarted_service = json.loads(service.read_text())
+        assert restarted_service['pid'] != current_service['pid']
+        assert restarted_service['url'] != current_service['url']
+        assert api('/api/session/' + session)['data']['id'] == session
+        wait_for(loaded)
+        facts['between_round_restart'] = {'port_changed': True, 'original_session_retained': True}
+        (state / 'observed-opencode-restart').write_text('Same OpenCode V2 session reloaded on its new service registration.\n')
         facts['fixture_exit_code'] = fixture.wait(timeout=230)
         result = json.loads((state / 'result.json').read_text())
         facts.update(state='PASS' if fixture.returncode == 0 and result['state'] == 'COMPLETED' else 'FAILED',
                      native_result=result, model_requests=model.requests, tool_calls=[v['tool'] for v in model.calls],
                      candidate_binary_sha256=hashlib.sha256(Path(args.cli).read_bytes()).hexdigest())
         assert facts['state'] == 'PASS', 'INSPECT_RETAINED_FIXTURE_LOG'
+        assert result['installed_runtime_exercised']
         assert facts['tool_calls'].count('peerwork_reply') == 2
         assert facts['tool_calls'].count('peerwork_consume') == 2
     finally:
