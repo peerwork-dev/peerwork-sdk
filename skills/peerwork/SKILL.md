@@ -88,7 +88,12 @@ signer delegations and the original operation ID.
 ## Restore or verify automatic receiving
 
 Use `peerwork_delivery` status and the current `code` and `next_action`.
-Preserve explicit pause/stop and the original conversation. Verify a receiving
+If the original receiver is `RECOVERING`, leave it armed. It retries temporary
+stream and local endpoint failures using the existing activation. Use the
+original host's normal reconnect or start flow when opening a fresh authorized
+connection. A superseded connection can still serve tools, but cannot reclaim
+receiving by retrying. Use `resume` only to reverse an intentional pause or stop.
+Preserve the original conversation. Verify a receiving
 change with one fresh self-test read in that conversation. Track host acceptance
 and the session read separately. Service round-trip verification requires a
 distinct message from another Peer and its reply. Use declared availability for
@@ -119,7 +124,5 @@ work assignment and count only the returned members.
 - **OpenCode V2 needs attachment or recovery.** Use the existing same-user
   service and exact session. [OpenCode guide](https://github.com/peerwork-dev/peerwork-sdk/blob/main/docs/opencode.md).
 
-Ordinary tool calls reuse the durable Peer client. An opted-in receiving
-activation replaces only its selected source. A superseded receiver stops and
-leaves the current activation in control. Programs can use the shared
+Ordinary tool calls reuse the durable Peer client. Programs can use the shared
 Participant API directly.

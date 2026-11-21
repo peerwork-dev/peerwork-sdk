@@ -55,6 +55,7 @@ impl State {
     }
     pub(super) fn consumed(&self) {self.1.notify_waiters();}
     pub(super) fn validation_failed(&self,code:&str) {self.0.lock().unwrap().validation_error=Some(code.into());}
+    pub(super) fn validation_finished(&self) { self.0.lock().unwrap().validation_error = None; }
     fn scope(&self,alias:&str,state:&str,code:Option<&str>) {
         let mut observed=self.0.lock().unwrap();
         let mut value=observed.scopes.get(alias).cloned().unwrap_or_else(||json!({"binding":null,"session_receiving":"UNCONFIRMED"}));
@@ -82,12 +83,17 @@ impl State {
         }
     }
     pub(super) fn scope_retry(&self, alias: &str, error: &ParticipantError, delay: Duration) {
-        self.scope(alias, "RECOVERING", Some(&error.code));
+        self.scope_recovering(alias, error);
         let mut observed = self.0.lock().unwrap();
         let scope = observed.scopes.get_mut(alias).unwrap();
         scope["retry_at_ms"] = json!(crate::participant_store::now().saturating_add(
             i64::try_from(delay.as_millis()).unwrap_or(i64::MAX),
         ));
+    }
+    pub(super) fn scope_recovering(&self, alias: &str, error: &ParticipantError) {
+        self.scope(alias, "RECOVERING", Some(&error.code));
+        let mut observed = self.0.lock().unwrap();
+        let scope = observed.scopes.get_mut(alias).unwrap();
         scope["recovery"] = crate::host_recovery_policy::diagnostic(&error.code);
         if let Some(failure) = notification_failure(error) {
             scope["failure"] = failure;

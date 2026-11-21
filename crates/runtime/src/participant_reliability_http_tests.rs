@@ -669,10 +669,14 @@ async fn background_mcp_wait_keeps_tools_available_and_cancellation_preserves_in
     send(&mut cw,json!({"jsonrpc":"2.0","id":4,"method":"ping"})).await;
     assert_eq!(read(&mut cr).await["id"],4);
     tokio::time::sleep(Duration::from_millis(100)).await;
+    let endpoint = &setup.profile.endpoint_path;
+    let held_endpoint = endpoint.with_extension("temporarily-unpublished");
+    std::fs::rename(endpoint, &held_endpoint).unwrap();
     send(&mut cw,call(5,"listen",json!({}))).await;
     tokio::time::sleep(Duration::from_millis(100)).await;
     send(&mut cw,call(6,"listen",json!({}))).await;
     let duplicate=read(&mut cr).await;assert_eq!(duplicate["id"],6);assert_eq!(duplicate["result"]["structuredContent"]["error"]["code"],"BACKGROUND_LISTEN_ALREADY_ARMED");
+    std::fs::rename(held_endpoint, endpoint).unwrap();
     setup.disconnect_until_observed().await;
     setup.cohort.service.config(json!({"offline":false})).await;
     setup.send("new-private-synthetic-content").await;

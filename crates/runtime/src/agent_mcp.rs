@@ -5,6 +5,8 @@ use crate::participant::{ParticipantError, Result};
 use serde_json::{json, Value};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
+    future::Future,
+    pin::Pin,
     sync::Arc,
     time::Duration,
 };
@@ -105,15 +107,34 @@ where W:AsyncWrite+Unpin,F:std::future::Future<Output=Result<bool>> {
     match admission.await {
         // Fence immediately before writing. Bytes already being written cannot
         // be recalled by a concurrent pause.
-        Ok(true)=>{write(writer,notification.clone()).await?;state.written(&notification);},
-        Ok(false)=>{},
+        Ok(true)=>{write(writer,notification.clone()).await?;state.written(&notification);state.validation_finished();},
+        Ok(false)=>state.validation_finished(),
         Err(error)=>{
             state.validation_failed(&error.code);
-            if let Some(alias)=presentation.as_ref().and_then(|value|value["scope"].as_str()){state.scope_failed(alias,&error);}
+            if let Some(alias)=presentation.as_ref().and_then(|value|value["scope"].as_str()) {
+                if crate::host_recovery_policy::notification_wait_retry(&error) {
+                    // The source's durable poll owns the retry schedule. This
+                    // validation did not write or consume the original batch.
+                    state.scope_recovering(alias, &error);
+                } else {
+                    state.scope_failed(alias, &error);
+                }
+            }
             eprintln!("Peerwork Claude channel validation: {}",error.code);
         },
     }
     Ok(())
+}
+type ChannelAdmission = Pin<Box<dyn Future<Output = (Value, Result<bool>)> + Send>>;
+
+async fn admit_channel(tools: Arc<Tools>, notification: Value) -> (Value, Result<bool>) {
+    let meta = &notification["params"]["meta"];
+    let revision = meta["revision"].as_str().and_then(|value| value.parse::<u64>().ok());
+    let allowed = match (meta["batch"].as_str(), revision) {
+        (Some(batch), Some(revision)) => claude_channel::presentation_allowed(&tools, notification.get("_presentation"), batch, revision).await,
+        _ => Err(ParticipantError::local("CLAUDE_CHANNEL_BATCH_INVALID", "CLAUDE_CHANNEL")),
+    };
+    (notification, allowed)
 }
 use crate::agent_lifecycle::Lifecycle as Tools;
 /// Supports per-request MCP 2026-07-28 and negotiated 2025-11-25 hosts.
@@ -209,6 +230,7 @@ where R:AsyncBufRead+Send+Unpin+'static,W:AsyncWrite+Unpin {
     let mut initializing = false;
     let mut channel_task:Option<tokio::task::JoinHandle<()>>=None;
     let (channel_tx,mut channel_rx)=mpsc::channel::<Value>(8);
+    let mut channel_admission: Option<ChannelAdmission> = None;
     let channel_state=claude_channel::State::default();
     let background_state=background_listener::State::default();
     let capabilities=if claude {json!({"tools":{},"experimental":{"claude/channel":{}}})}else{json!({"tools":{}})};
@@ -216,14 +238,12 @@ where R:AsyncBufRead+Send+Unpin+'static,W:AsyncWrite+Unpin {
     let outcome=async{
     loop{
         tokio::select!{
-            notification=channel_rx.recv(),if channel_task.is_some()=>if let Some(notification)=notification {
-                let meta=&notification["params"]["meta"];
-                let revision=meta["revision"].as_str().and_then(|value|value.parse::<u64>().ok());
-                let allowed=match (meta["batch"].as_str(),revision) {
-                    (Some(batch),Some(revision))=>claude_channel::presentation_allowed(&tools,notification.get("_presentation"),batch,revision).await,
-                    _=>Err(ParticipantError::local("CLAUDE_CHANNEL_BATCH_INVALID","CLAUDE_CHANNEL")),
-                };
-                write_channel(&mut writer,notification,&channel_state,async {allowed}).await?;
+            notification=channel_rx.recv(),if channel_task.is_some() && channel_admission.is_none()=>if let Some(notification)=notification {
+                channel_admission = Some(Box::pin(admit_channel(tools.clone(), notification)));
+            },
+            (notification, allowed)=async {channel_admission.as_mut().expect("pending channel admission").await},if channel_admission.is_some()=>{
+                channel_admission = None;
+                write_channel(&mut writer, notification, &channel_state, std::future::ready(allowed)).await?;
             },
             joined=jobs.join_next_with_id(),if !jobs.is_empty()=>if let Some(joined)=joined{
                 match joined{
@@ -367,6 +387,21 @@ mod tests {
         assert!(wire.is_empty());assert_eq!(state.status()["validation_error"],"SYNTHETIC_VALIDATION_UNAVAILABLE");
         super::write_channel(&mut wire,notice,&state,async {Ok(true)}).await.unwrap();
         assert!(!wire.is_empty());assert_eq!(state.status()["notifications_written"],1);
+        assert!(state.status()["validation_error"].is_null());
+    }
+    #[tokio::test]
+    async fn missing_original_endpoint_during_channel_admission_remains_recoverable() {
+        let state = super::claude_channel::State::default();
+        let mut wire = Vec::new();
+        let notice = serde_json::json!({"method":"notifications/claude/channel",
+            "params":{"meta":{"batch":"original","revision":"1"}},
+            "_presentation":{"scope":"space","activation":{"generation":1}}});
+        super::write_channel(&mut wire, notice, &state, async {
+            Err(crate::participant::ParticipantError::local("ENDPOINT_NOT_FOUND", "LOCAL_IPC"))
+        }).await.unwrap();
+        assert!(wire.is_empty());
+        assert_eq!(state.status()["scopes"]["space"]["state"], "RECOVERING");
+        assert_eq!(state.status()["scopes"]["space"]["code"], "ENDPOINT_NOT_FOUND");
     }
     #[tokio::test]
     async fn successor_fences_queued_channel_output_and_keeps_activation_private() {

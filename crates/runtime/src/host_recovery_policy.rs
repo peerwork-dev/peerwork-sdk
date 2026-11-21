@@ -60,7 +60,8 @@ pub(crate) fn diagnostic(code: &str) -> Value {
 pub(crate) fn notification_wait_retry(error: &crate::participant::ParticipantError) -> bool {
     match error.code.as_str() {
         "NOTIFICATION_RECEIVER_PARTIALLY_AVAILABLE" | "RUNTIME_UNAVAILABLE" | "IPC_DISCONNECTED" | "IPC_OBSERVATION_TIMEOUT"
-        | "IPC_HANDSHAKE_TIMEOUT" | "IPC_WRITE_TIMEOUT" | "PRESENTATION_REBIND_PENDING" => true,
+        | "IPC_HANDSHAKE_TIMEOUT" | "IPC_WRITE_TIMEOUT" | "ENDPOINT_NOT_FOUND" | "ENDPOINT_CHANGED"
+        | "PRESENTATION_REBIND_PENDING" => true,
         "CLAUDE_CHANNEL_ALREADY_ACTIVE_OR_STATE_UNAVAILABLE" => error.details.as_ref()
             .is_some_and(|detail| detail["local_state"]["cause"] == "BUSY"),
         "NOTIFICATION_RECEIVER_NOT_VERIFIED" => error.details.as_ref().is_none_or(|detail| {
@@ -109,6 +110,16 @@ pub(crate) fn rpc_error(value: &Value) -> &'static str {
         }
         error.details = Some(json!({"state":"RECONNECTING","code":"RESOURCE_EXHAUSTED"}));
         assert!(notification_wait_retry(&error));
+    }
+    #[test]
+    fn only_transient_descriptor_errors_resume_the_original_wait() {
+        for code in ["ENDPOINT_NOT_FOUND", "ENDPOINT_CHANGED", "IPC_DISCONNECTED"] {
+            assert!(notification_wait_retry(&crate::participant::ParticipantError::local(code, "LOCAL_IPC")), "{code}");
+        }
+        for code in ["ENDPOINT_NOT_PRIVATE", "ENDPOINT_ACCESS_DENIED", "ENDPOINT_JSON_INVALID",
+            "ORIGINAL_RUNTIME_BINDING_CHANGED", "PRESENTATION_ACTIVATION_SUPERSEDED"] {
+            assert!(!notification_wait_retry(&crate::participant::ParticipantError::local(code, "LOCAL_IPC")), "{code}");
+        }
     }
     #[test] fn ownership_and_unsupported_api_are_not_transport_retries() {
         assert_eq!(rpc_error(&json!({"code":-32600,"message":"session has an active writer: SECRET"})),"HOST_SESSION_OWNERSHIP_CONFLICT");

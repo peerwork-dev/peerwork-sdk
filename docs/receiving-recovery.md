@@ -21,6 +21,12 @@ the selected current integration. Legacy frontends need their normal refresh or
 drain before replacement; see
 [receiving activation replacement](host-bridge-recovery.md#receiving-activation-replacement).
 
+Use the original host's normal reconnect or start flow. An armed listener keeps
+waiting through a temporary IPC or missing endpoint during an original runtime
+restart. A replacement endpoint still has to authenticate the original binding.
+`resume` reverses an explicit pause or stop. A destination change uses the
+existing rebind flow. A same-destination reconnect preserves both controls.
+
 A healthy endpoint is authenticated against the original binding independently
 of historical process/config proofs. Actual runtime launch still requires its
 original ownership and writer checks. Stop intent, pending updates, maintenance
@@ -102,6 +108,10 @@ Channels attached to their original source. These frontends report
 `RECOVERING` with a bounded retry deadline and clear the failure after a
 successful observation. Authentication and evidence failures still follow
 the receiving stream's original quarantine and authority rules.
+
+Claude Channel admission can wait on the original endpoint while ordinary MCP
+tools remain responsive. A notice passes current admission before it is written.
+An interrupted check leaves the batch pending in the original inbox.
 
 A source that temporarily cannot provide a verified head keeps its original
 cursor. Healthy sources may schedule batches when there is no outstanding

@@ -33,29 +33,30 @@ impl RuntimeClient {
         expected_origin: &str,
         expected_actor: &str,
     ) -> Result<Self> {
+        Self::connect_selected(endpoint_path, expected_origin, expected_actor, None).await
+    }
+    /// Pin the engine and namespace before authenticating the first descriptor.
+    /// A replacement descriptor must prove the same binding before private work.
+    pub async fn connect_bound(endpoint_path:PathBuf, origin:&str, actor:&str, binding:Value)->Result<Self> {
+        Self::connect_selected(endpoint_path, origin, actor, Some(binding)).await
+    }
+    async fn connect_selected(endpoint_path: PathBuf, expected_origin: &str, expected_actor: &str, binding: Option<Value>) -> Result<Self> {
         if !endpoint_path.is_absolute() || !opaque_token(expected_actor) {
             return Err(local("CLIENT_BINDING_INVALID"));
         }
         let origin = crate::transport::canonical_lifecycle_origin(expected_origin, true)
             .map_err(|_| local("CLIENT_BINDING_INVALID"))?;
+        if let Some(binding) = &binding {
+            validate_binding(binding, &origin, expected_actor)?;
+        }
         let client = Self {
             endpoint_path,
             expected_actor: expected_actor.into(),
             expected_origin: origin,
             verified: Mutex::new(None),
-            binding: None,
+            binding,
             compact_notifications:std::sync::atomic::AtomicBool::new(false),
         };
-        client.call(json!({"method":"capabilities"})).await?;
-        Ok(client)
-    }
-    /// Pin the original engine/namespace, and revalidate it on every changed
-    /// descriptor snapshot BEFORE sending any operation through that snapshot.
-    pub async fn connect_bound(endpoint_path:PathBuf, origin:&str, actor:&str, binding:Value)->Result<Self> {
-        let mut client=Self::connect(endpoint_path,origin,actor).await?;
-        validate_binding(&binding,&client.expected_origin,&client.expected_actor)?;
-        client.binding=Some(binding);
-        *client.verified.lock().await=None;
         client.call(json!({"method":"capabilities"})).await?;
         Ok(client)
     }
