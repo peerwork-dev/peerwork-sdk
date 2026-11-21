@@ -1115,7 +1115,20 @@ impl AgentTools {
                 if !matches!(mode.as_str(),"status"|"pause"|"resume"|"self_test") {return Err(invalid("DELIVERY_MODE_INVALID"));}
                 let mut request=json!({"method":"delivery","mode":mode});
                 if let Some(scope)=scope {request["options"]=serde_json::to_value(self.binding(&scope).await?).map_err(|_|invalid("INBOX_SELECTION_INVALID"))?;}
-                self.receiving().call(request).await
+                let mut value = self.receiving().call(request).await?;
+                if mode == "status" {
+                    let runtime = if value["sdk_version"].is_string() {
+                        value.as_object_mut().unwrap().remove("sdk_version").unwrap()
+                    } else {
+                        // Older runtimes expose their version on the same local
+                        // client capability endpoint.
+                        self.receiving().call(json!({"method":"capabilities"})).await
+                            .ok().and_then(|capability| capability.get("sdk_version").cloned())
+                            .unwrap_or(json!("NOT_REPORTED"))
+                    };
+                    value["versions"] = json!({"frontend":env!("CARGO_PKG_VERSION"),"runtime":runtime});
+                }
+                Ok(value)
             }
             AgentRequest::Inbox {
                 scope,

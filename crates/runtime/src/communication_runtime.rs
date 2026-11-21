@@ -511,6 +511,7 @@ impl Runtime {
                     let mut value=self.notifications.control(client,options.as_ref(),&mode).await?;
                     value["actor_id"]=json!(client.actor_id());value["origin"]=json!(client.origin());
                     if mode=="status" {
+                        value["sdk_version"] = json!(env!("CARGO_PKG_VERSION"));
                         let hosts=self.hosts.lock().await.statuses();
                         if let Some(observations)=value["observations"].as_array_mut(){for observed in observations {
                             self.project_delivery(&session,observed,&hosts);
@@ -542,6 +543,11 @@ impl Runtime {
                     Ok(value)
                 },
                 ClientRequest::NotificationValidate{batch,revision,options,activation}=>{
+                    #[cfg(test)]
+                    if self.directory.join("fixture-notification-validation-unavailable").is_file() {
+                        std::fs::write(self.directory.join("fixture-notification-validation-attempted"), b"").unwrap();
+                        return Err(observation(local("IPC_OBSERVATION_TIMEOUT")));
+                    }
                     let allowed=if let Some(options)=options.as_ref() {self.presentation_validate(client,options,activation.as_ref(),&batch,revision).await?}
                     else {if activation.is_some(){return Err(local("PRESENTATION_SOURCE_REQUIRED"));}let allowed=self.notifications.validate(client,&batch,revision).await?;self.presentation_legacy_validate(client).await?;allowed};
                     Ok(json!({"allowed":allowed}))

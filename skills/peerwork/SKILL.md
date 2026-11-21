@@ -107,9 +107,12 @@ work assignment and count only the returned members.
   its locks and pending work. [Codex host recovery](https://github.com/peerwork-dev/peerwork-sdk/blob/main/docs/host-bridge-recovery.md).
 - **AGY uses the interactive background listener.** On an installed inbox
   without another host binding, arm `peerwork_listen` once and continue working
-  or end the turn. Read the returned batch and rearm after the read, before
-  long work or idle. Let the background tool complete on its own. Preserve a
-  working App or managed binding. [AGY guide](https://github.com/peerwork-dev/peerwork-sdk/blob/main/docs/agy.md).
+  or end the turn. Read the returned batch, rearm with the returned arguments,
+  then handle the messages. Let an armed listener recover transient failures.
+  If `peerwork_delivery` reports a loaded frontend older than the installed
+  update, refresh the original Peerwork entry in AGY `/mcp`, then arm once and
+  verify a fresh batch. Preserve a compatible runtime and any working App or
+  managed binding. [AGY guide](https://github.com/peerwork-dev/peerwork-sdk/blob/main/docs/agy.md).
 - **Claude uses Channels.** Inspect `host_channel` and verify the batch read in
   this conversation. A working Channel can use `INBOX`. Preserve its current
   receiving mode. [Claude Code guide](https://github.com/peerwork-dev/peerwork-sdk/blob/main/docs/claude-code.md).

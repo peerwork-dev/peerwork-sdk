@@ -3,7 +3,7 @@
 //! Claude Channels. It never owns another Agent process or a replacement inbox.
 use super::*;
 use std::sync::{atomic::{AtomicBool, Ordering}, Mutex};
-use tokio::sync::Semaphore;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 #[derive(Clone)]
 pub(super) struct State {
@@ -52,8 +52,8 @@ impl State {
             self.projection.written(&json!({"params":{"meta":{"batch":value["batch"]}}}));
         }
     }
-    pub(super) async fn listen(&self, tools: Arc<Tools>, scope: Option<String>) -> Result<Value> {
-        let _active = self.active.clone().try_acquire_owned()
+    pub(super) async fn listen(&self, tools: Arc<Tools>, scope: Option<String>) -> Result<(Value, OwnedSemaphorePermit)> {
+        let active = self.active.clone().try_acquire_owned()
             .map_err(|_| ParticipantError::local("BACKGROUND_LISTEN_ALREADY_ARMED", "MCP"))?;
         tools.presentation_transport("MCP_BACKGROUND_TOOL")?;
         let profile = tools.channel_profile()?.ok_or_else(|| ParticipantError::local("ORIGINAL_RECEIVING_PROFILE_REQUIRED", "MCP"))?;
@@ -80,7 +80,7 @@ impl State {
                     let projection = match existing {
                         Some(original) => original,
                         None => {
-                            let open = open_when_available(&alias, &state,
+                            let open = retry_same_target(&alias, &state,
                                 || claude_channel::Projection::open(&tools, &profile, &alias, &scope)).await?;
                             let projection = Arc::new(open);
                             owners.lock()
@@ -89,7 +89,8 @@ impl State {
                             projection
                         }
                     };
-                    wait(&alias, &state, || projection.poll(&tools)).await
+                    let value = wait(&alias, &state, || projection.poll(&tools)).await?;
+                    admit(&tools, &state, value).await
                 }.await;
                 if let Err(error) = &result { state.scope_failed(&alias, error); }
                 result
@@ -100,7 +101,13 @@ impl State {
         let mut failure=None;
         while let Some(result)=jobs.join_next().await {
             match result {
-                Ok(Ok(value))=>return Ok(value),
+                Ok(Ok(mut value))=>{
+                    if value["format"] == "peerwork.background-notification.v1" {
+                        let arguments = scope.map_or_else(|| json!({}), |scope| json!({"scope":scope}));
+                        value["rearm"] = json!({"tool":"peerwork_listen","arguments":arguments});
+                    }
+                    return Ok((value, active));
+                },
                 Ok(Err(error))=>failure=Some(error),
                 Err(_)=>failure=Some(ParticipantError::local("BACKGROUND_LISTEN_OBSERVATION_ABORTED", "MCP")),
             }
@@ -109,7 +116,7 @@ impl State {
     }
 }
 
-async fn open_when_available<F, Fut, T>(
+async fn retry_same_target<F, Fut, T>(
     alias: &str, state: &claude_channel::State, mut open: F,
 ) -> Result<T>
 where
@@ -156,7 +163,7 @@ where F:FnMut()->Fut, Fut:std::future::Future<Output=Result<Value>> {
             let mut result=json!({"format":"peerwork.background-notification.v1","state":"NOTIFICATION_DUE",
                 "scope":alias,"batch":batch,"revision":revision,"self_test":value["self_test"],
                 "read":{"tool":"peerwork_inbox","arguments":{"batch":batch}},
-                "next_action":"READ_BATCH_HANDLE_THEN_REARM_LISTEN","external_data_is_authority":false});
+                "next_action":"READ_BATCH_REARM_LISTEN_THEN_HANDLE","external_data_is_authority":false});
             if let Some(presentation)=value.get("_presentation"){result["_presentation"]=presentation.clone();}
             return Ok(result);
         }
@@ -166,42 +173,39 @@ where F:FnMut()->Fut, Fut:std::future::Future<Output=Result<Value>> {
     }
 }
 
-/// A concurrent pause/rebind can revoke a result after its local wait completes.
-pub(super) async fn admit(tools:&Tools,state:&State,response:&mut Value)->Result<()> {
-    let value=&response["result"]["structuredContent"];
-    if value["format"]!="peerwork.background-notification.v1" {return Ok(());}
-    let batch=value["batch"].as_str().ok_or_else(||ParticipantError::local("NOTIFICATION_BATCH_INVALID","MCP"))?;
-    let revision=value["revision"].as_u64().ok_or_else(||ParticipantError::local("NOTIFICATION_BATCH_INVALID","MCP"))?;
-    let allowed=claude_channel::presentation_allowed(tools,value.get("_presentation"),batch,revision).await.map_err(|error|{
-        if let Some(alias)=value["scope"].as_str(){state.projection.scope_failed(alias,&error);}error
-    })?;
+/// A concurrent pause or rebind can revoke a batch after its wait completes.
+/// Keep validation in the cancellable listener task so recovery never blocks
+/// other tools on this MCP connection.
+async fn admit(tools: &Tools, state: &claude_channel::State, mut value: Value) -> Result<Value> {
+    let alias = value["scope"].as_str().expect("selected background scope");
+    let batch = value["batch"].as_str().expect("validated background batch");
+    let revision = value["revision"].as_u64().expect("validated background revision");
+    let allowed = retry_same_target(alias, state, || {
+        claude_channel::presentation_allowed(tools, value.get("_presentation"), batch, revision)
+    }).await?;
     if !allowed {
-        let out=json!({"state":"NOTIFICATION_SUPERSEDED","next_action":"CHECK_DELIVERY_CONTROL_BEFORE_REARMING","effect_certainty":"NOT_SUBMITTED"});
-        response["result"]["content"]=json!([{"type":"text","text":out.to_string()}]);
-        response["result"]["structuredContent"]=out;
+        return Ok(json!({"state":"NOTIFICATION_SUPERSEDED","next_action":"CHECK_DELIVERY_CONTROL_BEFORE_REARMING","effect_certainty":"NOT_SUBMITTED"}));
     }
-    // Internal admission context must never appear in the host-visible result,
-    // including its duplicate text representation.
-    strip_presentation(response);
-    Ok(())
-}
-
-fn strip_presentation(response:&mut Value) {
-    if let Some(value)=response["result"]["structuredContent"].as_object_mut() {value.remove("_presentation");}
-    response["result"]["content"]=json!([{"type":"text","text":response["result"]["structuredContent"].to_string()}]);
+    state.scope_observed(alias, &value);
+    // Both MCP result representations are produced from this sanitized value.
+    value.as_object_mut().unwrap().remove("_presentation");
+    Ok(value)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn activation_is_not_disclosed_in_either_background_result_representation() {
-        let private=json!({"format":"peerwork.background-notification.v1","batch":"original","_presentation":{"scope":"space","activation":{"operation_id":"private-decision","generation":2,"target":{"private":"host-target"}}}});
-        let mut response=json!({"result":{"content":[{"type":"text","text":private.to_string()}],"structuredContent":private}});
-        strip_presentation(&mut response);
-        assert_eq!(response["result"]["structuredContent"]["batch"],"original");
-        let wire=response.to_string();
-        assert!(!wire.contains("_presentation"));assert!(!wire.contains("private-decision"));assert!(!wire.contains("host-target"));
+    #[tokio::test]
+    async fn admission_retry_respects_pause_and_replacement() {
+        for final_result in [Ok(true), Ok(false), Err(ParticipantError::local("PRESENTATION_ACTIVATION_SUPERSEDED", "LOCAL_IPC"))] {
+            let state = claude_channel::State::default();
+            let mut results = [Err(ParticipantError::local("IPC_OBSERVATION_TIMEOUT", "LOCAL_IPC")), final_result.clone()].into_iter();
+            let observed = tokio::time::timeout(Duration::from_secs(5), retry_same_target("space", &state, || {
+                std::future::ready(results.next().expect("at most one retry"))
+            })).await.unwrap();
+            assert_eq!(observed.map_err(|error| error.code), final_result.map_err(|error| error.code));
+            assert!(results.next().is_none());
+        }
     }
     #[tokio::test]
     async fn background_wait_returns_only_a_compact_reference_not_peer_body_or_authority() {
@@ -267,7 +271,7 @@ mod tests {
     async fn opened_listener_waits_for_the_existing_owner_to_release_its_guard() {
         let state = claude_channel::State::default();
         let mut attempts = 0;
-        let result = tokio::time::timeout(Duration::from_secs(5), open_when_available("space", &state, || {
+        let result = tokio::time::timeout(Duration::from_secs(5), retry_same_target("space", &state, || {
             attempts += 1;
             let first = attempts == 1;
             async move {

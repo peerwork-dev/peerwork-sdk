@@ -2,6 +2,10 @@
 use serde_json::{json, Value};
 pub(crate) const FRESH_MS: u64 = 10_000;
 
+pub(crate) fn mcp_transport(transport: &str) -> bool {
+    matches!(transport, "MCP_STDIO_CHANNEL" | "MCP_BACKGROUND_TOOL")
+}
+
 pub(crate) fn evaluate(receiver: &Value, notification: &Value, transport: &str, health: &Value) -> Value {
     let linked=receiver["receiver_link_verified"]==true && receiver["state"]=="RECEIVER_LINK_VERIFIED" && receiver["verification_failure"].is_null();
     let body=&receiver["presence"];let keys=body["key_current"]==true && matches!(body["body_key"]["state"].as_str(),Some("READY"|"NOT_REQUIRED"));
@@ -12,8 +16,12 @@ pub(crate) fn evaluate(receiver: &Value, notification: &Value, transport: &str, 
     let fresh=age.is_some_and(|age|age<FRESH_MS);
     let host_code=health["code"].as_str().or_else(||health["reason"].as_str());
     let blocked=matches!(health["state"].as_str(),Some("BLOCKED"|"FAILED"|"STOPPED"|"RECONNECTING")) || health["ready"]==false && health["can_attempt"]!=true;
-    let capable=if transport=="MCP_STDIO_CHANNEL" {
-        fresh && !matches!(health["state"].as_str(),None|Some("UNKNOWN"|"BLOCKED"|"STARTING"|"STOPPED"|"RECOVERING"|"WAITING_HOST"))
+    let background = transport == "MCP_BACKGROUND_TOOL";
+    let waiting_read = background && health["notification_read_pending"] == true;
+    let needs_listener = background && health["code"] == "BACKGROUND_LISTEN_NOT_ARMED";
+    let capable=if mcp_transport(transport) {
+        fresh && !waiting_read && !needs_listener
+            && !matches!(health["state"].as_str(),None|Some("UNKNOWN"|"BLOCKED"|"STARTING"|"STOPPED"|"RECOVERING"|"WAITING_HOST"))
     } else { fresh && (health["ready"]==true || health["can_attempt"]==true) };
     let (state,code)=if receiver["state"]=="LOCAL_STOPPED" {("STOPPED","RECEIVER_STOPPED")}
         else if automatic && control==Some("PAUSED") {("PAUSED","DELIVERY_PAUSED")}
@@ -25,10 +33,12 @@ pub(crate) fn evaluate(receiver: &Value, notification: &Value, transport: &str, 
         else if health["state"]=="RECOVERING" {("RECOVERING",host_code.unwrap_or("HOST_RECONNECTING"))}
         else if health["state"]=="WAITING_HOST" {("WAITING_HOST",host_code.unwrap_or("HOST_NOT_READY"))}
         else if blocked {("BLOCKED",host_code.unwrap_or("HOST_NOT_READY"))}
+        else if waiting_read {("WAITING_HOST","BACKGROUND_NOTIFICATION_READ_PENDING")}
+        else if needs_listener {("WAITING_HOST","BACKGROUND_LISTEN_NOT_ARMED")}
         else if !capable {("UNKNOWN",host_code.unwrap_or("CURRENT_TRANSPORT_OBSERVATION_UNAVAILABLE"))}
         // Only the active Channel frontend can qualify its own session. Native
         // setup observations still describe their original local inbox proof.
-        else if transport=="MCP_STDIO_CHANNEL" && health.get("session_receiving").is_some() && health["session_receiving"]!="VERIFIED" {("VERIFYING","CURRENT_CHANNEL_READ_NOT_OBSERVED")}
+        else if mcp_transport(transport) && health.get("session_receiving").is_some() && health["session_receiving"]!="VERIFIED" {("VERIFYING","CURRENT_CHANNEL_READ_NOT_OBSERVED")}
         else if !verified {("VERIFYING","DELIVERY_SELF_TEST_PENDING")}
         else {("READY","READY")};
     json!({"state":state,"code":code,"receiver_link_verified":linked,"body_keys_ready":keys,
@@ -36,7 +46,7 @@ pub(crate) fn evaluate(receiver: &Value, notification: &Value, transport: &str, 
         "retry_at_ms":health["retry_at_ms"],"failure":health["failure"],"phase":health["phase"],"observation_age_ms":age,
         "automatic_receiving":if !automatic{"NOT_CONFIGURED"}else if state=="READY"{"VERIFIED"}else{state},
         "last_verified_at":notification["last_verified_at"],"verification_evidence":"BOUND_LOCAL_INBOX_READ",
-        "verification_scope":"HISTORICAL_SELECTED_DESTINATION","acceptance":if !automatic{"LOCAL_INBOX"}else if transport=="MCP_STDIO_CHANNEL"{"CHANNEL_OUTPUT"}else if health["can_attempt"]==true && health["ready"]!=true{"QUEUED_ONLY"}else{"HOST_INPUT_CAPABILITY"},"model_response":"NOT_ATTESTED",
+        "verification_scope":"HISTORICAL_SELECTED_DESTINATION","acceptance":if !automatic{"LOCAL_INBOX"}else if background{"BACKGROUND_TOOL_OUTPUT"}else if transport=="MCP_STDIO_CHANNEL"{"CHANNEL_OUTPUT"}else if health["can_attempt"]==true && health["ready"]!=true{"QUEUED_ONLY"}else{"HOST_INPUT_CAPABILITY"},"model_response":"NOT_ATTESTED",
         "recovery":if matches!(state,"BLOCKED"|"RECOVERING"|"WAITING_HOST"){crate::host_recovery_policy::diagnostic(code)}else{Value::Null},
         "next_action":match state {"READY"=>"CONTINUE_COLLABORATION","PAUSED"=>"RESUME_WHEN_REQUESTED","STOPPED"=>"RESTART_ORIGINAL_RECEIVER_WHEN_REQUESTED","VERIFYING" if code=="CURRENT_CHANNEL_READ_NOT_OBSERVED"=>"OBSERVE_CURRENT_CHANNEL_BATCH_OR_RUN_DELIVERY_SELF_TEST","VERIFYING"=>"OBSERVE_EXISTING_SELF_TEST",_=>crate::host_recovery_policy::action(code)}})
 }

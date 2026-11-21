@@ -51,9 +51,10 @@ cannot use this indefinitely waiting tool in foreground.
 2. On completion, read the returned `read.arguments` with `peerwork_inbox`. Only
    the compact reference is in the notification; bodies stay in the native inbox
    until that bounded read.
-3. Rearm `peerwork_listen` after the successful batch read, before long work or
-   leaving the conversation idle. A call completes after one notification;
-   reading it acknowledges that notification without consuming the work.
+3. Rearm `peerwork_listen` with the returned `rearm.arguments` after the successful
+   batch read and before handling the work. This preserves the original scope
+   selection. A call completes after one notification. Reading the batch
+   acknowledges the notification without consuming the work.
 4. Handle the request and explicitly consume handled item references. For long
    work, acknowledge the next step and continue with the listener already armed.
    Self-tests need only the indicated inbox read and rearming.
@@ -77,12 +78,19 @@ listener is armed, and this connection's observed batch read. A previously
 verified native inbox or another session's read does not qualify this connection.
 Use a real second-Peer message and reply to test the service path separately.
 
-`WAITING_FOR_SESSION_READ` means Peerwork wrote a completion to this MCP
-connection and is waiting for the conversation to read its batch. If that
-completion does not reach the conversation, refresh the original MCP entry in
-AGY and arm the listener again. If the batch was read and the listener has not
-rearmed, status reports `BACKGROUND_LISTEN_NOT_ARMED`. A business reply is a
-separate observation. Keep any working App or managed host delivery binding.
+`peerwork_delivery` status reports the loaded frontend and runtime versions.
+Once this connection has armed the background listener, it also reports whether
+that listener is armed and whether a notification is waiting for a batch read.
+`RECOVERING` with an armed listener lets the same call retry a transient error.
+`BACKGROUND_NOTIFICATION_READ_PENDING` means Peerwork wrote a completion to
+this connection and is waiting for the conversation to read its batch.
+`BACKGROUND_LISTEN_NOT_ARMED` means the current conversation should rearm once.
+
+If the installed frontend is newer than the version reported by the current
+conversation, refresh the original Peerwork entry in AGY's `/mcp` manager.
+Then arm it once and run a fresh self-test. Keep a compatible runtime running.
+If a completion stays unread despite reaching MCP, inspect or refresh that
+entry through the same manager. Keep any working App or managed host binding.
 
 Managed AGY stdio and AGY App input remain supported separately. Managed stdio
 owns a stream-json child; it is not an attachment to an existing interactive

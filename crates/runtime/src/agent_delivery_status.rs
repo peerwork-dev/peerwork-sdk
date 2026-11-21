@@ -19,6 +19,14 @@ fn current(at: &Value, now: i64) -> bool {
     at.as_i64().is_some_and(|at| at <= now && now.saturating_sub(at) < 10_000)
 }
 
+fn projection_transport(channel: &Value) -> &'static str {
+    if channel["transport"] == "MCP_BACKGROUND_TOOL" {
+        "MCP_BACKGROUND_TOOL"
+    } else {
+        "MCP_STDIO_CHANNEL"
+    }
+}
+
 pub(crate) fn refresh(context: &mut Value) {
     refresh_at(context, crate::participant_store::now());
 }
@@ -36,9 +44,14 @@ fn refresh_at(context: &mut Value, now: i64) {
             let notification = source.map(|v|v["notification"].clone()).unwrap_or(Value::Null);
             let candidate = &context["host_channel"]["scopes"][alias];
             let channel_matches = candidate["binding"] == expected;
-            let channel = if channel_matches && candidate["observation_age_ms"].as_u64().is_some_and(|age|age<10_000) {
+            let projection = projection_transport(&context["host_channel"]);
+            let local_handoff = projection == "MCP_BACKGROUND_TOOL"
+                && (candidate["notification_read_pending"] == true
+                    || candidate["code"] == "BACKGROUND_LISTEN_NOT_ARMED");
+            let channel = if channel_matches && (local_handoff || candidate["observation_age_ms"].as_u64().is_some_and(|age|age<10_000)) {
                 json!({"state":candidate["state"],"code":candidate["code"],"observation_age_ms":candidate["observation_age_ms"],"session_receiving":candidate["session_receiving"],
-                    "retry_at_ms":candidate["retry_at_ms"],"failure":candidate["failure"]})
+                    "retry_at_ms":candidate["retry_at_ms"],"failure":candidate["failure"],
+                    "listener_armed":candidate["listener_armed"],"notification_read_pending":candidate["notification_read_pending"]})
             } else { json!({"state":"UNKNOWN","reason":if candidate.is_null(){"NOT_OBSERVED"}else if !channel_matches{"BINDING_MISMATCH"}else{"STALE_OBSERVATION"}}) };
             let selected_binding=observation.map(|v|v["binding"].clone()).unwrap_or(Value::Null);
             let hosts=context["host_status"]["hosts"].as_array().map(Vec::as_slice).unwrap_or(&[]);
@@ -46,8 +59,8 @@ fn refresh_at(context: &mut Value, now: i64) {
             let mut host=selected_host.clone().unwrap_or_else(||json!({"state":"UNKNOWN","reason":"EXACT_HOST_NOT_OBSERVED"}));
             host["observation"]=if host["host_observation"]["observation_age_ms"].as_u64().is_some_and(|age|age<crate::delivery_health::FRESH_MS){host["host_observation"].clone()}else{json!({"state":"UNKNOWN","reason":"FRESH_OBSERVATION_UNAVAILABLE"})};
             let transport=if selected_binding["host_destination"].is_string(){"HOST_PUSH"}
-                else if channel_matches || source.is_some_and(|v|v["transport"]=="MCP_STDIO_CHANNEL"){"MCP_STDIO_CHANNEL"}else{"NATIVE_INBOX"};
-            let health=if transport=="MCP_STDIO_CHANNEL"&&!candidate.is_null(){channel.clone()}
+                else if channel_matches || source.is_some_and(|v|v["transport"].as_str().is_some_and(crate::delivery_health::mcp_transport)){projection}else{"NATIVE_INBOX"};
+            let health=if crate::delivery_health::mcp_transport(transport)&&!candidate.is_null(){channel.clone()}
                 else if let Some(host)=selected_host.as_ref(){crate::delivery_health::host_observation(host)}
                 else{source.map(|v|v["transport_health"].clone()).unwrap_or_else(||json!({"state":"UNKNOWN"}))};
             let mut current=crate::delivery_health::evaluate(&receiver,&notification,transport,&health);
@@ -76,23 +89,30 @@ fn refresh_at(context: &mut Value, now: i64) {
         "setups":setups,"setup_state_changed":false,"model_response":"NOT_ATTESTED"});
 }
 
-/// The Claude frontend can refine the runtime's local polling observation with
-/// its exact selected Channel projection. No extra runtime or service request.
+/// The frontend refines the runtime observation with its exact MCP connection
+/// and selected source. No extra runtime or service request.
 pub(crate) fn refresh_delivery(value:&mut Value, channel:&Value) {
     let identity=json!({"actor_id":value["actor_id"],"origin":value["origin"]});
+    let transport = projection_transport(channel);
+    let mut pending_read = false;
     if let Some(observations)=value["observations"].as_array_mut(){for observation in observations {
         if observation["transport"]=="HOST_PUSH"{continue;}
         let projects=channel["scopes"].as_object().is_some_and(|scopes|scopes.values().any(|candidate|same_scope(&candidate["binding"],&observation["binding"])));
-        if observation["transport"]!="MCP_STDIO_CHANNEL"&&!projects{continue;}
-        observation["transport"]=json!("MCP_STDIO_CHANNEL");
+        if !observation["transport"].as_str().is_some_and(crate::delivery_health::mcp_transport)&&!projects{continue;}
+        observation["transport"]=json!(transport);
         let mut context=identity.clone();context["receiving_binding"]=observation["receiving_binding"].clone();
         let expected=binding(&context,&observation["binding"]);
         let candidate=channel["scopes"].as_object().and_then(|scopes|scopes.values().find(|candidate|candidate["binding"]==expected));
         let health=candidate.cloned().unwrap_or_else(||json!({"state":"UNKNOWN","reason":"CHANNEL_SOURCE_NOT_OBSERVED"}));
-        let current=crate::delivery_health::evaluate(&observation["receiver"],&observation["notification"],"MCP_STDIO_CHANNEL",&health);
+        pending_read |= health["notification_read_pending"] == true;
+        let current=crate::delivery_health::evaluate(&observation["receiver"],&observation["notification"],transport,&health);
         observation["current_delivery"]=current.clone();observation["transport_health"]=health;
         crate::delivery_health::annotate_notification(&mut observation["notification"],&current);
     }}
+    if transport == "MCP_BACKGROUND_TOOL" {
+        value["listener_armed"] = channel["listener_armed"].clone();
+        value["notification_read_pending"] = json!(pending_read);
+    }
     // Keep destination control and current readiness separate, but coherent.
     if let Some(destinations)=value["destinations"].as_array().cloned(){
         value["destinations"]=json!(destinations.into_iter().map(|mut destination|{
@@ -202,4 +222,39 @@ mod tests {
         assert_eq!(delivery["state"],"UNKNOWN");assert_eq!(delivery["observations"][0]["transport"],"MCP_STDIO_CHANNEL");
     }
 
+    #[test]
+    fn background_delivery_reports_unread_and_unarmed_before_ready() {
+        let context = context();
+        let mut delivery = json!({
+            "actor_id":context["actor_id"], "origin":context["origin"],
+            "observations":context["delivery_observations"]["observations"],
+        });
+        delivery["observations"][0]["receiving_binding"] = context["receiving_binding"].clone();
+        let mut projection = json!({"transport":"MCP_BACKGROUND_TOOL","listener_armed":false,"scopes":{"space":{
+            "binding":binding(&context, &context["scopes"]["space"]),
+            "state":"WAITING_FOR_SESSION_READ", "notification_read_pending":true,
+            "observation_age_ms":0, "session_receiving":"VERIFIED",
+        }}});
+        refresh_delivery(&mut delivery, &projection);
+        assert_eq!(delivery["notification_read_pending"], true);
+        assert_eq!(delivery["listener_armed"], false);
+        assert_eq!(delivery["state"], "WAITING_HOST");
+        assert_eq!(delivery["next_action"], "WAIT_FOR_CURRENT_SESSION_BATCH_READ");
+        assert_eq!(delivery["observations"][0]["transport"], "MCP_BACKGROUND_TOOL");
+
+        let scope = &mut projection["scopes"]["space"];
+        scope["notification_read_pending"] = json!(false);
+        scope["state"] = json!("UNKNOWN");
+        scope["code"] = json!("BACKGROUND_LISTEN_NOT_ARMED");
+        refresh_delivery(&mut delivery, &projection);
+        assert_eq!(delivery["next_action"], "REARM_BACKGROUND_LISTENER_IN_CURRENT_SESSION");
+        assert_eq!(delivery["notification_read_pending"], false);
+
+        projection["listener_armed"] = json!(true);
+        projection["scopes"]["space"]["state"] = json!("WAITING_NATIVE_INBOX");
+        projection["scopes"]["space"]["code"] = Value::Null;
+        refresh_delivery(&mut delivery, &projection);
+        assert_eq!(delivery["state"], "READY");
+        assert_eq!(delivery["listener_armed"], true);
+    }
 }

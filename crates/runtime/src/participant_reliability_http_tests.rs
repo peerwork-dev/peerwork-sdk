@@ -620,7 +620,8 @@ impl BackgroundFixture {
         Self{cohort,scope,mailbox,profile,client,stop,task}
     }
     async fn send(&self,text:&str){
-        let request=native_message("native-background-message",&self.scope,&self.mailbox,&self.mailbox,&"v".repeat(43),text);
+        let operation = format!("native-background-{}", &peerwork_core::crypto::sha256_hex(text.as_bytes())[..16]);
+        let request=native_message(&operation,&self.scope,&self.mailbox,&self.mailbox,&"v".repeat(43),text);
         let value=self.client.call(json!({"method":"invoke","request":request,"wait_ms":5000})).await.unwrap();
         assert_eq!(value["state"],"ACCEPTED","{value}");
     }
@@ -720,16 +721,25 @@ async fn selected_real_agy_background_fixture() {
         setup.cohort.service.config(json!({"offline":false})).await;
     }
     setup.send("PW-NATIVE-AGY-BACKGROUND-EVENT").await;
+    let two_messages = std::env::var_os("PEERWORK_AGY_BACKGROUND_TWO_MESSAGES").is_some();
+    if two_messages {
+        tokio::time::timeout(Duration::from_secs(90), async {
+            while !directory.join("second-trigger").is_file() {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        }).await.unwrap();
+        setup.send("PW-NATIVE-AGY-BACKGROUND-SECOND-EVENT").await;
+    }
     tokio::time::timeout(Duration::from_secs(100),async {
         while !directory.join("finish").is_file(){tokio::time::sleep(Duration::from_millis(25)).await;}
     }).await.unwrap();
     let active=tools.call(crate::agent_tools::AgentRequest::parse("inbox",json!({"view":"active","scope":"main","limit":2})).unwrap()).await.unwrap();
-    assert_eq!(active["items"].as_array().unwrap().len(),1,"host tool reads must not consume work implicitly");
+    assert_eq!(active["items"].as_array().unwrap().len(),if two_messages { 2 } else { 1 },"host tool reads must not consume work implicitly");
     assert!(active["items"].as_array().unwrap().iter().all(|item|item["state"]=="PENDING"));
     let binding=setup.client.call(json!({"method":"binding"})).await.unwrap();
     let key=peerwork_core::crypto::sha256_hex(json!([binding["origin"],binding["actor_id"],binding["namespace"],"CLAUDE_CHANNEL"]).to_string().as_bytes());
     let hub=crate::communication_notifications::Hub::open(&directory.join("runtime")).unwrap();
-    assert!(hub.store.status(&key).unwrap()["retained_batches"].as_u64().unwrap()>=2,"the host must actually read the new opaque batch");
+    assert!(hub.store.status(&key).unwrap()["retained_batches"].as_u64().unwrap()>=if two_messages { 3 } else { 2 },"the host must actually read the new opaque batches");
     assert!(hub.store.current(&key).unwrap().is_none(),"host output alone is not notification observation");
     drop(tools);setup.finish().await;
     let result = json!({"state":"PASS","ingestion":"REAL_LOCAL_PRODUCT_HTTP_SYNTHETIC_DATA",

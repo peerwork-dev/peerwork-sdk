@@ -201,7 +201,7 @@ where R:AsyncBufRead+Send+Unpin+'static,W:AsyncWrite+Unpin {
             }
         }
     });
-    let mut jobs: JoinSet<(String, Value)> = JoinSet::new();
+    let mut jobs: JoinSet<(String, Value, Option<tokio::sync::OwnedSemaphorePermit>)> = JoinSet::new();
     let mut calls: BTreeMap<String, AbortHandle> = BTreeMap::new();
     let mut ids: HashMap<tokio::task::Id, String> = HashMap::new();
     let mut cancelled = BTreeSet::new();
@@ -227,15 +227,14 @@ where R:AsyncBufRead+Send+Unpin+'static,W:AsyncWrite+Unpin {
             },
             joined=jobs.join_next_with_id(),if !jobs.is_empty()=>if let Some(joined)=joined{
                 match joined{
-                    Ok((task,(id,mut response)))=>{ids.remove(&task);if calls.remove(&id).is_some()&&!cancelled.remove(&id){
-                        if let Err(error)=background_listener::admit(&tools,&background_state,&mut response).await {
-                            let out=json!({"error":error});
-                            response["result"]["content"]=json!([{"type":"text","text":out.to_string()}]);
-                            response["result"]["structuredContent"]=out;
-                            response["result"]["isError"]=json!(true);
+                    Ok((task, (id, response, listener_permit))) => {
+                        ids.remove(&task);
+                        if calls.remove(&id).is_some() && !cancelled.remove(&id) {
+                            write(&mut writer, response.clone()).await?;
+                            background_state.written(&response);
                         }
-                        write(&mut writer,response.clone()).await?;background_state.written(&response);
-                    }},
+                        drop(listener_permit);
+                    },
                     Err(error)=>{if let Some(id)=ids.remove(&error.id()){if calls.remove(&id).is_some()&&!cancelled.remove(&id){let value=serde_json::from_str(&id).unwrap_or(Value::Null);write(&mut writer,error_response(value,"MCP_OBSERVATION_ABORTED")).await?;}}},
                 }
             },
@@ -315,9 +314,15 @@ where R:AsyncBufRead+Send+Unpin+'static,W:AsyncWrite+Unpin {
                         let background_state=background_state.clone();
                         let original=arguments["operation_id"].as_str().map(str::to_owned);let tools=tools.clone();let task_key=id_key.clone();
                         let handle=jobs.spawn(async move{
-                            let result=match request {
-                                AgentRequest::Listen{scope} if !claude=>background_state.listen(tools.clone(),scope).await,
-                                request=>tools.call(request).await,
+                            let mut listener_permit = None;
+                            let result = match request {
+                                AgentRequest::Listen{scope} if !claude => {
+                                    background_state.listen(tools.clone(), scope).await.map(|(value, permit)| {
+                                        listener_permit = Some(permit);
+                                        value
+                                    })
+                                }
+                                request => tools.call(request).await,
                             };
                             let (out,is_error)=match result{
                                 Ok(mut value)=>{let projection=if claude{channel_state.status()}else{background_state.status()};
@@ -328,7 +333,7 @@ where R:AsyncBufRead+Send+Unpin+'static,W:AsyncWrite+Unpin {
                                 Err(mut e)=>{if let Some(diagnostic)=&e.local_diagnostic{eprintln!("Peerwork local diagnostic: {diagnostic}");}if e.operation_id.is_none(){e.operation_id=original;}(json!({"error":e}),true)},
                             };
                             let result=json!({"content":[{"type":"text","text":out.to_string()}],"structuredContent":out,"isError":is_error});
-                            (task_key,success(id,result,modern))
+                            (task_key,success(id,result,modern),listener_permit)
                         });
                         ids.insert(handle.id(),id_key.clone());calls.insert(id_key,handle);
                     },
