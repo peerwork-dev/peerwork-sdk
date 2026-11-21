@@ -298,8 +298,7 @@ impl Store {
         })
     }
 
-    /// Called only for a Bridge result already authenticated and bound to this
-    /// delivery attempt by the host adapter.
+    /// Called for a Bridge result already authenticated and bound to the attempt.
     pub(crate) fn record_replay_block(&self, owner: &str, wake: &Wake, outcome: &Value) -> Result<()> {
         if outcome["replay_blocked"] != true {
             return Ok(());
@@ -310,12 +309,26 @@ impl Store {
             Some("RESULT_UNKNOWN") => ReplayBlocked::ResultUnknown,
             _ => return Ok(()),
         };
+        self.set_replay_block(owner, wake, Some(disposition))
+    }
+
+    /// Record possible input before calling an owned host without input-ID lookup.
+    pub(crate) fn protect_owned_input(&self, owner: &str, wake: &Wake) -> Result<()> {
+        self.set_replay_block(owner, wake, Some(ReplayBlocked::ResultUnknown))
+    }
+
+    /// An adapter that established no input IO can retry the same batch.
+    pub(crate) fn release_unwritten_input(&self, owner: &str, wake: &Wake) -> Result<()> {
+        self.set_replay_block(owner, wake, None)
+    }
+
+    fn set_replay_block(&self, owner: &str, wake: &Wake, disposition: Option<ReplayBlocked>) -> Result<()> {
         self.transaction(owner, |s| {
             if s.revision == wake.revision && s.active.as_deref() == Some(wake.batch.as_str()) {
                 if let Some(batch) = s.batches.iter_mut().find(|b| {
                     b.wake.batch == wake.batch && b.wake.attempt == wake.attempt
                 }) {
-                    batch.replay_blocked = Some(disposition);
+                    batch.replay_blocked = disposition;
                 }
             }
             Ok(())

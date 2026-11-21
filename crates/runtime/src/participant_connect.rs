@@ -2098,6 +2098,13 @@ pub fn cli(args: &[String]) -> Value {
                             &request.workspace_id,
                             spec
                         ));
+                        if adapter["stdio_protocol"] == "acp" {
+                            adapter["acp_client"] = json!({
+                                "registry": connect.directory,
+                                "participant": handle,
+                                "workspace": request.workspace_id,
+                            });
+                        }
                     }
                 }
                 let name = request.host.clone().unwrap_or_else(|| {

@@ -92,6 +92,28 @@ Then arm it once and run a fresh self-test. Keep a compatible runtime running.
 If a completion stays unread despite reaching MCP, inspect or refresh that
 entry through the same manager. Keep any working App or managed host binding.
 
-Managed AGY stdio and AGY App input remain supported separately. Managed stdio
-owns a stream-json child; it is not an attachment to an existing interactive
-terminal. See [host recovery](host-bridge-recovery.md).
+## Resume an explicitly managed AGY session
+
+For a newly selected managed binding, Connect uses AGY's ACP `session/resume`
+with the original session ID and project directory:
+
+```sh
+peerwork connect --workspace WORKSPACE_ID --agy-managed \
+  --agy-executable /absolute/path/to/agy --agy-conversation ORIGINAL_SESSION_ID \
+  --project /absolute/path/to/project --install agy
+```
+
+Use an AGY build that advertises ACP session resume and an authenticated host
+account with writable AGY state. The managed process owns the selected session
+while running. Release any previous owner using the host's ordinary lifecycle
+before transferring control. The exact native MCP registration follows the
+selected original Peer and Workspace. Managed ACP permits the selected native
+MCP tools for the active turn through the host's one-time approval; other tools
+keep their normal host restrictions. Existing working stream-json and AGY App
+bindings retain their selected adapter. See [host recovery](host-bridge-recovery.md).
+
+Host acceptance starts an ACP prompt for the selected session. A read of the
+exact inbox reference independently confirms notification delivery. An uncertain
+host result leaves its original message readable and allows a later message to
+advance after backoff. Use a second Peer's new signed message after restart to
+verify the session you are relying on.

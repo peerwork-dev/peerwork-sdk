@@ -1,11 +1,11 @@
-//! Explicitly owned AGY stream-json process. One launch per bridge lifecycle;
-//! no process/model is started by delivery or automatic reconnect.
+//! Explicitly owned AGY process with a pinned conversation and launch fence.
 use super::{text, R};
 use crate::secure_state::SecureStateStore;
 use serde_json::{json, Value};
 use std::{
     path::Path,
     process::Stdio,
+    sync::Arc,
     time::{Duration, Instant},
 };
 use tokio::{
@@ -15,12 +15,16 @@ use tokio::{
     sync::mpsc::{self, Receiver},
     task::JoinHandle,
 };
+#[path = "communication_agy_acp.rs"]
+mod acp;
+
 const MAX_EVENT: u64 = 2 * 1024 * 1024;
 #[derive(Debug)]
 enum Event {
     Init(String),
     Input(String, u64),
     Result(String),
+    Acp(acp::Event),
     Ignore,
 }
 fn event(value: &Value) -> R<Event> {
@@ -63,8 +67,11 @@ pub(super) struct AgyStdio {
     awaiting_input: bool,
     last_delivery: Option<(String,String,Option<Value>)>,
     aggregate: Option<super::operation::Budget>,
+    acp: Option<Arc<acp::Session>>,
+    acp_prompt: Option<u64>,
+    acp_next_id: u64,
 }
-fn session_tool_settings(config: &Value) -> R<Option<String>> {
+fn mcp_server(config: &Value) -> R<Option<&str>> {
     let Some(server) = config.get("mcp_server") else {
         return Ok(None);
     };
@@ -75,6 +82,12 @@ fn session_tool_settings(config: &Value) -> R<Option<String>> {
     if suffix.len() != 16 || !suffix.bytes().all(|v| v.is_ascii_hexdigit()) {
         return Err("HOST_CONFIG_INVALID");
     }
+    Ok(Some(suffix))
+}
+
+fn session_tool_settings(config: &Value) -> R<Option<String>> {
+    let Some(suffix) = mcp_server(config)? else { return Ok(None); };
+    let server = format!("peerwork-{suffix}");
     let allow: Vec<_> = crate::agent_tools::catalog()
         .iter()
         .map(|tool| {
@@ -112,7 +125,12 @@ impl AgyStdio {
         {
             return Err("HOST_CONFIG_INVALID");
         }
-        let settings = session_tool_settings(config)?;
+        let acp = match config.get("stdio_protocol") {
+            Some(protocol) if protocol == "acp" => Some(Arc::new(acp::Session::new(config, conversation, working)?)),
+            None if config.get("acp_client").is_none() => None,
+            _ => return Err("HOST_CONFIG_INVALID"),
+        };
+        let settings = if acp.is_none() { session_tool_settings(config)? } else { None };
         let fence_path = text(config, "launch_fence")?;
         if !Path::new(fence_path).is_absolute() {
             return Err("HOST_CONFIG_INVALID");
@@ -150,18 +168,16 @@ impl AgyStdio {
             .map_err(|_| "HOST_STATE_FAILED")?;
         let entered = executor.enter();
         let mut command = Command::new(executable);
-        command.args([
-            "--conversation",
-            conversation,
-            "--add-dir",
-            working,
-            "--input-format",
-            "stream-json",
-            "--output-format",
-            "stream-json",
-        ]);
-        if let Some(settings) = settings {
-            command.args(["--settings", &settings]);
+        if acp.is_some() {
+            command.args(["acp", "--disable-telemetry"]);
+        } else {
+            command.args([
+                "--conversation", conversation, "--add-dir", working,
+                "--input-format", "stream-json", "--output-format", "stream-json",
+            ]);
+            if let Some(settings) = settings {
+                command.args(["--settings", &settings]);
+            }
         }
         if aggregate.as_ref().is_some_and(|b|b.remaining().is_err()){
             fence.write_exact(json!({"format":"peerwork.agy-stdio-launch.v2","state":"STOPPED","conversation_id":conversation,"input_attempted":false}).to_string().as_bytes()).map_err(|_|"HOST_STATE_FAILED")?;
@@ -194,8 +210,10 @@ impl AgyStdio {
         let input = child.stdin.take().ok_or("HOST_STATE_INVALID")?;
         let output = child.stdout.take().ok_or("HOST_STATE_INVALID")?;
         let (tx, rx) = mpsc::channel(8);
+        let acp_reader = acp.clone();
         let reader = executor.spawn(async move {
             let mut reader = BufReader::new(output);
+            let mut acp_turn_started = false;
             loop {
                 let mut bytes = Vec::new();
                 let read: R<()> = async {
@@ -220,8 +238,20 @@ impl AgyStdio {
                 let value = read.and_then(|_| {
                     serde_json::from_slice::<Value>(&bytes)
                         .map_err(|_| "HOST_RESPONSE_INVALID")
-                        .and_then(|v| event(&v))
+                        .and_then(|value| match &acp_reader {
+                            Some(acp) => acp.event(&value).map(|event| match event {
+                                acp::Event::Ignore => Event::Ignore,
+                                event => Event::Acp(event),
+                            }),
+                            None => event(&value),
+                        })
                 });
+                match &value {
+                    Ok(Event::Acp(acp::Event::TurnUpdate)) if acp_turn_started => continue,
+                    Ok(Event::Acp(acp::Event::TurnUpdate)) => acp_turn_started = true,
+                    Ok(Event::Acp(acp::Event::Resumed(_) | acp::Event::TurnEnd(..))) => acp_turn_started = false,
+                    _ => (),
+                }
                 if matches!(value, Ok(Event::Ignore)) {
                     continue;
                 }
@@ -250,24 +280,72 @@ impl AgyStdio {
             awaiting_input: false,
             last_delivery: None,
             aggregate,
+            acp,
+            acp_prompt: None,
+            acp_next_id: acp::RESUME + 1,
         };
-        match host.next(Instant::now() + Duration::from_secs(30))? {
-            Event::Init(id) if id == host.conversation => Ok(host),
-            _ => Err("HOST_BINDING_MISMATCH"),
+        let deadline = Instant::now() + Duration::from_secs(30);
+        if let Some(acp) = host.acp.clone() {
+            host.write(&acp.initialize(), deadline)?;
+            match host.next(deadline)? {
+                Event::Acp(acp::Event::Initialized(result)) => result?,
+                _ => return Err("AGY_ACP_RESUME_UNSUPPORTED"),
+            }
+            host.write(&acp.resume(), deadline)?;
+            match host.next(deadline)? {
+                Event::Acp(acp::Event::Resumed(result)) => result?,
+                _ => return Err("AGY_ACP_ORIGINAL_SESSION_UNAVAILABLE"),
+            }
+        } else if !matches!(host.next(deadline)?, Event::Init(id) if id == host.conversation) {
+            return Err("HOST_BINDING_MISMATCH");
         }
+        Ok(host)
+    }
+    fn write(&mut self, value: &Value, deadline: Instant) -> R<()> {
+        let deadline = self.aggregate.as_ref().map_or(deadline, |budget| deadline.min(budget.deadline()));
+        let mut bytes = serde_json::to_vec(value).map_err(|_| "HOST_INPUT_INVALID")?;
+        bytes.push(b'\n');
+        let input = self.input.as_mut().ok_or("HOST_DISCONNECTED")?;
+        let timeout = deadline.checked_duration_since(Instant::now()).ok_or("HOST_ACK_UNKNOWN")?;
+        self.executor.block_on(async {
+            tokio::time::timeout(timeout, input.write_all(&bytes))
+                .await.map_err(|_| "HOST_ACK_UNKNOWN")?.map_err(|_| "HOST_ACK_UNKNOWN")
+        })
     }
     fn next(&mut self, deadline: Instant) -> R<Event> {
         let deadline=self.aggregate.as_ref().map(|b|deadline.min(b.deadline())).unwrap_or(deadline);
-        let timeout = deadline
-            .checked_duration_since(Instant::now())
-            .ok_or("HOST_ACK_UNKNOWN")?;
-        let events = self.events.as_mut().ok_or("HOST_DISCONNECTED")?;
-        self.executor.block_on(async {
-            tokio::time::timeout(timeout, events.recv())
-                .await
-                .map_err(|_| "HOST_ACK_UNKNOWN")?
-                .ok_or("HOST_DISCONNECTED")?
-        })
+        loop {
+            let timeout = deadline.checked_duration_since(Instant::now()).ok_or("HOST_ACK_UNKNOWN")?;
+            let events = self.events.as_mut().ok_or("HOST_DISCONNECTED")?;
+            let event = self.executor.block_on(async {
+                tokio::time::timeout(timeout, events.recv()).await.map_err(|_| "HOST_ACK_UNKNOWN")?
+                    .ok_or("HOST_DISCONNECTED")?
+            })?;
+            match event {
+                Event::Acp(acp::Event::Request { id, action }) => {
+                    self.write(&action.respond(id, self.acp_prompt.is_some()), deadline)?;
+                }
+                event => return Ok(event),
+            }
+        }
+    }
+    fn acp_event(&mut self, event: acp::Event) -> R<Option<Value>> {
+        match event {
+            acp::Event::Request { id, action } => {
+                self.write(&action.respond(id, self.acp_prompt.is_some()), Instant::now() + self.io_budget)?;
+                Ok(None)
+            }
+            acp::Event::TurnUpdate => Ok(self.acp_prompt.filter(|_| self.awaiting_input)
+                .map(|id| self.accept_input(id))),
+            acp::Event::TurnEnd(id, completed) if self.acp_prompt == Some(id) => {
+                let receipt = (completed && self.awaiting_input).then(|| self.accept_input(id));
+                self.acp_prompt = None;
+                self.awaiting_input = false;
+                self.busy = false;
+                Ok(receipt)
+            }
+            _ => Err("HOST_RESPONSE_INVALID"),
+        }
     }
     fn drain(&mut self) -> R<()> {
         if self.failed {
@@ -277,6 +355,12 @@ impl AgyStdio {
             if self.aggregate.as_ref().is_some_and(|b|b.remaining().is_err()){return Err("HOST_OPERATION_TIMEOUT");}
             let next = self.events.as_mut().ok_or("HOST_DISCONNECTED")?.try_recv();
             match next {
+                Ok(Ok(Event::Acp(event))) => {
+                    if let Err(code) = self.acp_event(event) {
+                        self.failed = true;
+                        return Err(code);
+                    }
+                }
                 Ok(Ok(Event::Input(id,index))) if self.awaiting_input && id==self.conversation && self.last_input.is_none_or(|last|index>last) => {
                     self.accept_input(index);
                 }
@@ -298,7 +382,14 @@ impl AgyStdio {
     }
     fn accept_input(&mut self,index:u64)->Value {
         self.last_input=Some(index);self.busy=true;self.awaiting_input=false;
-        let receipt=json!({"state":"HOST_ACCEPTED","receipt":format!("agy-stdio:{index}:{}",peerwork_core::crypto::sha256_hex(self.conversation.as_bytes())),"execution_state":"BUSY","model_response":"NOT_ATTESTED"});
+        let conversation = peerwork_core::crypto::sha256_hex(self.conversation.as_bytes());
+        let receipt = if self.acp.is_some() {
+            let digest = self.last_delivery.as_ref().map_or("", |(_, digest, _)| digest.as_str());
+            format!("agy-acp:{conversation}:{digest}")
+        } else {
+            format!("agy-stdio:{index}:{conversation}")
+        };
+        let receipt=json!({"state":"HOST_ACCEPTED","receipt":receipt,"execution_state":"BUSY","model_response":"NOT_ATTESTED"});
         if let Some((_,_,saved))=&mut self.last_delivery{*saved=Some(receipt.clone());}
         receipt
     }
@@ -343,15 +434,34 @@ impl AgyStdio {
         self.attempted = true;
         self.last_delivery=Some((message["message_id"].as_str().unwrap_or("").to_owned(),peerwork_core::crypto::sha256_hex(message.to_string().as_bytes()),None));
         self.awaiting_input=true;self.busy=true;
-        let mut bytes = serde_json::to_vec(&json!({"event":"user","message":{"content":rendered}}))
-            .map_err(|_| "HOST_INPUT_INVALID")?;
-        bytes.push(b'\n');
+        let payload = match &self.acp {
+            Some(acp) => {
+                let id = self.acp_next_id;
+                self.acp_next_id = id.checked_add(1).ok_or("HOST_STATE_INVALID")?;
+                self.acp_prompt = Some(id);
+                acp.prompt(id, rendered)
+            }
+            None => json!({"event":"user","message":{"content":rendered}}),
+        };
         let deadline = self.aggregate.as_ref().map(|b|b.deadline().min(Instant::now()+self.io_budget)).unwrap_or_else(||Instant::now()+self.io_budget);
-        let input = self.input.as_mut().ok_or("HOST_DISCONNECTED")?;
-        let written = self.executor.block_on(async {
-            tokio::time::timeout(deadline.saturating_duration_since(Instant::now()), input.write_all(&bytes)).await
-        });
-        if !matches!(written, Ok(Ok(()))) {
+        if self.write(&payload, deadline).is_err() {
+            self.failed = true;
+            return Err("HOST_ACK_UNKNOWN");
+        }
+        if self.acp.is_some() {
+            loop {
+                let event = match self.next(deadline) {
+                    Ok(Event::Acp(event)) => event,
+                    Err("HOST_ACK_UNKNOWN") => return Err("HOST_ACK_UNKNOWN"),
+                    _ => break,
+                };
+                match self.acp_event(event) {
+                    Ok(Some(receipt)) => return Ok(receipt),
+                    Ok(None) if self.busy => continue,
+                    Ok(None) => return Err("HOST_ACK_UNKNOWN"),
+                    Err(_) => break,
+                }
+            }
             self.failed = true;
             return Err("HOST_ACK_UNKNOWN");
         }
@@ -377,6 +487,9 @@ impl Drop for AgyStdio {
         // the active turn can finish and persist its host/tool state. A signed
         // reply and inbox consumption can precede the native terminal result.
         if let Some(budget)=&self.aggregate{budget.phase("TERMINATING");}
+        let drain = self.events.take().map(|mut events| self.executor.spawn(async move {
+            while events.recv().await.is_some() {}
+        }));
         let (terminal, graceful) = self.executor.block_on(async {
             if let Ok(result) = tokio::time::timeout(self.shutdown_budget, self.child.wait()).await
             {
@@ -395,10 +508,12 @@ impl Drop for AgyStdio {
                 if let Some(budget)=&self.aggregate{budget.phase("STALLED_TERMINATION");}tokio::time::sleep(Duration::from_millis(100)).await;}
             (true, false)
         });
-        self.events.take();
         if let Some(reader) = self.reader.take() {
             reader.abort();
             let _ = self.executor.block_on(reader);
+        }
+        if let Some(drain) = drain {
+            drain.abort();
         }
         if terminal {
             // This records process termination only. Accepted and unknown
@@ -411,6 +526,48 @@ impl Drop for AgyStdio {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    #[test]
+    fn managed_acp_resumes_exact_session_and_accepts_a_new_turn_after_restart() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = crate::test_support::protected_test_dir();
+        let mut config = stub(root.path(), false);
+        let executable = Path::new(config["executable"].as_str().unwrap());
+        let script = r#"#!/bin/sh
+[ "$1" = acp ] || exit 1
+IFS= read -r request || exit 1
+case "$request" in *'"method":"initialize"'*) ;; *) exit 2;; esac
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{"sessionCapabilities":{"resume":{}}}}}'
+IFS= read -r request || exit 1
+case "$request" in *'"method":"session/resume"'*'"sessionId":"owned-conversation"'*) ;; *) exit 3;; esac
+printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{}}'
+printf '%s\n' resumed >> sessions.txt
+IFS= read -r request || exit 0
+case "$request" in *'"method":"session/prompt"'*'"sessionId":"owned-conversation"'*) ;; *) exit 4;; esac
+printf '%s\n' "$request" >> prompts.txt
+printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"another-session","update":{"sessionUpdate":"agent_message_chunk"}}}'
+printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"owned-conversation","update":{"sessionUpdate":"tool_call"}}}'
+printf '%s\n' '{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}}'
+IFS= read -r request || exit 0
+exit 5
+"#;
+        std::fs::write(executable, script).unwrap();
+        std::fs::set_permissions(executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+        config["stdio_protocol"] = json!("acp");
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let mut receipts = Vec::new();
+        for number in 1..=2 {
+            let mut host = AgyStdio::open(&config, rt.handle().clone()).unwrap();
+            let result = host.deliver(&json!({"message_id":format!("notice-{number}"),
+                "rendered_text":format!("compact reference {number}")})).unwrap();
+            assert_eq!(result["state"], "HOST_ACCEPTED");
+            assert_eq!(result["model_response"], "NOT_ATTESTED");
+            receipts.push(result["receipt"].clone());
+        }
+        assert_ne!(receipts[0], receipts[1]);
+        assert_eq!(std::fs::read_to_string(root.path().join("sessions.txt")).unwrap().lines().count(), 2);
+        assert_eq!(std::fs::read_to_string(root.path().join("prompts.txt")).unwrap().lines().count(), 2);
+    }
     fn stub(root: &Path, bad_ack: bool) -> Value {
         let executable;
         #[cfg(unix)]

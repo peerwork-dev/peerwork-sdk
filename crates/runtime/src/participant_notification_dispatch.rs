@@ -51,6 +51,7 @@ pub(super) async fn step(
         let admitted = hub.clone();
         let key = owner.clone();
         let sent = wake.clone();
+        let owned_acp = config.adapter["kind"] == "agy-stdio" && config.adapter["stdio_protocol"] == "acp";
         let result = tokio::task::spawn_blocking(move || {
             crate::communication_host::operation::with_host(
                 &selected,
@@ -61,7 +62,22 @@ pub(super) async fn step(
                     let _inflight = admitted
                         .admit(&key, &sent.batch, sent.revision)
                         .map_err(|_| "DELIVERY_PAUSED_OR_SUPERSEDED")?;
-                    host.deliver_notice(&scope, &sent)
+                    if owned_acp {
+                        admitted.store.protect_owned_input(&key, &sent)
+                            .map_err(|_| "NOTIFICATION_FENCE_STATE_FAILED")?;
+                    }
+                    let result = host.deliver_notice(&scope, &sent);
+                    if owned_acp {
+                        match host_outcome("agy-stdio", result.clone()) {
+                            HostOutcome::NotSent { .. } => admitted.store.release_unwritten_input(&key, &sent)
+                                .map_err(|_| "NOTIFICATION_FENCE_STATE_FAILED")?,
+                            HostOutcome::HostAccepted { .. } => admitted.store.record_replay_block(&key, &sent,
+                                &json!({"state":"HOST_ACCEPTED","replay_blocked":true}))
+                                .map_err(|_| "NOTIFICATION_FENCE_STATE_FAILED")?,
+                            _ => (),
+                        }
+                    }
+                    result
                 },
             )
         })

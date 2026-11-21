@@ -291,7 +291,7 @@ pub(super) fn adapter(values: &BTreeMap<String, String>) -> Result<Option<Value>
             return Err(local("SELECT_ONE_HOST_ADAPTER"));
         }
         return Ok(Some(
-            json!({"kind":"agy-stdio","managed":true,"executable":absolute("--agy-executable")?,
+            json!({"kind":"agy-stdio","managed":true,"stdio_protocol":"acp","executable":absolute("--agy-executable")?,
             "working_directory":absolute("--project")?,"conversation_id":text("--agy-conversation")?}),
         ));
     }

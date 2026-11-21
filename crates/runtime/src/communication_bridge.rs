@@ -174,6 +174,7 @@ impl BridgeConfig {
             ],
             Some("agy-stdio") => &[
                 "kind", "managed", "executable", "conversation_id", "working_directory",
+                "stdio_protocol", "mcp_server", "acp_client",
             ],
             _ => return Err("BRIDGE_NATIVE_HOST_REQUIRED"),
         };
@@ -724,11 +725,13 @@ fn provider_loop(config:Value,executor:tokio::runtime::Handle,progress:crate::co
                 selected.observe_codex_owner();
             }
             let result=if let Some(frame)=&request.frame {
+                let owned_acp = config["kind"] == "agy-stdio" && config["stdio_protocol"] == "acp";
+                let replay_unsafe = selected.codex_queue_active() || owned_acp;
                 if let Some(n)=request.binding.get("notification"){
                     let owner=n["owner"].as_str().ok_or("BRIDGE_REQUEST_INVALID")?;
                     let batch=n["batch"].as_str().ok_or("BRIDGE_REQUEST_INVALID")?;
                     if let Some(known)=notice_fence.begin_with_policy(owner,n["revision"].as_u64().ok_or("BRIDGE_REQUEST_INVALID")?,batch,
-                        n["attempt"].as_u64().ok_or("BRIDGE_REQUEST_INVALID")?,selected.codex_queue_active())? {
+                        n["attempt"].as_u64().ok_or("BRIDGE_REQUEST_INVALID")?,replay_unsafe)? {
                         return Ok((selected.destination.clone(),known));
                     }
                     notice_admitted=true;
@@ -744,8 +747,8 @@ fn provider_loop(config:Value,executor:tokio::runtime::Handle,progress:crate::co
                 let destination=selected.destination.clone();
                 #[cfg(test)] if config["_test_panic_after_input"]==true&&!injected {injected=true;panic!("injected provider failure after possible input");}
                 let mut value=serde_json::to_value(crate::participant_dispatch::host_outcome(config["kind"].as_str().unwrap_or(""),delivered)).map_err(|_|"BRIDGE_OUTCOME_INVALID")?;
-                if notice_admitted && selected.codex_queue_active()
-                    && matches!(value["state"].as_str(), Some("HOST_QUEUED" | "RESULT_UNKNOWN"))
+                if notice_admitted && replay_unsafe
+                    && matches!(value["state"].as_str(), Some("HOST_ACCEPTED" | "HOST_QUEUED" | "RESULT_UNKNOWN"))
                 {
                     value["replay_blocked"] = json!(true);
                 }
