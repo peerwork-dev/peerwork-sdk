@@ -1145,11 +1145,13 @@ async fn qualify_agy_acp(
         let mut process = tokio::process::Command::new(binary).args(["runtime", "run"])
             .arg(path).stdout(std::process::Stdio::piped()).kill_on_drop(true).spawn().unwrap();
         let stdout = process.stdout.take().unwrap();
-        let result = tokio::time::timeout(Duration::from_secs(25), BufReader::new(stdout).lines().next_line())
+        let mut lines = BufReader::new(stdout).lines();
+        let result = tokio::time::timeout(Duration::from_secs(25), lines.next_line())
             .await.unwrap().unwrap().unwrap();
         let result: crate::communication_runtime::RuntimeReady = serde_json::from_str(&result)
             .unwrap_or_else(|_| panic!("Failed to start installed runtime: {result}"));
         assert_eq!(result.state, "LOCAL_READY");
+        tokio::spawn(async move { while matches!(lines.next_line().await, Ok(Some(_))) {} });
         (process, result)
     }
     async fn stop(process: &mut tokio::process::Child) {
@@ -1238,10 +1240,30 @@ async fn qualify_agy_acp(
             stop(&mut process).await;
             panic!("Original AGY session did not read and reply to the signed notice in round {round}");
         };
-        let health = receiving.call(json!({"method":"delivery","mode":"status","options":original})).await.unwrap();
-        assert!(health["destinations"].as_array().is_some_and(|items| items.iter().any(|item|
-            item["automatic_receiving"] == "VERIFIED")), "{health}");
-        samples.push(json!({"round":round,"signed_reply":reply["item"],"observed_batch_read":true}));
+        // A signed reply can commit while the same ACP turn is still busy.
+        // Let the actual turn finish before checking readiness or stopping it.
+        let mut health;
+        let deadline = Instant::now() + Duration::from_secs(45);
+        loop {
+            health = receiving.call(json!({"method":"delivery","mode":"status","options":original})).await.unwrap();
+            if health["destinations"].as_array().is_some_and(|items| items.iter().any(|item|
+                item["automatic_receiving"] == "VERIFIED" && item["pending"].is_null())) {
+                break;
+            }
+            if Instant::now() >= deadline {
+                result["state"] = json!("SIGNED_REPLY_RECEIVED_HOST_NOT_IDLE");
+                result["failed_round"] = json!(round);
+                result["last_delivery_code"] = health["code"].clone();
+                write_report(report, &result);
+                stop(&mut process).await;
+                panic!("Original AGY session did not return to verified idle readiness");
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+        let accepted = &health["observations"][0]["host"]["notification"];
+        assert!(accepted["outcome"]["receipt"].as_str().is_some_and(|value| value.starts_with("agy-acp:")));
+        samples.push(json!({"round":round,"signed_reply":reply["item"],"observed_batch_read":true,
+            "accepted_batch":accepted["batch"],"admission_attempt":accepted["attempt"]}));
         result["samples"] = json!(samples);
         write_report(report, &result);
         peer.call(AgentRequest::parse("consume", json!({"scope":"live","items":[reply["item"]]})).unwrap()).await.unwrap();
