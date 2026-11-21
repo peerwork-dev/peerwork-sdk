@@ -96,9 +96,15 @@ async fn original_two_space_presentations_replace_without_reclaim_or_pending_ope
     let before=original.call(json!({"method":"presentation_status","options":options[0]})).await.unwrap();
     assert_eq!(before["state"],"UNMANAGED");assert_eq!(before["group"]["members"].as_array().unwrap().len(),2);
 
-    let old=new_frontend(&directory,&handle,"MCP_STDIO_CHANNEL");
-    let activation_a=old.presentation_selection("one").await.unwrap().unwrap();
-    assert_eq!(old.presentation_selection("two").await.unwrap().unwrap(),activation_a,"aliases in one coalesced source must not replace each other");
+    let old=std::sync::Arc::new(new_frontend(&directory,&handle,"MCP_STDIO_CHANNEL"));
+    let select=|scope:&'static str| {
+        let frontend=old.clone();
+        tokio::spawn(async move { frontend.presentation_selection(scope).await })
+    };
+    let (first,second)=tokio::join!(select("one"),select("two"));
+    let activation_a=first.unwrap().unwrap().unwrap();
+    assert_eq!(second.unwrap().unwrap().unwrap(),activation_a,"concurrent aliases in one coalesced source must share one decision");
+    assert_eq!(activation_a["generation"],before["current_generation"].as_u64().unwrap()+1);
     let initial=due(&old,"one",&activation_a).await;
     assert_eq!(initial["self_test"],true);
     assert_eq!(tool(&old,"inbox",json!({"batch":initial["batch"]})).await["state"],"SELF_TEST_OBSERVED");
