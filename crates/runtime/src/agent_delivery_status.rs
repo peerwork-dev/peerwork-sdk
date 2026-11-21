@@ -230,6 +230,7 @@ mod tests {
             "observations":context["delivery_observations"]["observations"],
         });
         delivery["observations"][0]["receiving_binding"] = context["receiving_binding"].clone();
+        delivery["observations"][0]["notification"]["last_verified_at"] = json!(1000);
         let mut projection = json!({"transport":"MCP_BACKGROUND_TOOL","listener_armed":false,"scopes":{"space":{
             "binding":binding(&context, &context["scopes"]["space"]),
             "state":"WAITING_FOR_SESSION_READ", "notification_read_pending":true,
