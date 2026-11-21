@@ -202,6 +202,37 @@ async fn receiver_capacity_recovery(signed:bool) {
         client.close().await.unwrap();
     }
 }
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires synthetic PostgreSQL and the product HTTP lease preference"]
+async fn resident_pulse_accepts_compact_and_full_signed_leases() {
+    let mut cohort = Cohort::start(1).await;
+    let member = &mut cohort.members[0];
+    let first = cohort.service.counts().await["lease_replies"].clone();
+    assert!(first["compact"].as_u64().unwrap() > 0, "{first}");
+    assert_eq!(first["preferred"], first["compact"]);
+    assert_eq!(first["full"], 0);
+
+    cohort.service.config(json!({"ignore_lease_preference": true})).await;
+    tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            let counts = cohort.service.counts().await["lease_replies"].clone();
+            if counts["full"].as_u64().unwrap() > 0 {
+                assert!(counts["preferred"].as_u64().unwrap() > first["preferred"].as_u64().unwrap());
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }).await.unwrap();
+
+    let current = member.watch.page(0, 8).await.unwrap();
+    assert!(current.receiver_link_verified && current.code.is_none());
+    let mailbox = selected(&cohort.client, "structure.mailbox.get", &member.scope,
+        json!({"mailbox_id": member.options.mailbox_id})).await;
+    assert_eq!(mailbox["mailbox"]["epoch"], 1);
+    assert_eq!(cohort.service.counts().await["claim_commands"].as_array().unwrap().len(), 1);
+    cohort.client.close().await.unwrap();
+}
+
 #[tokio::test(flavor="multi_thread",worker_threads=2)]
 #[ignore="requires explicit synthetic PostgreSQL and real product HTTP fixture"]
 async fn unchanged_host_probes_coalesce_wire_traffic_without_stopping_the_receiver() {

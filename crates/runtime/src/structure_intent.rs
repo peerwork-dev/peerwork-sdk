@@ -325,7 +325,7 @@ impl KernelClient {
             set(&mut command,"expected_workspace_revision",WireValue::Null);set(&mut command,"expected_instance_revision",WireValue::Null);set(&mut command,"exact_input_refs",WireValue::Array(Vec::new()));
             set(&mut command,"issued_at",WireValue::Number(context.server_time_ms() as f64));set(&mut command,"expires_at",WireValue::Number(context.expires_at_ms() as f64));
             let signed=prepare_signed_command_wire(&command,identity.signing_key(),&self.discovery,None).map_err(|_|KernelClientError::InvalidCommand)?;
-            let result=self.submit_structure_read(&signed,cancel).await?;
+            let result=self.submit_structure_read(&signed,cancel,false).await?;
             if result.outcome_state()=="REJECTED"{return Ok(StructureIntentOutcome::Pending{command_id,code:"OBSERVATION_REFUSED",phase:"DELETION",retryable:false,recovery:"OBSERVE_SAME_OPERATION"});}
             let data=parse_wire_json_bounded(result.structure_result_json.as_ref().ok_or(KernelClientError::InvalidResult)?.as_bytes(),32,1024*1024).map_err(|_|KernelClientError::InvalidResult)?;
             let job=data.get("deletion").ok_or(KernelClientError::InvalidResult)?;
@@ -361,8 +361,8 @@ impl KernelClient {
             set(&mut command,"issued_at",WireValue::Number(context.server_time_ms() as f64));
             set(&mut command,"expires_at",WireValue::Number(context.expires_at_ms() as f64));
             let signed=prepare_signed_command_wire(&command,identity.signing_key(),&self.discovery,None).map_err(|_|KernelClientError::InvalidCommand)?;
-            let result=match self.submit_structure_read(&signed,cancel).await {
-                Err(KernelClientError::Transport(TransportError::Network|TransportError::Timeout|TransportError::SubmittedUncertain)|KernelClientError::ServerRejected(500..=599))=>self.submit_structure_read(&signed,cancel).await?,
+            let result=match self.submit_structure_read(&signed,cancel,false).await {
+                Err(KernelClientError::Transport(TransportError::Network|TransportError::Timeout|TransportError::SubmittedUncertain)|KernelClientError::ServerRejected(500..=599))=>self.submit_structure_read(&signed,cancel,false).await?,
                 result=>result?,
             };
             let data=parse_wire_json_bounded(result.structure_result_json.as_ref().ok_or(KernelClientError::InvalidResult)?.as_bytes(),32,1024*1024).map_err(|_|KernelClientError::InvalidResult)?;
@@ -653,10 +653,13 @@ impl KernelClient {
     /// Fresh selected reads are verified in memory. They are not an ever-
     /// growing archive of pages/events in the local mutation outbox. Explicit
     /// caller IDs/keys retain the durable historical-query behavior.
-    pub(super) async fn submit_structure_read(&self,signed:&SignedPreparedCommand,cancel:&CancellationToken)->Result<KernelAcceptedResult,KernelClientError>{
+    pub(super) async fn submit_structure_read(&self,signed:&SignedPreparedCommand,cancel:&CancellationToken,prefer_minimal:bool)->Result<KernelAcceptedResult,KernelClientError>{
         let response=if peerwork_core::structure_execution::operation_kind(signed.proof().action_id())==Some(peerwork_core::structure_execution::StructureOperationKind::Read){
             self.transport.post_structure_read(signed,cancel).await?
-        }else{self.transport.post_exact(signed.proof().path(),signed.http_body().to_vec(),cancel).await?};
+        }else{
+            let prefer_lease_only=prefer_minimal&&signed.proof().action_id()=="structure.mailbox.pulse";
+            self.transport.post_exact_with_preference(signed.proof().path(),signed.http_body().to_vec(),cancel,prefer_lease_only).await?
+        };
         let proof=verify_http_response_for_prepared(&response.wire,signed.proof(),self.discovery.receipt_public_key());
         if !(200..300).contains(&response.status)&&proof.is_err(){
             let has_receipt=parse_wire_json_bounded(&response.wire,33,1024*1024).is_ok_and(|v|v.get("receipt").is_some());
@@ -742,7 +745,7 @@ impl KernelClient {
         }
         drop(preparing);
         for attempt in 0..2 {
-            let result=if durable{self.submit_saved(&command_id,identity.key_id(),cancel).await}else{self.submit_structure_read(&signed,cancel).await};
+            let result=if durable{self.submit_saved(&command_id,identity.key_id(),cancel).await}else{self.submit_structure_read(&signed,cancel,observed_wire_at.is_some()).await};
             match result {
                 Ok(result)=>return Ok(StructureIntentOutcome::Accepted(result)),
                 Err(error)=>{

@@ -507,17 +507,30 @@ impl HttpTransport {
         body: Vec<u8>,
         cancel: &CancellationToken,
     ) -> Result<ExactHttpResponse, TransportError> {
+        self.post_exact_with_preference(path, body, cancel, false).await
+    }
+
+    pub(crate) async fn post_exact_with_preference(
+        &self,
+        path: &str,
+        body: Vec<u8>,
+        cancel: &CancellationToken,
+        prefer_minimal: bool,
+    ) -> Result<ExactHttpResponse, TransportError> {
         if !valid_command_path(path) || body.is_empty() || body.len() > 262_144 {
             return Err(TransportError::InvalidOrigin);
         }
         let url = self.endpoint(path)?;
-        let send = self.measured_send(self
+        let mut request = self
             .client
             .post(url)
             .header("content-type", "application/json")
-            .header("X-Peerwork-Diagnostics", "authorization-v1")
-            .body(body)
-            .send());
+            .header("X-Peerwork-Diagnostics", "authorization-v1");
+        if prefer_minimal {
+            // A server ignoring the preference returns the full signed result.
+            request = request.header("prefer", "return=minimal");
+        }
+        let send = self.measured_send(request.body(body).send());
         let response = tokio::select! {
             _ = cancel.cancelled() => return Err(TransportError::SubmittedUncertain),
             result = send => result.map_err(|_| TransportError::SubmittedUncertain)?,

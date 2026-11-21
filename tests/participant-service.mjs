@@ -46,6 +46,8 @@ let offline=false,dropAction=null,delayName=null,delayAction=null,release=null,s
 let rejectNextRebindMailbox=null,corruptFrame=null,keyDelayWorkspace=null,delayMailbox=null;
 let keyDelayMs=0,earlyEofCount=0,timeoutAction=null;const timeoutReleases=new Set();
 let resourceRefusal=null;const signedResourceRefusals=new Map();
+let ignoreLeasePreference=false;
+const leaseReplies={preferred:0,compact:0,full:0};
 const counts={commands:0,discovery:0,context:0,journal_reads:0,dropped:0,native_streams:0,corrupted_frames:0,delayed_keys:0,delayed:0,delayed_completed:0,members_batches:0,grant_batches:0,claim_commands:[],actions:{},ack_batches:{RECEIVER_STORED:{requests:0,items:0,max:0},APPLICATION_CONSUMED:{requests:0,items:0,max:0}},command_request_bytes:0,command_response_bytes:0,sse_bytes:0};
 const commandIds=new Set();
 // Explicit maintainer measurement only. Buffer closed metadata in memory and
@@ -63,6 +65,7 @@ const handle=async request=>{
  const path=new URL(request.url).pathname;
  if(path==='/__test/config'){
   const options=await request.json();
+  if(options.ignore_lease_preference!==undefined)ignoreLeasePreference=options.ignore_lease_preference===true;
   if(options.resource_refusal!==undefined){
    const value=options.resource_refusal;
    if(value!==null&&(!['structure.mailbox.get','structure.mailbox.claim','structure.mailbox.pulse','structure.mailbox.ack','structure.communication.stream.get'].includes(value.action)||!['RESOURCE_EXHAUSTED','CAPACITY_RESERVATION_EXHAUSTED'].includes(value.code)))throw Error('invalid synthetic resource refusal');
@@ -93,7 +96,7 @@ const handle=async request=>{
   if(options.release){release?.();release=null;delayName=null;timeoutAction=null;for(const fn of timeoutReleases)fn();timeoutReleases.clear();}
   return Response.json({ok:true});
  }
- if(path==='/__test/counts')return Response.json({...counts,...(captureDisclosure?{last_disclosure:lastDisclosure}:{}),unique_commands:commandIds.size,resident_worker_running:residentWorker!==null&&residentWorker.exitCode===null,
+ if(path==='/__test/counts')return Response.json({...counts,lease_replies:leaseReplies,...(captureDisclosure?{last_disclosure:lastDisclosure}:{}),unique_commands:commandIds.size,resident_worker_running:residentWorker!==null&&residentWorker.exitCode===null,
   workspaces:Number((await f.store.pool.query(`SELECT count(*) n FROM "${f.schema}".workspaces`)).rows[0].n),
   key_epochs:Number((await f.store.pool.query(`SELECT count(*) n FROM "${f.schema}".structure_content_key_epochs`)).rows[0].n),
   events:Number((await f.store.pool.query(`SELECT count(*) n FROM "${f.schema}".events`)).rows[0].n),
@@ -148,8 +151,17 @@ const handle=async request=>{
   }
   if(delayName&&command.body?.name===delayName)await new Promise(resolve=>{release=resolve;});
  }
+ const pulse=command?.action_id==='structure.mailbox.pulse';
+ if(pulse&&request.headers.get('Prefer')==='return=minimal'){
+  leaseReplies.preferred++;
+  if(ignoreLeasePreference){
+   const headers=new Headers(request.headers);headers.delete('Prefer');
+   request=new Request(request,{headers});
+  }
+ }
  const measured=queryObserver?await queryObserver.measure(()=>app.fetch(request)):null;
  const response=measured?measured.value:await app.fetch(request);
+ if(pulse&&response.ok)leaseReplies[response.headers.get('Preference-Applied')==='return=minimal'?'compact':'full']++;
  if(captureDisclosure&&command?.action_id==='structure.conversation.messages.read'&&response.ok){const value=await response.clone().json();lastDisclosure=value.result?.messages?.[0]??lastDisclosure;}
  if(wasDelayed)counts.delayed_completed++;
  if(command)counts.command_response_bytes+=(await response.clone().arrayBuffer()).byteLength;
