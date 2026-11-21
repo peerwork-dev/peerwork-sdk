@@ -547,6 +547,43 @@ async fn observed_host_state_gate(root: &std::path::Path, name: &str) {
     }).await.expect("explicit maintainer host-state observer did not complete its barrier");
 }
 
+#[cfg(unix)]
+async fn run_candidate_bridge(
+    config: PathBuf,
+    stop: KernelCancellationToken,
+    ready: oneshot::Sender<std::result::Result<communication_bridge::BridgeReady, &'static str>>,
+) -> std::result::Result<(), &'static str> {
+    use tokio::io::{AsyncBufReadExt, BufReader};
+
+    let executable = std::env::var_os("PEERWORK_PARTICIPANT_CLI").ok_or("CANDIDATE_REQUIRED")?;
+    let mut child = tokio::process::Command::new(executable)
+        .args(["bridge", "run"])
+        .arg(config)
+        .stdout(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn().map_err(|_| "CANDIDATE_BRIDGE_START_FAILED")?;
+    let mut stdout = BufReader::new(child.stdout.take().unwrap()).lines();
+    let line = tokio::time::timeout(Duration::from_secs(15), stdout.next_line())
+        .await.map_err(|_| "CANDIDATE_BRIDGE_START_TIMEOUT")?
+        .map_err(|_| "CANDIDATE_BRIDGE_READY_INVALID")?
+        .ok_or("CANDIDATE_BRIDGE_EXITED")?;
+    let observation = serde_json::from_str(&line).map_err(|_| "CANDIDATE_BRIDGE_READY_INVALID")?;
+    ready.send(Ok(observation)).map_err(|_| "CANDIDATE_BRIDGE_TEST_CANCELLED")?;
+    let status = tokio::select! {
+        result = child.wait() => result.map_err(|_| "CANDIDATE_BRIDGE_EXITED")?,
+        _ = stop.cancelled() => {
+            if let Some(pid) = child.id() {
+                // This test only signals the isolated candidate it spawned.
+                unsafe { libc::kill(pid as i32, libc::SIGTERM); }
+            }
+            tokio::time::timeout(Duration::from_secs(10), child.wait())
+                .await.map_err(|_| "CANDIDATE_BRIDGE_STOP_TIMEOUT")?
+                .map_err(|_| "CANDIDATE_BRIDGE_EXITED")?
+        }
+    };
+    if status.success() { Ok(()) } else { Err("CANDIDATE_BRIDGE_EXITED") }
+}
+
 async fn qualify_native_reply(mcp_only: bool) {
     let host = if mcp_only {
         Value::Null
@@ -557,9 +594,10 @@ async fn qualify_native_reply(mcp_only: bool) {
         );
         crate::communication_store::private_json(&host_path, 65536).unwrap()
     };
-    let compact_host = !mcp_only && (host["kind"] == "opencode"
-        || host["kind"] == "codex" && (host["local_queue_only"] == true
-            || std::env::var("PEERWORK_LIVE_HOST_CODEX_ROUTE_RECOVERY").as_deref() == Ok("1")));
+    let codex_recovery = host["kind"] == "codex"
+        && std::env::var("PEERWORK_LIVE_HOST_CODEX_ROUTE_RECOVERY").as_deref() == Ok("1");
+    let compact_host = !mcp_only && (host["kind"] == "opencode" || codex_recovery
+        || host["kind"] == "codex" && host["local_queue_only"] == true);
     let root = PathBuf::from(
         std::env::var("PEERWORK_LIVE_HOST_STATE_DIR")
             .expect("explicit empty protected fixture root required"),
@@ -685,12 +723,18 @@ async fn qualify_native_reply(mcp_only: bool) {
         .unwrap();
         let bridge_stop = KernelCancellationToken::new();
         let (tx, rx) = oneshot::channel();
-        let bridge = tokio::spawn(communication_bridge::serve(
-            bridge_config,
-            bridge_stop.clone(),
-            tx,
-        ));
-        let bridge_ready = rx.await.unwrap().unwrap();
+        let bridge = if cfg!(unix) && codex_recovery {
+            #[cfg(unix)]
+            { tokio::spawn(run_candidate_bridge(root.join("bridge.json"), bridge_stop.clone(), tx)) }
+            #[cfg(not(unix))]
+            { unreachable!() }
+        } else {
+            tokio::spawn(communication_bridge::serve(bridge_config, bridge_stop.clone(), tx))
+        };
+        let bridge_ready = match rx.await {
+            Ok(result) => result.unwrap(),
+            Err(_) => panic!("qualification bridge exited before ready: {:?}", bridge.await),
+        };
         let destination = HostBinding::new(bridge_ready.adapter["destination"].clone()).unwrap();
         (
             Some((bridge_stop, bridge)),
