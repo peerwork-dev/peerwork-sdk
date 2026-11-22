@@ -476,9 +476,14 @@ pub(super) struct Installed {
 /// A Channel/background launch may use only its already committed original
 /// host installation. Directory context disambiguates installations, never a
 /// model conversation or a new receiving destination.
-pub(super) fn presentation_registration(connect:&Connect,participant:&str,workspace:&str,kind:&str,server:Option<&str>)->Result<Option<String>> {
+pub(super) fn presentation_registration(connect:&Connect,participant:&str,workspace:&str,kind:&str,launch:Option<(&str,&[&str])>)->Result<Option<String>> {
     let host=match kind {"MCP_STDIO_CHANNEL"=>"claude","MCP_BACKGROUND_TOOL"=>"agy",_=>return Err(local("PRESENTATION_TARGET_INVALID"))};
-    let candidates=connect.registry.installations.iter().filter(|(_,entry)|entry.committed&&entry.participant==participant&&entry.workspace_id==workspace&&entry.spec.host==host&&server.is_none_or(|name|entry.name==name)).collect::<Vec<_>>();
+    let candidates=connect.registry.installations.iter().filter(|(_,entry)| {
+        entry.committed && entry.participant==participant && entry.spec.host==host && match launch {
+            Some((name,workspaces))=>entry.name==name && workspaces.contains(&entry.workspace_id.as_str()),
+            None=>entry.workspace_id==workspace,
+        }
+    }).collect::<Vec<_>>();
     if candidates.len()<=1 {return Ok(candidates.first().map(|(id,_)|(*id).clone()));}
     let cwd=std::env::current_dir().ok().and_then(|path|std::fs::canonicalize(path).ok());
     let exact=candidates.iter().filter(|(_,entry)|cwd.as_ref()==Some(&entry.spec.project)).collect::<Vec<_>>();

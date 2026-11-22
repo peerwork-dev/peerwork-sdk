@@ -279,10 +279,13 @@ async fn original_two_space_presentations_replace_without_reclaim_or_pending_ope
         order:crate::claude_channel_launch::LaunchOrder::new().unwrap(), select_session:true,
     };
     let mut foreground = InstalledChannel::start(&project, entry, Some(&launch)).await;
-    tool(&ordinary,"delivery",json!({"mode":"self_test"})).await;
+    tool(&ordinary,"delivery",json!({"mode":"self_test","scope":"one"})).await;
     foreground.read_probe().await;
     let selected = generation().await;
     assert!(selected>activation_c["generation"].as_u64().unwrap());
+    tool(&ordinary,"delivery",json!({"mode":"self_test","scope":"two"})).await;
+    foreground.read_probe().await;
+    assert_eq!(generation().await,selected,"all authorized mailboxes share one launch decision");
 
     let mut handshake_only=InstalledChannel::start(&project,entry,None).await;
     let handshake_context=handshake_only.context().await;

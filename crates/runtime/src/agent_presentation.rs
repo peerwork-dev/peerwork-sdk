@@ -159,15 +159,17 @@ impl Lifecycle {
         let selection=Selection{client,options,source:source.clone()};
         let known=self.presentation.lock().await.groups.get(&source).cloned();
         let candidate=if let Some(known)=known {known} else {
-            let server=self.claude_launch.as_ref().map(|launch|launch.server.as_str());
+            let members=observed["group"]["bindings"].as_array().into_iter().flatten()
+                .filter_map(|watch|watch["workspace_id"].as_str()).collect::<Vec<_>>();
+            let launch=self.claude_launch.as_ref().map(|launch|(launch.server.as_str(),members.as_slice()));
             let registered=if let Some(directory)=&self.local {
                 let connect=self.inspect(directory)?;
-                connect.presentation_issuer(self.handle.as_deref(),&wanted.workspace_id,&kind,server)?
+                connect.presentation_issuer(self.handle.as_deref(),&wanted.workspace_id,&kind,launch)?
             }else if let Some((_,connect,handle))=self.source_selection(&profile)? {
-                connect.presentation_issuer(Some(&handle),&wanted.workspace_id,&kind,server)?
+                connect.presentation_issuer(Some(&handle),&wanted.workspace_id,&kind,launch)?
             }else{None};
             let Some((admin,registration_id))=registered else {
-                if server.is_some() {return Err(error("CLAUDE_CHANNEL_LAUNCH_MISMATCH"));}
+                if launch.is_some() {return Err(error("CLAUDE_CHANNEL_LAUNCH_MISMATCH"));}
                 if observed["state"]=="UNMANAGED" {self.presentation.lock().await.legacy.insert(scope.into());return Ok(None);}
                 return Err(error("PRESENTATION_ORIGINAL_INSTALLATION_REQUIRED"));
             };
