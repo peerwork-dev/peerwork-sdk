@@ -128,7 +128,7 @@ impl Store {
 
     /// Only authenticated lifecycle authority may invoke this mutation. A lost
     /// reply resumes the same decision; a loser never refreshes its CAS itself.
-    pub(crate) fn presentation_replace(&self, source: &str, members:&[String], operation: &str, expected: u64, target: &Value) -> Result<Value> {
+    pub(crate) fn presentation_replace(&self, source: &str, members:&[String], operation: &str, expected: u64, target: &Value, select_session: bool) -> Result<Value> {
         valid(source)?; valid(operation)?;
         members_valid(members)?;
         if !target.is_object() || target.to_string().len()>8192 {
@@ -149,6 +149,22 @@ impl Store {
         if !saved.is_empty()&&saved!=members {return Err(error("PRESENTATION_SOURCE_CHANGED"));}
         // A narrowed namespace view may not elect an overlapping source group.
         if selected_groups(&tx,members)?.iter().any(|other|other!=source) {return Err(error("PRESENTATION_GROUP_SELECTION_REQUIRED"));}
+        let selected_target: Option<String> = tx.query_row(
+            "SELECT d.target FROM presentation_sources s JOIN presentation_decisions d
+             ON d.source=s.source AND d.operation_id=s.operation_id AND d.generation=s.generation WHERE s.source=?1",
+            [source], |row| row.get(0),
+        ).optional().map_err(db_error)?;
+        let selected_target: Option<Value> = selected_target.map(|value| serde_json::from_str(&value))
+            .transpose().map_err(|_| error("PRESENTATION_STATE_INVALID"))?;
+        let selected_session = selected_target.as_ref().and_then(|value| value["host_session"].as_str());
+        let requested_session = target["host_session"].as_str();
+        // A tool handshake may resume an exact selected session. Initial
+        // selection or a destination change requires a deliberate local action.
+        // Check this with the generation, inside the admission transaction.
+        if !select_session && requested_session!=selected_session {
+            return Err(error(if selected_session.is_none(){"CLAUDE_CHANNEL_SESSION_SELECTION_REQUIRED"}
+                else {"CLAUDE_CHANNEL_SESSION_MISMATCH"}));
+        }
         let next=generation.checked_add(1).filter(|g|*g<=i64::MAX as u64)
             .ok_or_else(||error("PRESENTATION_GENERATION_EXHAUSTED"))?;
         let selected=Activation{source:source.into(),operation_id:operation.into(),generation:next,target:target.clone()};
@@ -257,13 +273,48 @@ impl Store {
 mod tests {
     use super::*;
     #[test]
+    fn claude_successor_must_match_the_selected_session_at_commit() {
+        let root=crate::test_support::protected_test_dir();
+        let store=Store::open(&root.path().join("state")).unwrap();
+        let members=vec!["member".into()];
+        let legacy=json!({"kind":"MCP_STDIO_CHANNEL","registration_id":"original","host_destination":null});
+        let first=json!({"kind":"MCP_STDIO_CHANNEL","registration_id":"original","host_destination":null,"host_session":"a".repeat(64)});
+        let other=json!({"kind":"MCP_STDIO_CHANNEL","registration_id":"original","host_destination":null,"host_session":"b".repeat(64)});
+
+        let original=store.presentation_replace("source",&members,"legacy",0,&legacy,false).unwrap();
+        assert_eq!(store.presentation_replace("source",&members,"initial-handshake",1,&first,false).unwrap_err().code,
+                   "CLAUDE_CHANNEL_SESSION_SELECTION_REQUIRED");
+        let selected=store.presentation_replace("source",&members,"select-session",1,&first,true).unwrap();
+        assert_eq!(selected["current_generation"],2);
+        let active:Activation=serde_json::from_value(selected["activation"].clone()).unwrap();
+        for (operation,target) in [("other-session",&other),("old-client",&legacy)] {
+            assert_eq!(store.presentation_replace("source",&members,operation,2,target,false).unwrap_err().code,
+                       "CLAUDE_CHANNEL_SESSION_MISMATCH");
+        }
+        assert_eq!(store.presentation_resume("source",&active).unwrap()["state"],"ACTIVE");
+
+        let successor=store.presentation_replace("source",&members,"successor",2,&first,false).unwrap();
+        assert_eq!(store.presentation_replace("source",&members,"successor",2,&first,false).unwrap(),successor);
+        assert_eq!(store.presentation_replace("source",&members,"racing-successor",2,&first,false).unwrap_err().code,
+                   "PRESENTATION_GENERATION_CONFLICT");
+        assert_eq!(store.presentation_resume("source",&active).unwrap()["state"],"SUPERSEDED");
+        assert_eq!(store.presentation_replace("source",&members,"legacy",0,&legacy,false).unwrap()["state"],"SUPERSEDED");
+        assert_eq!(original["current_generation"],1);
+
+        let changed=store.presentation_replace("source",&members,"change-session",3,&other,true).unwrap();
+        assert_eq!(changed["current_generation"],4);
+        assert_eq!(store.presentation_replace("source",&members,"old-session-reconnect",4,&first,false).unwrap_err().code,
+                   "CLAUDE_CHANNEL_SESSION_MISMATCH");
+    }
+
+    #[test]
     fn stale_waiter_cannot_advance_batch_attempt_or_retry_deadline() {
         let root=crate::test_support::protected_test_dir();let store=Store::open(&root.path().join("state")).unwrap();
         let members=vec!["member".into()];let target=json!({"kind":"channel"});
-        let first=store.presentation_replace("source",&members,"first",0,&target).unwrap();
+        let first=store.presentation_replace("source",&members,"first",0,&target,false).unwrap();
         let old=Admission{source:"source".into(),members:members.clone(),activation:Some(serde_json::from_value(first["activation"].clone()).unwrap())};
         let wake=store.due_checked("owner",&[],1,Some(&old)).unwrap().unwrap();
-        let second=store.presentation_replace("source",&members,"second",1,&target).unwrap();
+        let second=store.presentation_replace("source",&members,"second",1,&target,false).unwrap();
         let current=Admission{source:"source".into(),members:members.clone(),activation:Some(serde_json::from_value(second["activation"].clone()).unwrap())};
         let before=store.status("owner").unwrap();
         let due=before["pending"]["retry_at"].as_i64().unwrap()+1;
@@ -280,13 +331,13 @@ mod tests {
     fn thousand_successors_prune_receipts_without_resurrecting_old_tokens() {
         let root=crate::test_support::protected_test_dir();let store=Store::open(&root.path().join("state")).unwrap();
         let members=vec!["member".into()];let target=json!({"kind":"channel"});
-        let first=store.presentation_replace("source",&members,"first",0,&target).unwrap();
+        let first=store.presentation_replace("source",&members,"first",0,&target,false).unwrap();
         let old:Activation=serde_json::from_value(first["activation"].clone()).unwrap();
         for generation in 1..=1000 {
-            store.presentation_replace("source",&members,&format!("successor-{generation}"),generation,&target).unwrap();
+            store.presentation_replace("source",&members,&format!("successor-{generation}"),generation,&target,false).unwrap();
         }
         assert_eq!(store.presentation_resume("source",&old).unwrap()["state"],"SUPERSEDED");
-        assert_eq!(store.presentation_replace("source",&members,"first",0,&target).unwrap_err().code,"PRESENTATION_GENERATION_CONFLICT");
+        assert_eq!(store.presentation_replace("source",&members,"first",0,&target,false).unwrap_err().code,"PRESENTATION_GENERATION_CONFLICT");
         let db=store.db.lock().unwrap();
         assert_eq!(db.query_row("SELECT count(*) FROM presentation_decisions",[],|r|r.get::<_,u64>(0)).unwrap(),32);
         assert_eq!(db.query_row("SELECT count(*) FROM presentation_sources",[],|r|r.get::<_,u64>(0)).unwrap(),1);
@@ -298,13 +349,13 @@ mod tests {
     fn group_overlap_is_rejected_and_rebind_fence_replays_without_retiring_a_successor() {
         let root=crate::test_support::protected_test_dir();let store=Store::open(&root.path().join("state")).unwrap();
         let members=vec!["a".into(),"b".into()];let target=json!({"kind":"channel"});
-        let selected=store.presentation_replace("group",&members,"first",0,&target).unwrap();
+        let selected=store.presentation_replace("group",&members,"first",0,&target,false).unwrap();
         let old:Activation=serde_json::from_value(selected["activation"].clone()).unwrap();
-        assert_eq!(store.presentation_replace("partial",&["a".into()],"partial",0,&target).unwrap_err().code,"PRESENTATION_GROUP_SELECTION_REQUIRED");
+        assert_eq!(store.presentation_replace("partial",&["a".into()],"partial",0,&target,false).unwrap_err().code,"PRESENTATION_GROUP_SELECTION_REQUIRED");
         assert_eq!(store.presentation_rebind_check(&["a".into()]).unwrap_err().code,"PRESENTATION_GROUP_SELECTION_REQUIRED");
         store.presentation_rebind_reserve("abort",&members).unwrap();
         assert_eq!(store.presentation_resume("group",&old).unwrap_err().code,"PRESENTATION_REBIND_PENDING");
-        assert_eq!(store.presentation_replace("group",&members,"blocked",1,&target).unwrap_err().code,"PRESENTATION_REBIND_PENDING");
+        assert_eq!(store.presentation_replace("group",&members,"blocked",1,&target,false).unwrap_err().code,"PRESENTATION_REBIND_PENDING");
         store.presentation_rebind_finish("abort",&members,false).unwrap();
         assert_eq!(store.presentation_resume("group",&old).unwrap()["state"],"ACTIVE");
         store.presentation_rebind_reserve("commit",&members).unwrap();
@@ -318,7 +369,7 @@ mod tests {
         // host to invent a Channel/background activation after committed rebind.
         store.presentation_check(&host).unwrap();
         assert!(store.due_checked("direct-host-owner",&[],1,Some(&host)).unwrap().is_some());
-        let next=store.presentation_replace("group",&members,"new",2,&target).unwrap();
+        let next=store.presentation_replace("group",&members,"new",2,&target,false).unwrap();
         let next:Activation=serde_json::from_value(next["activation"].clone()).unwrap();
         assert!(store.presentation_managed("group").unwrap());
         assert_eq!(store.presentation_check(&host).unwrap_err().code,"PRESENTATION_ACTIVATION_REQUIRED");
@@ -338,15 +389,15 @@ mod tests {
     fn successor_is_cas_idempotent_and_old_resume_cannot_reclaim() {
         let root=crate::test_support::protected_test_dir();
         let store=Store::open(&root.path().join("state")).unwrap();let target=json!({"kind":"channel","thread":"exact"});
-        let first=store.presentation_replace("source",&["member".into()],"first",0,&target).unwrap();
+        let first=store.presentation_replace("source",&["member".into()],"first",0,&target,false).unwrap();
         let old:Activation=serde_json::from_value(first["activation"].clone()).unwrap();
-        assert_eq!(store.presentation_replace("source",&["member".into()],"first",0,&target).unwrap(),first);
-        assert_eq!(store.presentation_replace("source",&["member".into()],"loser",0,&target).unwrap_err().code,"PRESENTATION_GENERATION_CONFLICT");
-        let second=store.presentation_replace("source",&["member".into()],"second",1,&target).unwrap();
+        assert_eq!(store.presentation_replace("source",&["member".into()],"first",0,&target,false).unwrap(),first);
+        assert_eq!(store.presentation_replace("source",&["member".into()],"loser",0,&target,false).unwrap_err().code,"PRESENTATION_GENERATION_CONFLICT");
+        let second=store.presentation_replace("source",&["member".into()],"second",1,&target,false).unwrap();
         assert_eq!(second["current_generation"],2);
         assert_eq!(store.presentation_resume("source",&old).unwrap()["state"],"SUPERSEDED");
-        assert_eq!(store.presentation_replace("source",&["member".into()],"first",0,&target).unwrap()["state"],"SUPERSEDED");
-        assert_eq!(store.presentation_replace("source",&["member".into()],"first",2,&target).unwrap_err().code,"PRESENTATION_ORIGINAL_OPERATION_REQUIRED");
+        assert_eq!(store.presentation_replace("source",&["member".into()],"first",0,&target,false).unwrap()["state"],"SUPERSEDED");
+        assert_eq!(store.presentation_replace("source",&["member".into()],"first",2,&target,false).unwrap_err().code,"PRESENTATION_ORIGINAL_OPERATION_REQUIRED");
         assert_eq!(store.presentation_generation("unrelated").unwrap(),0);
         drop(store);let store=Store::open(&root.path().join("state")).unwrap();
         assert_eq!(store.presentation_generation("source").unwrap(),2);
@@ -356,8 +407,8 @@ mod tests {
     fn activation_does_not_reset_notification_pause_or_batches() {
         let root=crate::test_support::protected_test_dir();let store=Store::open(&root.path().join("state")).unwrap();
         store.control("destination","pause").unwrap();let before=store.status("destination").unwrap();
-        store.presentation_replace("source",&["member".into()],"one",0,&json!({"kind":"channel"})).unwrap();
-        store.presentation_replace("source",&["member".into()],"two",1,&json!({"kind":"channel"})).unwrap();
+        store.presentation_replace("source",&["member".into()],"one",0,&json!({"kind":"channel"}),false).unwrap();
+        store.presentation_replace("source",&["member".into()],"two",1,&json!({"kind":"channel"}),false).unwrap();
         assert_eq!(store.status("destination").unwrap(),before);
     }
     #[test]
@@ -367,7 +418,7 @@ mod tests {
         let barrier=std::sync::Arc::new(std::sync::Barrier::new(2));
         let handles=["left","right"].map(|operation| {
             let store=store.clone();let barrier=barrier.clone();
-            std::thread::spawn(move || {barrier.wait();store.presentation_replace("source",&["member".into()],operation,0,&json!({"kind":"channel"}))})
+            std::thread::spawn(move || {barrier.wait();store.presentation_replace("source",&["member".into()],operation,0,&json!({"kind":"channel"}),false)})
         });
         let results=handles.map(|handle|handle.join().unwrap());
         assert_eq!(results.iter().filter(|r|r.is_ok()).count(),1);
@@ -382,12 +433,12 @@ mod tests {
     fn successor_fences_queued_output_without_resetting_the_original_batch() {
         let root=crate::test_support::protected_test_dir();let store=Store::open(&root.path().join("state")).unwrap();
         let target=json!({"kind":"channel"});
-        let first=store.presentation_replace("source",&["member".into()],"first",0,&target).unwrap();
+        let first=store.presentation_replace("source",&["member".into()],"first",0,&target,false).unwrap();
         let old:Activation=serde_json::from_value(first["activation"].clone()).unwrap();
         let wake=store.due("owner",&[],1).unwrap().unwrap();
         assert!(store.presentation_notification_allowed("source",&["member".into()],Some(&old),"owner",&wake.batch,wake.revision).unwrap());
         let before=store.status("owner").unwrap();
-        let second=store.presentation_replace("source",&["member".into()],"second",1,&target).unwrap();
+        let second=store.presentation_replace("source",&["member".into()],"second",1,&target,false).unwrap();
         let current:Activation=serde_json::from_value(second["activation"].clone()).unwrap();
         assert_eq!(store.status("owner").unwrap(),before);
         assert_eq!(store.presentation_notification_allowed("source",&["member".into()],Some(&old),"owner",&wake.batch,wake.revision).unwrap_err().code,"PRESENTATION_ACTIVATION_SUPERSEDED");

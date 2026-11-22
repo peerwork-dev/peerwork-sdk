@@ -11,6 +11,8 @@ pub(super) struct Intent {
     target: Value,
     operation_id: String,
     expected_generation: u64,
+    #[serde(default)]
+    select_session: bool,
 }
 
 pub(super) use crate::notification_delivery::activation::member_key;
@@ -69,9 +71,14 @@ impl Runtime {
         if request.source_binding!=expected {return Err(local("ORIGINAL_RUNTIME_BINDING_CHANGED"));}
         let group=self.presentation_source(client,&request.options).await?;
         if request.source_group!=group.descriptor {return Err(local("PRESENTATION_GROUP_SELECTION_REQUIRED"));}
+        let host_session = request.target.get("host_session");
+        let valid_session = host_session.is_some_and(|value| value.as_str().is_some_and(|digest|
+            digest.len()==64 && digest.bytes().all(|byte|byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))));
         if !request.target.is_object() || !matches!(request.target["kind"].as_str(),Some("MCP_STDIO_CHANNEL"|"MCP_BACKGROUND_TOOL"))
             || request.target["registration_id"].as_str().is_none_or(|id|!identifier(id))
-            || request.target.as_object().is_none_or(|object|object.len()!=3)
+            || request.target.as_object().is_none_or(|object|object.len()!=3+usize::from(host_session.is_some()))
+            || host_session.is_some() && (!valid_session || request.target["kind"]!="MCP_STDIO_CHANNEL")
+            || request.select_session && !valid_session
             || !request.target.get("host_destination").is_some_and(Value::is_null) {
             return Err(local("PRESENTATION_TARGET_INVALID"));
         }
@@ -82,7 +89,8 @@ impl Runtime {
             return Err(local("PRESENTATION_TARGET_BINDING_MISMATCH"));
         }
         let previous=self.notifications.store.presentation_generation(&group.source)?;
-        let result=self.notifications.store.presentation_replace(&group.source,&group.members,&request.operation_id,request.expected_generation,&request.target)?;
+        let result=self.notifications.store.presentation_replace(&group.source,&group.members,&request.operation_id,
+            request.expected_generation,&request.target,request.select_session)?;
         if result["current_generation"].as_u64()!=Some(previous) {
             for options in &group.bindings {
                 let channel=crate::communication_notifications::channel_key(&crate::communication_notifications::owner(client,options),options,session.generation);

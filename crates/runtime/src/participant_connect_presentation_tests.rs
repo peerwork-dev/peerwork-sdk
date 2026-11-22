@@ -324,5 +324,44 @@ async fn original_two_space_presentations_replace_without_reclaim_or_pending_ope
     assert_eq!(generation().await, selected + 1);
     assert_eq!(tool(&ordinary,"delivery",json!({"mode":"status"})).await["destinations"][0]["control_state"],"PAUSED");
     standby.close().await;
+
+    // The installed MCP fixture above exercises the existing startup path.
+    // Exercise the session-qualified successor through the same authenticated
+    // runtime entry before teaching the frontend to send the host marker.
+    let observed=original.call(json!({"method":"presentation_status","options":options[0]})).await.unwrap();
+    let opts=serde_json::to_value(&options[0]).unwrap();
+    let source=crate::agent_delivery_status::binding(&context,&opts);
+    let activate=|operation:&str,generation:u64,marker:Value,select:bool| {
+        let mut target=json!({"kind":"MCP_STDIO_CHANNEL","registration_id":"installed-claude-session","host_destination":null});
+        if !marker.is_null() {target["host_session"]=marker;}
+        json!({"method":"presentation_activate","activation":{
+            "client_name":source["client_name"],"source_binding":source,"source_group":observed["group"],
+            "options":opts,"target":target,"operation_id":operation,"expected_generation":generation,"select_session":select}})
+    };
+    let submit=|value| crate::communication_runtime::call(&runtime_ready.admin_endpoint,value);
+    let current=generation().await;
+    let selected_session=json!("a".repeat(64));
+    let wrong_session=json!("b".repeat(64));
+    let invalid=submit(activate("invalid-marker",current,json!("not-a-digest"),true)).await.unwrap();
+    assert_eq!(invalid["error"]["code"],"PRESENTATION_TARGET_INVALID");
+    let initial=submit(activate("initial-handshake",current,selected_session.clone(),false)).await.unwrap();
+    assert_eq!(initial["error"]["code"],"CLAUDE_CHANNEL_SESSION_SELECTION_REQUIRED");
+    let initial=submit(activate("choose-this-session",current,selected_session.clone(),true)).await.unwrap();
+    assert_eq!(initial["value"]["state"],"ACTIVE","{initial}");
+    let pinned=generation().await;
+    for marker in [wrong_session,Value::Null] {
+        let result=submit(activate("standby-handshake",pinned,marker,false)).await.unwrap();
+        assert_eq!(result["error"]["code"],"CLAUDE_CHANNEL_SESSION_MISMATCH");
+        assert_eq!(generation().await,pinned);
+    }
+    let same=activate("original-session-returned",pinned,selected_session,false);
+    let activated=submit(same.clone()).await.unwrap();
+    assert_eq!(activated["value"]["current_generation"],pinned+1);
+    assert_eq!(submit(same).await.unwrap(),activated);
+    let old=original.call(json!({"method":"presentation_resume","options":options[1],"activation":initial["value"]["activation"]})).await.unwrap();
+    assert_eq!(old["state"],"SUPERSEDED");
+    assert_eq!(tool(&ordinary,"delivery",json!({"mode":"status"})).await["destinations"][0]["control_state"],"PAUSED");
+    assert_eq!(original.call(json!({"method":"binding"})).await.unwrap(),binding);
+    assert_eq!(tool(&ordinary,"status",json!({"operation_id":"presentation-original-message"})).await["command_id"],message["command_id"]);
     stop.cancel();task.await.unwrap().unwrap();
 }
