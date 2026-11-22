@@ -19,12 +19,19 @@ struct InstalledChannel {
 
 impl InstalledChannel {
     async fn start(project: &Path, entry: &Value, launch: Option<&crate::claude_channel_launch::Launch>) -> Self {
+        Self::start_with_session(project, entry, launch, launch.map(|launch| launch.session.as_str())).await
+    }
+
+    async fn start_with_session(project: &Path, entry: &Value,
+        launch: Option<&crate::claude_channel_launch::Launch>, session: Option<&str>) -> Self {
         use std::process::Stdio;
         let mut command = tokio::process::Command::new(entry["command"].as_str().unwrap());
         command.env_remove(crate::claude_channel_launch::LAUNCH_ENV).env_remove(crate::claude_channel_launch::SESSION_ENV);
         if let Some(launch)=launch {
             command.env(crate::claude_channel_launch::LAUNCH_ENV, serde_json::to_string(launch).unwrap());
-            command.env(crate::claude_channel_launch::SESSION_ENV,&launch.session);
+        }
+        if let Some(session)=session {
+            command.env(crate::claude_channel_launch::SESSION_ENV,session);
         }
         let mut child = command
             .args(entry["args"].as_array().unwrap().iter().map(|arg| arg.as_str().unwrap()))
@@ -436,6 +443,16 @@ async fn original_two_space_presentations_replace_without_reclaim_or_pending_ope
     }).await.expect("a new child of the retired launch tried to reclaim its old generation");
     retired_child.close().await;
     resumed.close().await;
+    // A real Claude /resume keeps the launch environment. The subsequently
+    // reloaded MCP child receives the ID of the newly selected conversation.
+    let mut switched = InstalledChannel::start_with_session(
+        &project, entry, Some(&resumed_launch), Some(&other_launch.session),
+    ).await;
+    let switched_context = switched.context().await;
+    assert_eq!(switched_context["actor_id"],config.expected_actor);
+    assert_eq!(switched_context["host_channel"]["validation_error"],"CLAUDE_CHANNEL_LAUNCH_MISMATCH");
+    assert_eq!(generation().await,selected+1,"a new session's MCP reload cannot reclaim presentation");
+    switched.close().await;
     tokio::time::sleep(Duration::from_secs(6)).await;
     assert_eq!(generation().await,selected+1,"closing both launches must not promote a standby");
     assert_eq!(tool(&ordinary,"delivery",json!({"mode":"status"})).await["destinations"][0]["control_state"],"PAUSED");
