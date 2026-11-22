@@ -205,8 +205,8 @@ where R:AsyncBufRead+Send+Unpin+'static,W:AsyncWrite+Unpin {
     let channel_state=claude_channel::State::default();
     let mut channel_probe=None;
     if claude {
-        match crate::claude_channel_launch::Launch::observe().and_then(|launch| {
-            let probe=claude_channel::ActivationProbe::prepare(&tools,&launch)?;
+        match crate::claude_channel_launch::Launch::observe_channel(|server| tools.verify_claude_entry(server)).and_then(|launch| {
+            let probe=claude_channel::ActivationProbe::prepare(&launch)?;
             Ok((launch,probe))
         }) {
             Ok((launch,probe))=>{
@@ -410,6 +410,15 @@ where R:AsyncBufRead+Send+Unpin+'static,W:AsyncWrite+Unpin {
                                         listener_permit = Some(permit);
                                         value
                                     })
+                                }
+                                AgentRequest::Delivery { ref mode, .. } if claude && mode == "self_test" => {
+                                    if let Some(code) = channel_state.validation_error() {
+                                        let mut error = ParticipantError::local(&code, "CLAUDE_CHANNEL");
+                                        error.details = Some(crate::host_recovery_policy::diagnostic(&code));
+                                        Err(error)
+                                    } else {
+                                        tools.call(request).await
+                                    }
                                 }
                                 request => tools.call(request).await,
                             };

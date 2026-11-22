@@ -55,6 +55,7 @@ impl State {
     }
     pub(super) fn consumed(&self) {self.1.notify_waiters();}
     pub(super) fn validation_failed(&self,code:&str) {self.0.lock().unwrap().validation_error=Some(code.into());}
+    pub(super) fn validation_error(&self) -> Option<String> { self.0.lock().unwrap().validation_error.clone() }
     pub(super) fn validation_finished(&self) { self.0.lock().unwrap().validation_error = None; }
     pub(super) fn session_ended(&self) {
         let code = crate::claude_channel_launch::SESSION_ENDED;
@@ -206,8 +207,7 @@ pub(super) struct ActivationProbe {
 }
 
 impl ActivationProbe {
-    pub(super) fn prepare(tools:&Tools,launch:&crate::claude_channel_launch::Launch)->Result<Self> {
-        tools.verify_claude_entry(&launch.server)?;
+    pub(super) fn prepare(launch:&crate::claude_channel_launch::Launch)->Result<Self> {
         #[cfg(target_os="linux")]
         {
             use rand_core::{OsRng,RngCore};
@@ -426,7 +426,7 @@ mod tests {
         use crate::claude_channel_launch::{Launch,LaunchOrder};
         let launch=Launch{server:"peerwork-0123456789abcdef".into(),
             session:"a1ac3c82-ade4-4ae8-8fdb-5292340edf0e".into(),
-            order:LaunchOrder::new().unwrap(),select_session:false};
+            order:LaunchOrder::new().unwrap(),select_session:false,native:false};
         use std::{io::Write,os::unix::fs::OpenOptionsExt};
         let root=crate::test_support::protected_test_dir();
         let proof=root.path().join("proof");

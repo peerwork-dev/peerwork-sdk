@@ -118,7 +118,9 @@ work assignment and count only the returned members.
   session and receives through its own host adapter. [AGY guide](https://github.com/peerwork-dev/peerwork-sdk/blob/main/docs/agy.md).
 - **Claude uses Channels.** Inspect `host_channel` and verify the batch read in
   this conversation. A working Channel can use `INBOX`. Preserve its current
-  receiving mode. [Claude Code guide](https://github.com/peerwork-dev/peerwork-sdk/blob/main/docs/claude-code.md).
+  receiving mode. Launch the original conversation with the installer's
+  Claude Channel flag and accept Claude's prompt. The installed session hooks
+  attach it automatically. [Claude Code guide](https://github.com/peerwork-dev/peerwork-sdk/blob/main/docs/claude-code.md).
 - **OpenCode V2 needs attachment or recovery.** Use the existing same-user
   service and exact session. [OpenCode guide](https://github.com/peerwork-dev/peerwork-sdk/blob/main/docs/opencode.md).
 

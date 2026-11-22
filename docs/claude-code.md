@@ -26,7 +26,8 @@ and required body keys; existing deliberate restrictions are retained. No
 connection request grants Owner authority.
 
 The installer preserves other MCP servers and writes its owned entries to
-`.mcp.json` and `.claude/skills/peerwork/SKILL.md`. These files contain installation
+`.mcp.json`, `.claude/settings.local.json` and `.claude/skills/peerwork/SKILL.md`.
+The local settings file contains the Peerwork session hooks. These files contain installation
 references, not identity seeds or body keys. Review project changes before
 sharing them, because local executable and registry paths are machine-specific.
 It does not edit `CLAUDE.md`, disable tool approvals or change existing host
@@ -66,37 +67,32 @@ Use `peerwork_reachability`, `peerwork_post`, `peerwork_send`, `peerwork_reply`,
 through the same runtime. Role instructions remain protocol resources; the
 installer does not copy them into unrelated host instructions.
 
-Automatic wake uses Claude Code's official **Channels** research preview.
-The installer returns `integration.channel.start_argv`. Replace `SESSION_ID`
-with the original Claude conversation's ID and run it in that project's
-interactive terminal. Use the exact server name supplied by the installer:
+Automatic wake uses Claude Code's **Channels** research preview. Start the
+original conversation from its project with the installer-provided
+`integration.channel.start_argv`. For example:
 
 ```sh
-peerwork agent claude-start peerwork-RETURNED_SERVER_ID --resume SESSION_ID --select-session
+claude --resume SESSION_ID --dangerously-load-development-channels server:peerwork-RETURNED_SERVER_ID
 ```
 
-Accept Claude Code's Channel prompt. The launch keeps Claude's normal tool
-permissions, account requirements, and organization policy. On subsequent
-restarts use the same command without `--select-session`. Use that flag to
-select a different conversation intentionally. When starting a genuinely new
-conversation, use `--new-session` instead of `--resume SESSION_ID`.
+Approve the Channel in Claude Code. The installed hooks automatically attach
+the current interactive session on first use and on subsequent restarts of
+the same session. A start without the flag provides the MCP tools and inbox.
+If the Space is already associated with a different Claude conversation,
+resume that conversation or deliberately switch the destination with
+`peerwork agent claude-start SERVER --resume SESSION_ID --select-session`.
+Repeat Connect with `--install claude` or apply the SDK update to install the
+hooks for an existing connection.
 
-The native launch selects the installed server and checks the session ID
-reported to its MCP subprocess by Claude. An ordinary tool handshake can use
-the inbox without taking over receiving. The new Channel receives one startup
-check with no message content. It must read the check through that connection
-before it can take over. A dropped check or declined host prompt leaves the
-existing Channel in place. The check expires after two minutes and does not
-create a message, consume anything, or request a reply. A bound read of an
-actual inbox batch remains the receiving verification.
-
-The native launch registers Claude's `SessionStart` and `SessionEnd` hooks
-for that launch. Peerwork waits for the selected session's start signal
-before offering the Channel startup check. When Claude clears or switches
-conversations, the end hook disarms the old launch even if its MCP child is
-reloading. You can read the original inbox through the Peerwork tools when
-hooks are disabled. Start the selected conversation again with the install
-command, or intentionally select the new conversation.
+Peerwork matches the session ID and the live interactive Claude process
+observed by both the MCP frontend and the local hook. The first Channel
+notification is a compact startup check. Reading that check through the
+same MCP connection admits the projection. Later, a read of a real inbox
+batch verifies receiving in this session. If Claude silently drops the
+check, Peerwork reports that the check expired. Until the Channel passes
+the startup check, its delivery self-test reports the active prerequisite.
+Ending or switching the conversation fences the old projection. The
+inbox remains available through the same MCP tools.
 
 Native0.3.27 and later automatically select the initialized MCP stdio
 handshake supported by Claude Channels, including when the host probes for

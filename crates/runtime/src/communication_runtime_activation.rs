@@ -13,6 +13,8 @@ pub(super) struct Intent {
     expected_generation: u64,
     #[serde(default)]
     select_session: bool,
+    #[serde(default)]
+    select_first_session: bool,
 }
 
 pub(super) use crate::notification_delivery::activation::member_key;
@@ -83,6 +85,7 @@ impl Runtime {
             || host_session.is_some() && (!valid_session || request.target["kind"]!="MCP_STDIO_CHANNEL")
             || host_launch.is_some() && (!valid_session || !valid_launch)
             || request.select_session && !valid_session
+            || request.select_first_session && (!valid_launch || request.select_session)
             || !request.target.get("host_destination").is_some_and(Value::is_null) {
             return Err(local("PRESENTATION_TARGET_INVALID"));
         }
@@ -92,9 +95,14 @@ impl Runtime {
             || request.target.get("host_destination").is_some_and(|v|!v.is_null()&&!v.is_string()) {
             return Err(local("PRESENTATION_TARGET_BINDING_MISMATCH"));
         }
+        let selection = if request.select_first_session {
+            crate::notification_delivery::activation::SessionSelection::First
+        } else {
+            request.select_session.into()
+        };
         let previous=self.notifications.store.presentation_generation(&group.source)?;
         let result=self.notifications.store.presentation_replace(&group.source,&group.members,&request.operation_id,
-            request.expected_generation,&request.target,request.select_session)?;
+            request.expected_generation,&request.target,selection)?;
         if result["current_generation"].as_u64()!=Some(previous) {
             for options in &group.bindings {
                 let channel=crate::communication_notifications::channel_key(&crate::communication_notifications::owner(client,options),options,session.generation);

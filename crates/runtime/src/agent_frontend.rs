@@ -106,8 +106,8 @@ pub fn cli(args: &[String]) -> Value {
                 crate::claude_channel_launch::start(arguments)?;
                 return Ok(Value::Null);
             }
-            if matches!(command.as_str(),"claude-session-start"|"claude-session-end") && arguments.is_empty() {
-                crate::claude_channel_launch::session_hook(command=="claude-session-end")?;
+            if matches!(command.as_str(),"claude-session-start"|"claude-session-end") && arguments.len() <= 1 {
+                crate::claude_channel_launch::session_hook(command=="claude-session-end", arguments.first().map(String::as_str))?;
                 return Ok(Value::Null);
             }
         }

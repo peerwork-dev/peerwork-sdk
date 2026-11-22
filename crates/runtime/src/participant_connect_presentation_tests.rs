@@ -341,16 +341,28 @@ async fn original_two_space_presentations_replace_without_reclaim_or_pending_ope
     let generation = || async {
         original.call(json!({"method":"presentation_status","options":options[0]})).await.unwrap()["current_generation"].as_u64().unwrap()
     };
+    let session = "a1ac3c82-ade4-4ae8-8fdb-5292340edf0e";
+    let sdk_root = std::env::var_os("PEERWORK_SDK_REFERENCE_ROOT").map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."));
+    let python = std::env::var_os("PEERWORK_TEST_PYTHON").unwrap_or_else(|| "python3".into());
+    let native_host = tokio::process::Command::new(python)
+        .arg(sdk_root.join("tests/qualify-claude-native-channel.py"))
+        .args([server, session]).current_dir(&project).output().await.unwrap();
+    assert!(native_host.status.success(), "{}", String::from_utf8_lossy(&native_host.stderr));
+    let generation_after_native_attach = activation_c["generation"].as_u64().unwrap() + 2;
+    assert_eq!(generation().await, generation_after_native_attach,
+        "only the first direct Channel launch and its exact-session restart may select a generation");
+
     let launch = crate::claude_channel_launch::Launch {
-        server: server.clone(), session: "a1ac3c82-ade4-4ae8-8fdb-5292340edf0e".into(),
-        order:crate::claude_channel_launch::LaunchOrder::new().unwrap(), select_session:true,
+        server: server.clone(), session: session.into(),
+        order:crate::claude_channel_launch::LaunchOrder::new().unwrap(), select_session:true, native:false,
     };
     launch.create_proof().unwrap();
     let mut foreground = InstalledChannel::start(&project, entry, Some(&launch)).await;
     let initial_context=foreground.context().await;
     assert_eq!(initial_context["actor_id"],config.expected_actor);
     assert_eq!(initial_context["host_channel"]["validation_error"],"CLAUDE_CHANNEL_LIFECYCLE_UNCONFIRMED");
-    assert_eq!(generation().await,activation_c["generation"]);
+    assert_eq!(generation().await,generation_after_native_attach);
     assert!(tokio::time::timeout(Duration::from_millis(250),foreground.output.next_line()).await.is_err(),
         "a launch with disabled hooks must remain inbox-only");
     assert!(claude_hook(&executable,&launch,&launch.session,false,"").await.status.success());
@@ -358,7 +370,7 @@ async fn original_two_space_presentations_replace_without_reclaim_or_pending_ope
     tool(&ordinary,"delivery",json!({"mode":"self_test","scope":"one"})).await;
     foreground.read_probe().await;
     let selected = generation().await;
-    assert!(selected>activation_c["generation"].as_u64().unwrap());
+    assert!(selected>generation_after_native_attach);
     tool(&ordinary,"delivery",json!({"mode":"self_test","scope":"two"})).await;
     foreground.read_probe().await;
     assert_eq!(generation().await,selected,"all authorized mailboxes share one launch decision");

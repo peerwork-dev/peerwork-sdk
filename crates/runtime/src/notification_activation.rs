@@ -109,6 +109,18 @@ fn selected_groups(db:&Connection,members:&[String])->Result<Vec<String>> {
     Ok(sources.into_iter().collect())
 }
 
+pub(crate) enum SessionSelection {
+    Existing,
+    First,
+    Explicit,
+}
+
+impl From<bool> for SessionSelection {
+    fn from(explicit: bool) -> Self {
+        if explicit { Self::Explicit } else { Self::Existing }
+    }
+}
+
 impl Store {
     /// Final admission checks both authorities under one mutex. Managed
     /// Channel business input also reserves its batch before unsafe-to-repeat IO.
@@ -148,7 +160,7 @@ impl Store {
 
     /// Only authenticated lifecycle authority may invoke this mutation. A lost
     /// reply resumes the same decision; a loser never refreshes its CAS itself.
-    pub(crate) fn presentation_replace(&self, source: &str, members:&[String], operation: &str, expected: u64, target: &Value, select_session: bool) -> Result<Value> {
+    pub(crate) fn presentation_replace(&self, source: &str, members:&[String], operation: &str, expected: u64, target: &Value, selection: impl Into<SessionSelection>) -> Result<Value> {
         valid(source)?; valid(operation)?;
         members_valid(members)?;
         if !target.is_object() || target.to_string().len()>8192 {
@@ -178,10 +190,15 @@ impl Store {
             .transpose().map_err(|_| error("PRESENTATION_STATE_INVALID"))?;
         let selected_session = selected_target.as_ref().and_then(|value| value["host_session"].as_str());
         let requested_session = target["host_session"].as_str();
-        // A tool handshake may resume an exact selected session. Initial
-        // selection or a destination change requires a deliberate local action.
-        // Check this with the generation, inside the admission transaction.
-        if !select_session && requested_session!=selected_session {
+        // An opted-in native Channel may elect the first session after
+        // proving it received the startup notification. Later target changes
+        // require explicit selection. Fence both with the generation CAS.
+        let can_select = match selection.into() {
+            SessionSelection::Existing => false,
+            SessionSelection::First => selected_session.is_none(),
+            SessionSelection::Explicit => true,
+        };
+        if !can_select && requested_session!=selected_session {
             return Err(error(if selected_session.is_none(){"CLAUDE_CHANNEL_SESSION_SELECTION_REQUIRED"}
                 else {"CLAUDE_CHANNEL_SESSION_MISMATCH"}));
         }
@@ -300,6 +317,20 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn native_claude_can_choose_the_first_session_and_only_resume_that_session() {
+        let directory = crate::test_support::protected_test_dir();
+        let store = Store::open(&directory.path().join("native-notifications.sqlite")).unwrap();
+        let members = vec!["member".into()];
+        let target = |session: &str| json!({"kind":"MCP_STDIO_CHANNEL","host_session":session});
+        let first = target(&"b".repeat(64));
+        let other = target(&"c".repeat(64));
+        store.presentation_replace("source", &members, "first", 0, &first, SessionSelection::First).unwrap();
+        assert_eq!(store.presentation_replace("source", &members, "other", 1, &other, SessionSelection::First).unwrap_err().code,
+            "CLAUDE_CHANNEL_SESSION_MISMATCH");
+        assert_eq!(store.presentation_replace("source", &members, "resume", 1, &first, SessionSelection::First).unwrap()["current_generation"], 2);
+    }
+
     #[test]
     fn claude_successor_must_match_the_selected_session_at_commit() {
         let root=crate::test_support::protected_test_dir();

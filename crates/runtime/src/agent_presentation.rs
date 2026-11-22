@@ -128,9 +128,11 @@ impl Lifecycle {
         let endpoint=profile.receive_endpoint_path.clone().unwrap_or_else(||profile.endpoint_path.clone());
         let client=Arc::new(RuntimeClient::connect_bound(endpoint,&profile.expected_origin,&profile.expected_actor,binding).await?);
         let caps=client.call(json!({"method":"capabilities"})).await?;
-        if self.claude_launch.is_some() && !caps["features"].as_array().is_some_and(|features|
-            features.iter().any(|feature|feature=="claude-session-activation-v1")) {
-            return Err(error("CLAUDE_CHANNEL_RUNTIME_UPGRADE_REQUIRED"));
+        if let Some(launch) = &self.claude_launch {
+            let required = if launch.native { "claude-native-auto-attach-v1" } else { "claude-session-activation-v1" };
+            if !caps["features"].as_array().is_some_and(|features| features.iter().any(|feature| feature == required)) {
+                return Err(error("CLAUDE_CHANNEL_RUNTIME_UPGRADE_REQUIRED"));
+            }
         }
         if !caps["features"].as_array().is_some_and(|features|features.iter().any(|feature|feature=="presentation-activation-v1")) {
             self.presentation.lock().await.legacy.insert(scope.into());return Ok(None);
@@ -163,7 +165,11 @@ impl Lifecycle {
             if let Some(launch)=&self.claude_launch {
                 request["activation"]["target"]["host_session"]=json!(launch.session_digest());
                 request["activation"]["target"]["host_launch"]=json!(launch.order);
-                if launch.select_session {request["activation"]["select_session"]=json!(true);}
+                if launch.select_session {
+                    request["activation"]["select_session"]=json!(true);
+                } else if launch.native {
+                    request["activation"]["select_first_session"]=json!(true);
+                }
             }
             let channel_owner = (kind == "MCP_STDIO_CHANNEL" && self.claude_launch.is_none())
                 .then(|| ChannelOwner::Waiting(selection.clone()));

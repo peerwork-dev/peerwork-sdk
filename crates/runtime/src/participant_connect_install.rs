@@ -100,6 +100,15 @@ mod tests {
         let identity=serde_json::to_value(&c.registry.participants).unwrap();
         let ws="W".repeat(43);let claude=Installation{host:"claude".into(),project:project.clone(),executable:std::env::current_exe().unwrap()};
         let agy=Installation{host:"agy".into(),..claude.clone()};
+        #[cfg(target_os = "linux")]
+        let settings = {
+            files::directory(&project.join(".claude"), false).unwrap();
+            let path = project.join(".claude/settings.local.json");
+            let original = json!({"permissions":{"allow":["Read"]},"hooks":{
+                "SessionStart":[{"hooks":[{"type":"command","command":"echo user-hook"}]}]}});
+            files::replace(&path, &serde_json::to_vec(&original).unwrap()).unwrap();
+            (path, original)
+        };
         c.install("worker",&ws,agy.clone()).unwrap();
         let installed=c.install("worker",&ws,claude.clone()).unwrap();
         assert_eq!(installed["channel"]["state"],"ACTIVATION_REQUIRED");
@@ -109,6 +118,18 @@ mod tests {
         assert_eq!(config["mcpServers"][name]["type"],"stdio");
         assert_eq!(config["mcpServers"][name]["args"][8],"--claude-channel");
         assert_eq!(std::fs::read(project.join(".claude/skills/peerwork/SKILL.md")).unwrap(),SKILL.as_bytes());
+        #[cfg(target_os = "linux")]
+        let installed_settings = {
+            let bytes = std::fs::read(&settings.0).unwrap();
+            let value: Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(value["permissions"], settings.1["permissions"]);
+            assert_eq!(value["hooks"]["SessionStart"][0], settings.1["hooks"]["SessionStart"][0]);
+            assert!(value["hooks"]["SessionStart"][1]["hooks"][0]["command"].as_str().unwrap()
+                .ends_with(&format!(" agent claude-session-start {name}")));
+            assert!(value["hooks"]["SessionEnd"][0]["hooks"][0]["command"].as_str().unwrap()
+                .ends_with(&format!(" agent claude-session-end {name}")));
+            bytes
+        };
         let before=std::fs::metadata(project.join(".mcp.json")).unwrap().modified().unwrap();
         assert_eq!(c.install("worker",&ws,claude.clone()).unwrap(),installed);
         assert_eq!(std::fs::metadata(project.join(".mcp.json")).unwrap().modified().unwrap(),before);
@@ -117,7 +138,11 @@ mod tests {
         assert_eq!(discovered.len(),1,"same identity is one discovery choice across hosts");
         c.uninstall("worker",&ws,agy).unwrap();
         assert!(project.join(".claude/skills/peerwork/SKILL.md").is_file());
+        #[cfg(target_os = "linux")]
+        assert_eq!(std::fs::read(&settings.0).unwrap(), installed_settings);
         c.uninstall("worker",&ws,claude).unwrap();
+        #[cfg(target_os = "linux")]
+        assert_eq!(serde_json::from_slice::<Value>(&std::fs::read(&settings.0).unwrap()).unwrap(), settings.1);
         assert_eq!(json_config(&project.join(".mcp.json")).unwrap(),original);
         assert!(!project.join(".claude/skills/peerwork/SKILL.md").exists());
     }
@@ -556,6 +581,70 @@ fn server_entries<'a>(value:&'a mut Value,host:&str)->Result<&'a mut serde_json:
         value["mcpServers"].as_object_mut().ok_or_else(||local("HOST_CONFIGURATION_INVALID"))
     }
 }
+#[cfg(target_os = "linux")]
+fn claude_settings_update(
+    bytes: Option<&[u8]>,
+    name: &str,
+    executable: Option<&Path>,
+    prior: Option<&Installed>,
+) -> Result<Option<Vec<u8>>> {
+    let mut value = match bytes {
+        Some(bytes) => peerwork_core::strict_json::parse_strict_json(bytes)
+            .map_err(|_| local("CLAUDE_CHANNEL_SETTINGS_INVALID"))?,
+        None if executable.is_none() => return Ok(None),
+        None => json!({}),
+    };
+    let original = value.clone();
+    let invalid = || local("CLAUDE_CHANNEL_SETTINGS_INVALID");
+    let root = value.as_object_mut().ok_or_else(invalid)?;
+    let hooks = root.entry("hooks").or_insert_with(|| json!({})).as_object_mut().ok_or_else(invalid)?;
+    for (event, suffix, matcher) in [
+        ("SessionStart", "start", Some("startup|resume")),
+        ("SessionEnd", "end", None),
+    ] {
+        let entry = |path: &Path| -> Result<Value> {
+            let executable = crate::claude_channel_launch::shell_executable(path)?;
+            let mut entry = json!({"hooks":[{"type":"command",
+                "command":format!("{executable} agent claude-session-{suffix} {name}"),"timeout":1}]});
+            if let Some(matcher) = matcher {
+                entry["matcher"] = json!(matcher);
+            }
+            Ok(entry)
+        };
+        let wanted = executable.map(entry).transpose()?;
+        let owned = prior.map(|prior| entry(&prior.spec.executable)).transpose()?;
+        let previous = prior.and_then(|prior| prior.previous_entry.as_ref())
+            .and_then(|entry| entry["command"].as_str()).map(Path::new).map(entry).transpose()?;
+        let entries = hooks.entry(event).or_insert_with(|| json!([])).as_array_mut().ok_or_else(invalid)?;
+        for other in entries.iter() {
+            let same_command = [wanted.as_ref(), owned.as_ref(), previous.as_ref()].into_iter().flatten()
+                .any(|known| other["hooks"].as_array().is_some_and(|handlers| handlers.iter()
+                    .any(|handler| handler["command"] == known["hooks"][0]["command"])));
+            if same_command && ![wanted.as_ref(), owned.as_ref(), previous.as_ref()].contains(&Some(other)) {
+                return Err(local("CLAUDE_CHANNEL_SETTINGS_CHANGED"));
+            }
+        }
+        if let Some(wanted) = wanted {
+            entries.retain(|other| other == &wanted || Some(other) != owned.as_ref() && Some(other) != previous.as_ref());
+            if !entries.contains(&wanted) {
+                entries.push(wanted);
+            }
+        } else {
+            entries.retain(|other| Some(other) != owned.as_ref() && Some(other) != previous.as_ref());
+        }
+        if entries.is_empty() && !original["hooks"][event].as_array().is_some_and(Vec::is_empty) {
+            hooks.remove(event);
+        }
+    }
+    if hooks.is_empty() && original.get("hooks").is_none_or(|hooks| hooks.as_object().is_some_and(|hooks| !hooks.is_empty())) {
+        root.remove("hooks");
+    }
+    if value == original {
+        return Ok(None);
+    }
+    serde_json::to_vec_pretty(&value).map(Some).map_err(|_| invalid())
+}
+
 fn changed_config(host:&str,path:&Path,name:&str)->ParticipantError {
     let mut error=local("HOST_CONFIGURATION_CHANGED");
     if host=="opencode" {error.details=Some(json!({"file":path,"field":format!("mcp.servers.{name}"),"next_action":"RESTORE_OR_RESELECT_ORIGINAL_OWNED_ENTRY"}));}
@@ -834,6 +923,14 @@ impl Connect {
                 )
             }
         };
+        #[cfg(target_os = "linux")]
+        let claude_settings = if spec.host == "claude" {
+            let old = agents.read("settings.local.json", 256 * 1024, false)?;
+            let new = claude_settings_update(old.as_deref(), &name, Some(&spec.executable), prior.as_ref())?;
+            new.map(|new| (old, new))
+        } else {
+            None
+        };
         let entry_owned = prior.as_ref().is_some_and(|p| p.entry_owned);
         // A plan to publish is not proof of publication. On a lost pre-write
         // attempt, an identical file encountered later remains user-owned.
@@ -913,6 +1010,10 @@ impl Connect {
                 .entry_owned = true;
             self.save()?;
         }
+        #[cfg(target_os = "linux")]
+        if let Some((old, new)) = claude_settings {
+            agents.replace("settings.local.json", old.as_deref(), &new)?;
+        }
         if existing_skill.as_deref() != Some(SKILL.as_bytes()) {
             skill_dir.replace("SKILL.md",existing_skill.as_deref(),SKILL.as_bytes())?;
             project.ownership.skill_owned = true;
@@ -933,7 +1034,9 @@ impl Connect {
             "next_action":"REFRESH_HOST_AND_CALL_PEERWORK_CONTEXT","identity_files_copied":false});
         result["automatic_startup"] = self.enroll_startup(participant)?;
         if spec.host=="claude" {
-            result["channel"]=json!({"state":"ACTIVATION_REQUIRED","maturity":"RESEARCH_PREVIEW","start_argv":[spec.executable,"agent","claude-start",name,"--resume","SESSION_ID","--select-session"],"host_acceptance":"NOT_ATTESTED","next_action":"ENABLE_CHANNEL_IN_CLAUDE_AND_VERIFY_A_REAL_MESSAGE"});
+            result["channel"]=json!({"state":"ACTIVATION_REQUIRED","maturity":"RESEARCH_PREVIEW",
+                "start_argv":["claude","--resume","SESSION_ID","--dangerously-load-development-channels",format!("server:{name}")],
+                "host_acceptance":"NOT_ATTESTED","next_action":"ENABLE_CHANNEL_IN_CLAUDE_AND_VERIFY_A_REAL_MESSAGE"});
         }
         if spec.host=="opencode" {
             result["supported_host_api"]=json!("OPENCODE_V2");
@@ -1013,6 +1116,13 @@ impl Connect {
                 project.ownership.skill_hash.as_ref() == Some(&hash)
                     || project.ownership.pending_skill_hash.as_ref() == Some(&hash)
             });
+        #[cfg(target_os = "linux")]
+        if spec.host == "claude" {
+            let old = agents.read("settings.local.json", 256 * 1024, false)?;
+            if let Some(new) = claude_settings_update(old.as_deref(), &owned.name, None, Some(&owned))? {
+                agents.replace("settings.local.json", old.as_deref(), &new)?;
+            }
+        }
         if let Some(bytes) = new_config {
             config_directory.replace(config_name,old_config.as_deref(),&bytes)?;
         }
