@@ -175,7 +175,13 @@ mod tests {
             Some(saved), ownership.claims.get(&reference)).err().unwrap();
         assert_eq!(error.code, "CLAUDE_CHANNEL_SETTINGS_CHANGED");
         assert_eq!(error.details.unwrap()["event"], "SessionStart");
+        // Simulate an uninstall that removed its own hook but stopped before
+        // committing the local installation removal.
+        let mut ownership = ownership;
+        ownership.save(&reference, Some([None, None])).unwrap();
+        files::replace(&settings, &serde_json::to_vec(&original).unwrap()).unwrap();
         drop(ownership);
+        assert!(connect.registry.installations.values().any(|record| record.committed));
         connect.uninstall("worker", &workspace, spec).unwrap();
         assert_eq!(serde_json::from_slice::<Value>(&std::fs::read(&settings).unwrap()).unwrap(), original);
     }
@@ -1246,16 +1252,23 @@ impl Connect {
                     || project.ownership.pending_skill_hash.as_ref() == Some(&hash)
             });
         #[cfg(target_os = "linux")]
-        if spec.host == "claude" {
+        let claude_hook_cleanup = if spec.host == "claude" {
             let mut ownership = ClaudeHookOwnership::open(&spec.project)?;
             let old = agents.read("settings.local.json", 256 * 1024, false)?;
             let plan = claude_settings_update(old.as_deref(), &owned.name, None, Some(&owned),
                 ownership.claims.get(&own_reference))?;
+            ownership.save(&own_reference, Some(plan.original))?;
             if let Some(new) = plan.replacement {
                 agents.replace("settings.local.json", old.as_deref(), &new)?;
             }
-            ownership.save(&own_reference, None)?;
-        }
+            // An interrupted uninstall still has a committed installation
+            // record. Keep the empty claim so a retry cannot infer ownership
+            // of a surviving user hook from the legacy MCP record.
+            ownership.save(&own_reference, Some([None, None]))?;
+            Some(ownership)
+        } else {
+            None
+        };
         if let Some(bytes) = new_config {
             config_directory.replace(config_name,old_config.as_deref(),&bytes)?;
         }
@@ -1273,6 +1286,10 @@ impl Connect {
         project_root.verify()?;
         self.registry.installations.remove(&key);
         self.save()?;
+        #[cfg(target_os = "linux")]
+        if let Some(mut ownership) = claude_hook_cleanup {
+            ownership.save(&own_reference, None)?;
+        }
         Ok(
             json!({"state":"HOST_INTEGRATION_REMOVED","identity_and_recovery_retained":true,"remote_grants_changed":false,"skill_retained":skill_retained}),
         )
