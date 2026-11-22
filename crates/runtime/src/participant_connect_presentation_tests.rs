@@ -156,17 +156,24 @@ fn new_frontend(directory:&Path,handle:&str,kind:&str)->Lifecycle {
     lifecycle.presentation_transport(kind).unwrap();lifecycle
 }
 
-async fn end_claude_session(executable:&Path, launch:&crate::claude_channel_launch::Launch,
-    session:&str, reason:&str) -> std::process::Output {
+async fn claude_hook(executable:&Path, launch:&crate::claude_channel_launch::Launch,
+    session:&str, ending:bool, reason:&str) -> std::process::Output {
     use std::process::Stdio;
     let mut child=tokio::process::Command::new(executable)
-        .args(["agent","claude-session-end"])
+        .args(["agent",if ending{"claude-session-end"}else{"claude-session-start"}])
         .env(crate::claude_channel_launch::LAUNCH_ENV,serde_json::to_string(launch).unwrap())
         .env(crate::claude_channel_launch::SESSION_ENV,"323ae6a5-ee4d-4337-82ef-b8ffe7d41c46")
         .stdin(Stdio::piped()).stdout(Stdio::piped()).kill_on_drop(true).spawn().unwrap();
-    let event=json!({"hook_event_name":"SessionEnd","session_id":session,"reason":reason});
+    let event=json!({"hook_event_name":if ending{"SessionEnd"}else{"SessionStart"},
+        "session_id":session,"reason":reason,"source":"startup"});
     child.stdin.take().unwrap().write_all(event.to_string().as_bytes()).await.unwrap();
     tokio::time::timeout(Duration::from_secs(3),child.wait_with_output()).await.unwrap().unwrap()
+}
+
+async fn prove_claude_launch(executable:&Path, launch:&crate::claude_channel_launch::Launch) {
+    launch.create_proof().unwrap();
+    let proof=claude_hook(executable,launch,&launch.session,false,"").await;
+    assert!(proof.status.success(),"{}",String::from_utf8_lossy(&proof.stdout));
 }
 
 #[tokio::test(flavor="multi_thread",worker_threads=4)]
@@ -325,7 +332,15 @@ async fn original_two_space_presentations_replace_without_reclaim_or_pending_ope
         server: server.clone(), session: "a1ac3c82-ade4-4ae8-8fdb-5292340edf0e".into(),
         order:crate::claude_channel_launch::LaunchOrder::new().unwrap(), select_session:true,
     };
+    launch.create_proof().unwrap();
     let mut foreground = InstalledChannel::start(&project, entry, Some(&launch)).await;
+    let initial_context=foreground.context().await;
+    assert_eq!(initial_context["actor_id"],config.expected_actor);
+    assert_eq!(initial_context["host_channel"]["validation_error"],"CLAUDE_CHANNEL_LIFECYCLE_UNCONFIRMED");
+    assert_eq!(generation().await,activation_c["generation"]);
+    assert!(tokio::time::timeout(Duration::from_millis(250),foreground.output.next_line()).await.is_err(),
+        "a launch with disabled hooks must remain inbox-only");
+    assert!(claude_hook(&executable,&launch,&launch.session,false,"").await.status.success());
     foreground.confirm_activation().await;
     tool(&ordinary,"delivery",json!({"mode":"self_test","scope":"one"})).await;
     foreground.read_probe().await;
@@ -348,6 +363,7 @@ async fn original_two_space_presentations_replace_without_reclaim_or_pending_ope
     let declined_launch=crate::claude_channel_launch::Launch {
         order:crate::claude_channel_launch::LaunchOrder::new().unwrap(),select_session:false,..launch.clone()
     };
+    prove_claude_launch(&executable,&declined_launch).await;
     let mut declined=InstalledChannel::start(&project,entry,Some(&declined_launch)).await;
     let unanswered=declined.pending_activation().await;
     assert_eq!(declined.context().await["host_channel"]["validation_error"],"CLAUDE_CHANNEL_CONFIRMATION_REQUIRED");
@@ -356,7 +372,12 @@ async fn original_two_space_presentations_replace_without_reclaim_or_pending_ope
     tool(&ordinary,"delivery",json!({"mode":"self_test","scope":"one"})).await;
     foreground.read_probe().await;
     assert_eq!(generation().await,selected,"the incumbent remains able to receive while confirmation is missing");
-    assert!(end_claude_session(&executable,&declined_launch,&declined_launch.session,"resume").await.status.success());
+    declined.close().await;
+    let mut declined=InstalledChannel::start(&project,entry,Some(&declined_launch)).await;
+    let unanswered=declined.pending_activation().await;
+    assert_eq!(declined.context().await["host_channel"]["validation_error"],"CLAUDE_CHANNEL_CONFIRMATION_REQUIRED");
+    assert_eq!(generation().await,selected,"a reload in the same live session can reuse its proof without taking over");
+    assert!(claude_hook(&executable,&declined_launch,&declined_launch.session,true,"resume").await.status.success());
     declined.answer_activation(unanswered,false).await;
     assert_eq!(declined.context().await["host_channel"]["validation_error"],"CLAUDE_CHANNEL_SESSION_ENDED");
     declined.close().await;
@@ -365,6 +386,7 @@ async fn original_two_space_presentations_replace_without_reclaim_or_pending_ope
         session: "bf52dc5c-ac99-4a49-959d-6c7bfe4073f4".into(),order:crate::claude_channel_launch::LaunchOrder::new().unwrap(),
         select_session:false,..launch.clone()
     };
+    prove_claude_launch(&executable,&other_launch).await;
     let mut other=InstalledChannel::start(&project,entry,Some(&other_launch)).await;
     other.confirm_activation().await;
     tokio::time::timeout(Duration::from_secs(12),async {
@@ -380,6 +402,7 @@ async fn original_two_space_presentations_replace_without_reclaim_or_pending_ope
     let resumed_launch=crate::claude_channel_launch::Launch {
         order:crate::claude_channel_launch::LaunchOrder::new().unwrap(),select_session:false,..launch.clone()
     };
+    prove_claude_launch(&executable,&resumed_launch).await;
     let mut resumed=InstalledChannel::start(&project,entry,Some(&resumed_launch)).await;
     resumed.confirm_activation().await;
     tokio::time::timeout(Duration::from_secs(12),async {
@@ -395,13 +418,13 @@ async fn original_two_space_presentations_replace_without_reclaim_or_pending_ope
         _=handshake_only.next()=>panic!("a handshake-only process presented a new batch"),
     };
     resumed.observe_probe(resumed_notice).await;
-    let mismatched=end_claude_session(&executable,&resumed_launch,&other_launch.session,"clear").await;
+    let mismatched=claude_hook(&executable,&resumed_launch,&other_launch.session,true,"clear").await;
     assert!(!mismatched.status.success());
     assert_eq!(serde_json::from_slice::<Value>(&mismatched.stdout).unwrap()["error"]["code"],"CLAUDE_CHANNEL_LAUNCH_MISMATCH");
     tool(&ordinary,"delivery",json!({"mode":"self_test","scope":"one"})).await;
     resumed.read_probe().await;
     for _ in 0..2 {
-        assert!(end_claude_session(&executable,&resumed_launch,&resumed_launch.session,"clear").await.status.success());
+        assert!(claude_hook(&executable,&resumed_launch,&resumed_launch.session,true,"clear").await.status.success());
     }
     let ended=resumed.context().await;
     assert_eq!(ended["host_channel"]["validation_error"],"CLAUDE_CHANNEL_SESSION_ENDED");
@@ -442,7 +465,16 @@ async fn original_two_space_presentations_replace_without_reclaim_or_pending_ope
         }
     }).await.expect("a new child of the retired launch tried to reclaim its old generation");
     retired_child.close().await;
+    assert!(claude_hook(&executable,&launch,&launch.session,true,"resume").await.status.success(),
+        "ending in an MCP process gap must still retire the launch proof");
+    assert!(!claude_hook(&executable,&launch,&launch.session,false,"").await.status.success());
     resumed.close().await;
+    let old_hook=claude_hook(&executable,&resumed_launch,&resumed_launch.session,false,"").await;
+    assert!(!old_hook.status.success(),"a late start hook cannot recreate an ended proof");
+    let mut ended_reload=InstalledChannel::start(&project,entry,Some(&resumed_launch)).await;
+    assert_eq!(ended_reload.context().await["host_channel"]["validation_error"],"CLAUDE_CHANNEL_LIFECYCLE_UNCONFIRMED");
+    assert_eq!(generation().await,selected+1);
+    ended_reload.close().await;
     // A real Claude /resume keeps the launch environment. The subsequently
     // reloaded MCP child receives the ID of the newly selected conversation.
     let mut switched = InstalledChannel::start_with_session(

@@ -228,10 +228,28 @@ impl ActivationProbe {
         unreachable!("Linux is required to prepare a Claude Channel")
     }
 
+    pub(super) fn started(&self) -> crate::KernelCancellationToken {
+        #[cfg(target_os = "linux")]
+        { self.launch.started.clone() }
+        #[cfg(not(target_os = "linux"))]
+        unreachable!("Linux is required to prepare a Claude Channel")
+    }
+
+    pub(super) fn current(&self) -> bool {
+        #[cfg(target_os = "linux")]
+        { self.launch.current() }
+        #[cfg(not(target_os = "linux"))]
+        false
+    }
+
+    pub(super) fn awaiting_start(&self) -> bool {
+        !self.sent && !self.lifetime().is_cancelled()
+    }
+
     /// One transient, content-free probe per launch connection. It is never
     /// registered as mailbox work or sent through the resident runtime.
     pub(super) fn offer(&mut self)->Option<Value> {
-        if self.sent {return None;}
+        if self.sent || !self.current() {return None;}
         self.sent=true;
         self.deadline=Some(tokio::time::Instant::now()+Duration::from_secs(120));
         let reference=json!({"batch":self.token});
@@ -241,7 +259,8 @@ impl ActivationProbe {
     }
 
     pub(super) fn confirm(&mut self,arguments:&Value)->bool {
-        if self.deadline.is_none_or(|deadline|tokio::time::Instant::now()>=deadline) || arguments!=&json!({"batch":self.token}) {
+        if self.deadline.is_none_or(|deadline|tokio::time::Instant::now()>=deadline)
+            || arguments!=&json!({"batch":self.token}) || !self.current() {
             return false;
         }
         self.deadline=None;
@@ -408,8 +427,14 @@ mod tests {
         let launch=Launch{server:"peerwork-0123456789abcdef".into(),
             session:"a1ac3c82-ade4-4ae8-8fdb-5292340edf0e".into(),
             order:LaunchOrder::new().unwrap(),select_session:false};
+        use std::{io::Write,os::unix::fs::OpenOptionsExt};
+        let root=crate::test_support::protected_test_dir();
+        let proof=root.path().join("proof");
+        let mut marker=std::fs::OpenOptions::new().write(true).create_new(true)
+            .mode(0o600).open(&proof).unwrap();
+        marker.write_all(&[2,1,0,0,0]).unwrap();
         let mut probe=ActivationProbe{token:"claude-activation-demo".into(),
-            sent:false,deadline:None,launch:launch.acquire().unwrap()};
+            sent:false,deadline:None,launch:launch.acquire_at(proof.clone()).unwrap()};
         let arguments=json!({"batch":probe.token});
         assert!(!probe.confirm(&arguments));
         let notice=probe.offer().unwrap();
@@ -421,6 +446,8 @@ mod tests {
         probe.deadline=Some(tokio::time::Instant::now());
         assert!(!probe.confirm(&arguments));
         assert!(probe.offer().is_none());
+        std::fs::remove_file(proof).unwrap();
+        assert!(!probe.current(),"losing the session proof closes admission");
     }
     #[test]
     fn new_channel_requires_its_own_written_batch_read_and_resets_on_source_change() {

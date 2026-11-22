@@ -222,6 +222,9 @@ os.execv(sdk, [sdk, *sys.argv[2:]])
     primary, host = terminal_process(
         [str(cli),'agent','claude-start',server,'--resume',original,'--select-session'],root,env)
     listener = None
+    proof_path = None
+    start_signal = False
+    proof_before_switch = None
     seen = bytearray()
     accepted_key = accepted_channel = sent_resume = fence_signal = False
     children_before = []
@@ -236,6 +239,7 @@ os.execv(sdk, [sdk, *sys.argv[2:]])
             marker = root/'launch.json'
             if listener is None and marker.is_file() and marker.stat().st_size:
                 launch = json.loads(marker.read_text())
+                proof_path = root/'.local'/'state'/'peerwork'/'claude-launches'/launch['order']['nonce']
                 key = hashlib.sha256(f"{launch['server']}:{launch['order']['nonce']}".encode()).hexdigest()
                 listener = socket.socket(socket.AF_UNIX)
                 listener.bind(f'\0peerwork-claude-{key}')
@@ -246,9 +250,13 @@ os.execv(sdk, [sdk, *sys.argv[2:]])
                 connection, _ = listener.accept()
                 with connection:
                     connection.settimeout(1.0)
-                    assert connection.recv(1)==b'\x01'
-                    connection.sendall(b'\x01')
-                fence_signal = sent_resume
+                    event = connection.recv(1)
+                    assert event in (b'\x01',b'\x02')
+                    connection.sendall(event)
+                if event == b'\x01':
+                    fence_signal = sent_resume
+                else:
+                    start_signal = True
             if primary in ready:
                 try:
                     seen.extend(os.read(primary, 32768))
@@ -267,7 +275,12 @@ os.execv(sdk, [sdk, *sys.argv[2:]])
             children = json_lines(root/'children.jsonl')
             ran_start = any(row['event']=='SessionStart' and row['id']==original for row in events)
             initial_visible = b'original fixture transcript.' in normalized and b'for agents' in normalized
-            if not sent_resume and listener is not None and children and initial_visible and (ran_start or not require_hooks):
+            proof_ready = proof_path is not None and proof_path.is_file()
+            if not sent_resume and proof_ready and children and initial_visible and (ran_start or not require_hooks):
+                current_proof = proof_path.read_bytes()
+                if len(current_proof) != 5 or current_proof[0] != (2 if require_hooks else 0):
+                    continue
+                proof_before_switch = current_proof[0]
                 children_before = children
                 os.write(primary, b'/resume\r')
                 sent_resume = True
@@ -305,11 +318,15 @@ os.execv(sdk, [sdk, *sys.argv[2:]])
         old_launch_retained = any(row['session']==destination and row.get('launch')==launch_digest
                                   for row in children[len(children_before):])
         end_matches = len(ended)==1 and ended[0]['id']==original
-        hook_gate = fence_signal and switched and end_matches if require_hooks else not fence_signal and not events
+        proof_removed = proof_path is not None and not proof_path.exists()
+        hook_gate = (fence_signal and switched and end_matches and proof_removed and proof_before_switch==2
+                     if require_hooks else not fence_signal and not events and not proof_removed and proof_before_switch==0)
         state = 'PASS' if hook_gate and updated_child and old_launch_retained and host.poll() is None else 'INCONCLUSIVE'
         summary = {'state':state,'real_original_host_stayed_live':host.poll() is None,
                    'resume_sent':sent_resume,'old_session_end_matches_launch':bool(ended and ended[0]['id']==original),
                    'native_end_signal':fence_signal,'new_session_start_observed':switched,
+                   'native_start_signal':start_signal,'initial_lifecycle_proof':proof_before_switch,
+                   'lifecycle_proof_removed':proof_removed,
                    'original_mcp_child_survived':original_child_survived,'mcp_spawn_count':len(children),
                    'before_switch_mcp_children':len(children_before),'loopback_transcript_model':True,
                    'authenticated_channel_wake':False,'binary_sha256':hashlib.sha256(cli.read_bytes()).hexdigest()}

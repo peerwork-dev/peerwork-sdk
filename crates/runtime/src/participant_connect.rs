@@ -45,7 +45,7 @@ pub use discovery::Discovery;
 mod intent;
 #[path="participant_connect_opencode.rs"]
 mod opencode;
-#[cfg(test)]
+#[cfg(all(test,target_os="linux"))]
 #[path="participant_connect_presentation_tests.rs"]
 mod presentation_tests;
 pub use intent::ConnectIntent;

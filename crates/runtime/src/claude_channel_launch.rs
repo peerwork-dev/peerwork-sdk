@@ -8,14 +8,33 @@ use std::{io::IsTerminal, process::Command};
 pub(crate) const LAUNCH_ENV: &str = "PEERWORK_CLAUDE_CHANNEL_LAUNCH";
 pub(crate) const SESSION_ENV: &str = "CLAUDE_CODE_SESSION_ID";
 pub(crate) const SESSION_ENDED: &str = "CLAUDE_CHANNEL_SESSION_ENDED";
+pub(crate) const LIFECYCLE_UNCONFIRMED: &str = "CLAUDE_CHANNEL_LIFECYCLE_UNCONFIRMED";
 
 #[cfg(target_os = "linux")]
 const END: u8 = 1;
+#[cfg(target_os = "linux")]
+const START: u8 = 2;
 
 #[cfg(target_os = "linux")]
 pub(crate) struct SessionGuard {
     pub(crate) ended: crate::KernelCancellationToken,
+    pub(crate) started: crate::KernelCancellationToken,
+    proof: std::path::PathBuf,
     listener: tokio::task::JoinHandle<()>,
+}
+
+#[cfg(target_os = "linux")]
+impl SessionGuard {
+    pub(crate) fn current(&self) -> bool {
+        if self.ended.is_cancelled() || !self.started.is_cancelled() {
+            return false;
+        }
+        if !started(&self.proof) {
+            self.ended.cancel();
+            return false;
+        }
+        true
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -148,6 +167,34 @@ impl Launch {
         peerwork_core::crypto::sha256_hex(format!("peerwork.claude-session.v1\0{}", self.session).as_bytes())
     }
 
+    #[cfg(target_os = "linux")]
+    fn proof_path(&self, create: bool) -> Result<std::path::PathBuf> {
+        let root = crate::onboarding_state::root(create)?
+            .ok_or_else(||failure(LIFECYCLE_UNCONFIRMED))?.join("claude-launches");
+        if create {
+            crate::onboarding_files::directory(&root, true)?;
+        }
+        Ok(root.join(&self.order.nonce))
+    }
+
+    /// The launcher creates this file once. The start hook may mark it ready
+    /// but can never recreate it after the end hook unlinks it.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn create_proof(&self) -> Result<std::path::PathBuf> {
+        use std::{io::Write, os::unix::fs::OpenOptionsExt};
+        let path = self.proof_path(true)?;
+        prune_orphan_proofs(path.parent().expect("launch proof directory"));
+        let mut marker = std::fs::OpenOptions::new().create_new(true).write(true)
+            .mode(0o600).open(&path).map_err(|_|failure(LIFECYCLE_UNCONFIRMED))?;
+        let mut bytes = [0;5];
+        bytes[1..].copy_from_slice(&std::process::id().to_le_bytes());
+        if marker.write_all(&bytes).is_err() {
+            let _ = std::fs::remove_file(&path);
+            return Err(failure(LIFECYCLE_UNCONFIRMED));
+        }
+        Ok(path)
+    }
+
     #[cfg(target_os="linux")]
     fn socket_address(&self) -> Result<std::os::unix::net::SocketAddr> {
         use std::os::{linux::net::SocketAddrExt, unix::net::SocketAddr};
@@ -158,6 +205,11 @@ impl Launch {
 
     #[cfg(target_os = "linux")]
     pub(crate) fn acquire(&self) -> Result<SessionGuard> {
+        self.acquire_at(self.proof_path(false)?)
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn acquire_at(&self, proof: std::path::PathBuf) -> Result<SessionGuard> {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let listener = std::os::unix::net::UnixListener::bind_addr(&self.socket_address()?).map_err(|cause| {
             if cause.kind()==std::io::ErrorKind::AddrInUse {failure("CLAUDE_CHANNEL_LAUNCH_ALREADY_CONNECTED")}
@@ -168,6 +220,14 @@ impl Launch {
         let listener = tokio::net::UnixListener::from_std(listener).map_err(unavailable)?;
         let ended = crate::KernelCancellationToken::new();
         let signal = ended.clone();
+        let active = crate::KernelCancellationToken::new();
+        // Inspect after binding so no hook can finish between this read and
+        // the socket becoming available. A reload keeps the original proof.
+        if started(&proof) {
+            active.cancel();
+        }
+        let confirmed = active.clone();
+        let marker = proof.clone();
         let uid = unsafe { libc::geteuid() };
         let listener = tokio::spawn(async move {
             while let Ok((mut stream, _)) = listener.accept().await {
@@ -175,10 +235,17 @@ impl Launch {
                     continue;
                 }
                 let _ = tokio::time::timeout(std::time::Duration::from_millis(200), async {
-                    if stream.read_u8().await? == END {
-                        // Stop admission before allowing the hook to return.
-                        signal.cancel();
-                        stream.write_u8(END).await?;
+                    match stream.read_u8().await? {
+                        START if !signal.is_cancelled() && started(&marker) => {
+                            confirmed.cancel();
+                            stream.write_u8(START).await?;
+                        }
+                        END => {
+                            // Stop admission before allowing the hook to return.
+                            signal.cancel();
+                            stream.write_u8(END).await?;
+                        }
+                        _ => {}
                     }
                     Ok::<(), std::io::Error>(())
                 }).await;
@@ -186,28 +253,63 @@ impl Launch {
             // Losing the listener also means losing the lifecycle signal.
             signal.cancel();
         });
-        Ok(SessionGuard { ended, listener })
+        Ok(SessionGuard { ended, started:active, proof, listener })
     }
 }
 
-fn end_hook_settings(executable: &std::path::Path) -> Result<String> {
-    let executable = executable.to_str().ok_or_else(|| failure("CLAUDE_CHANNEL_EXECUTABLE_UNAVAILABLE"))?;
-    let command = format!("'{}' agent claude-session-end", executable.replace('\'', "'\"'\"'"));
-    Ok(serde_json::json!({"hooks":{"SessionEnd":[{"hooks":[
-        {"type":"command","command":command,"timeout":1}
-    ]}]}}).to_string())
+#[cfg(target_os = "linux")]
+fn started(path: &std::path::Path) -> bool {
+    crate::secure_state::read_private_file_bounded(path, 5)
+        .is_ok_and(|marker| marker.len()==5 && marker[0]==START)
 }
 
-/// Invoked by the host's lifecycle hook using the ended session ID. Claude's
+#[cfg(target_os = "linux")]
+fn prune_orphan_proofs(root: &std::path::Path) {
+    use std::time::Duration;
+    let Ok(entries) = std::fs::read_dir(root) else { return; };
+    for entry in entries.take(32).flatten() {
+        let path = entry.path();
+        if !entry.file_name().to_str().is_some_and(|name|hex(name,64)) {
+            continue;
+        }
+        let old = entry.metadata().ok().and_then(|metadata|metadata.modified().ok())
+            .and_then(|modified|modified.elapsed().ok()).is_some_and(|age|age>Duration::from_secs(86_400));
+        if !old {
+            continue;
+        }
+        if let Ok(marker) = crate::secure_state::read_private_file_bounded(&path, 5) {
+            if let Some(bytes) = marker.get(1..5).and_then(|bytes|bytes.try_into().ok()) {
+                let pid = u32::from_le_bytes(bytes);
+                if matches!(std::path::Path::new("/proc").join(pid.to_string()).try_exists(),Ok(false)) {
+                    let _ = std::fs::remove_file(path);
+                }
+            }
+        }
+    }
+}
+
+fn hook_settings(executable: &std::path::Path) -> Result<String> {
+    let executable = executable.to_str().ok_or_else(|| failure("CLAUDE_CHANNEL_EXECUTABLE_UNAVAILABLE"))?;
+    let quoted = format!("'{}'", executable.replace('\'', "'\"'\"'"));
+    Ok(serde_json::json!({"hooks":{
+        "SessionStart":[{"matcher":"startup|resume","hooks":[
+            {"type":"command","command":format!("{quoted} agent claude-session-start"),"timeout":1}]}],
+        "SessionEnd":[{"hooks":[
+            {"type":"command","command":format!("{quoted} agent claude-session-end"),"timeout":1}]}]
+    }}).to_string())
+}
+
+/// Invoked by the host's lifecycle hook using its current session ID. Claude's
 /// MCP subprocess environment retains its original session across a switch.
 #[cfg(target_os = "linux")]
-pub(crate) fn end_session() -> Result<()> {
-    use std::{io::{Read, Write}, os::unix::net::UnixStream, time::Duration};
+pub(crate) fn session_hook(ending: bool) -> Result<()> {
+    use std::{io::{Read, Write}, os::unix::{fs::{FileExt, OpenOptionsExt}, net::UnixStream}, time::Duration};
 
     #[derive(Deserialize)]
     struct Event {
         session_id: String,
         hook_event_name: String,
+        source: Option<String>,
     }
     let invalid = |_| failure("CLAUDE_CHANNEL_SESSION_EVENT_INVALID");
     let mut input = Vec::new();
@@ -218,31 +320,47 @@ pub(crate) fn end_session() -> Result<()> {
     }
     let event: Event = serde_json::from_slice(&input)
         .map_err(|_| failure("CLAUDE_CHANNEL_SESSION_EVENT_INVALID"))?;
-    if event.hook_event_name != "SessionEnd" {
+    if event.hook_event_name != if ending {"SessionEnd"} else {"SessionStart"}
+        || !ending && !matches!(event.source.as_deref(),Some("startup"|"resume")) {
         return Err(failure("CLAUDE_CHANNEL_SESSION_EVENT_INVALID"));
     }
     let launch = Launch::inherited()?;
     launch.validate(&event.session_id)?;
+    let proof = launch.proof_path(false)?;
+    let unavailable = |_| failure("CLAUDE_CHANNEL_LIFECYCLE_UNAVAILABLE");
+    let state = if ending {
+        match std::fs::remove_file(&proof) {
+            Ok(()) => {}
+            Err(error) if error.kind()==std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(unavailable(error)),
+        }
+        END
+    } else {
+        crate::secure_state::validate_private_file(&proof).map_err(|_|failure(LIFECYCLE_UNCONFIRMED))?;
+        let marker = std::fs::OpenOptions::new().write(true)
+            .custom_flags(libc::O_NOFOLLOW|libc::O_NONBLOCK).open(&proof).map_err(unavailable)?;
+        marker.write_all_at(&[START],0).map_err(unavailable)?;
+        START
+    };
     let mut stream = match UnixStream::connect_addr(&launch.socket_address()?) {
         Ok(stream) => stream,
         Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => return Ok(()),
         Err(_) => return Err(failure("CLAUDE_CHANNEL_LIFECYCLE_UNAVAILABLE")),
     };
     let budget = Some(Duration::from_millis(500));
-    let unavailable = |_| failure("CLAUDE_CHANNEL_LIFECYCLE_UNAVAILABLE");
     stream.set_read_timeout(budget).map_err(unavailable)?;
     stream.set_write_timeout(budget).map_err(unavailable)?;
-    stream.write_all(&[END]).map_err(unavailable)?;
+    stream.write_all(&[state]).map_err(unavailable)?;
     let mut acknowledgement = [0];
     stream.read_exact(&mut acknowledgement).map_err(unavailable)?;
-    if acknowledgement != [END] {
+    if acknowledgement != [state] {
         return Err(failure("CLAUDE_CHANNEL_LIFECYCLE_UNAVAILABLE"));
     }
     Ok(())
 }
 
 #[cfg(not(target_os = "linux"))]
-pub(crate) fn end_session() -> Result<()> {
+pub(crate) fn session_hook(_ending: bool) -> Result<()> {
     Err(failure("CLAUDE_CHANNEL_LAUNCH_UNSUPPORTED"))
 }
 
@@ -270,7 +388,7 @@ pub(crate) fn start(args: &[String]) -> Result<()> {
     };
     let wire = serde_json::to_string(&launch).map_err(|_|failure("CLAUDE_CHANNEL_LAUNCH_ARGUMENT_INVALID"))?;
     let executable = std::env::current_exe().map_err(|_| failure("CLAUDE_CHANNEL_EXECUTABLE_UNAVAILABLE"))?;
-    let settings = end_hook_settings(&executable)?;
+    let settings = hook_settings(&executable)?;
     let mut command = Command::new("claude");
     command.args([session_flag, &launch.session, "--dangerously-load-development-channels", &format!("server:{server}")])
         .args(["--settings", &settings])
@@ -278,7 +396,11 @@ pub(crate) fn start(args: &[String]) -> Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
+        #[cfg(target_os = "linux")]
+        let proof = launch.create_proof()?;
         let _ = command.exec();
+        #[cfg(target_os = "linux")]
+        let _ = std::fs::remove_file(proof);
         Err(failure("CLAUDE_CHANNEL_EXECUTABLE_UNAVAILABLE"))
     }
     #[cfg(not(unix))]
