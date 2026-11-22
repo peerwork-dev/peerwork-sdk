@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import queue
 import subprocess
+import sys
 import tempfile
 import threading
 
@@ -176,9 +177,18 @@ def main():
                         '--install','claude','--project',claude_project)
             assert resumed['state']=='LOCAL_ATTACHED',resumed
             integration=resumed['integration']
-            assert integration['channel']['start_argv']==[
-                str(cli),'agent','claude-start',integration['server_name'],
-                '--resume','SESSION_ID','--select-session']
+            server = integration['server_name']
+            assert integration['channel']['start_argv'] == [
+                'claude', '--resume', 'SESSION_ID',
+                '--dangerously-load-development-channels', f'server:{server}']
+            if sys.platform.startswith('linux'):
+                settings = json.loads((claude_project / '.claude/settings.local.json').read_text())
+                for event, suffix in [('SessionStart', 'start'), ('SessionEnd', 'end')]:
+                    hooks = settings['hooks'][event]
+                    assert len(hooks) == 1, 'reinstall duplicated the Claude session hook'
+                    handler, = hooks[0]['hooks']
+                    assert handler['type'] == 'command'
+                    assert handler['command'].endswith(f' agent claude-session-{suffix} {server}')
             assert integration['channel']['host_acceptance']=='NOT_ATTESTED'
             assert run('connect','--local',attached_registry,'--resume',attached['setup_id'])['setup_id']==resumed['setup_id']
             assert run('identity','info',identity)==created
