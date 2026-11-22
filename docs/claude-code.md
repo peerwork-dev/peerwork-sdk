@@ -67,21 +67,25 @@ through the same runtime. Role instructions remain protocol resources; the
 installer does not copy them into unrelated host instructions.
 
 Automatic wake uses Claude Code's official **Channels** research preview.
-The installer returns an exact `integration.channel.start_argv`, for example:
+The installer returns `integration.channel.start_argv`. Replace `SESSION_ID`
+with the original Claude conversation's ID and run it in that project's
+interactive terminal. Use the exact server name supplied by the installer:
 
 ```sh
-claude --dangerously-load-development-channels server:peerwork-RETURNED_SERVER_ID
+peerwork agent claude-start peerwork-RETURNED_SERVER_ID --resume SESSION_ID --select-session
 ```
 
-Use the returned server name, not this placeholder. Run that command
-interactively and accept Claude Code's Channel prompt. It enables this custom
-Channel; it does not bypass tool permissions. During the preview, unapproved
-custom Channels require this per-session opt-in. The flag is ignored in `-p`
-and Agent SDK runs. Supported authentication and organization policy also apply.
-Without Channel activation, the tools still work, but unsolicited wake is not
-established. Installing MCP cannot change an already running session's launch
-flags; follow the host's normal refresh/restart flow and resume the intended
-conversation rather than creating a substitute Peer.
+Accept Claude Code's Channel prompt. The launch keeps Claude's normal tool
+permissions, account requirements, and organization policy. On subsequent
+restarts use the same command without `--select-session`. Use that flag to
+select a different conversation intentionally. When starting a genuinely new
+conversation, use `--new-session` instead of `--resume SESSION_ID`.
+
+The native launch selects the installed server and checks the session ID
+reported to its MCP subprocess by Claude. An ordinary tool handshake can use
+the inbox without taking over receiving. The session marker proves which
+conversation was launched. A bound batch read is still required to verify
+automatic wake.
 
 Native0.3.27 and later automatically select the initialized MCP stdio
 handshake supported by Claude Channels, including when the host probes for
@@ -131,12 +135,12 @@ relay is not enabled.
   inbox and pending work. A legacy frontend still holding projection ownership
   needs the host's normal refresh or drain before replacement; never delete its
   lock. Ordinary MCP attachment without Channel opt-in does not replace receiving.
-- A second Claude MCP process for the same receiving source group stays on
-  standby while the current Channel connection is open. Its tools still work.
-  When the current connection closes, the waiting Channel can acquire that
-  source automatically. `CLAUDE_CHANNEL_STANDBY` identifies this wait. The
-  Channel handshake carries no foreground conversation identity, so the local
-  SDK cannot rank two otherwise equivalent Claude processes by session focus.
+- A newer authorized launch of the selected conversation can take over while
+  the previous connection is still open. Other conversations and duplicate MCP
+  subprocesses cannot take it over. A superseded launch cannot reclaim the
+  selection by reopening MCP. Ordinary tools and the native inbox remain
+  available. Each new presentation still requires its own bound read to verify
+  automatic wake.
 - A source already bound to Codex, AGY or another native host is not mirrored
   into a new Claude session just because MCP was installed. It reports
   `CLAUDE_CHANNEL_SOURCE_ALREADY_BOUND_TO_ANOTHER_HOST`; retain that working

@@ -9,7 +9,12 @@ use tokio::sync::Mutex;
 struct Selection { client:Arc<RuntimeClient>, options:WatchOptions, source:String }
 enum ChannelOwner {
     Waiting(Selection),
-    Held { _guard: SecureStateStore },
+    Held { _guard: ChannelGuard },
+}
+enum ChannelGuard {
+    Original { _store: SecureStateStore },
+    #[cfg(target_os="linux")]
+    Launch { _listener: std::os::unix::net::UnixListener },
 }
 struct Decision {
     admin: PathBuf,
@@ -17,6 +22,7 @@ struct Decision {
     activation: Option<Value>,
     terminal: Option<String>,
     channel_owner: Option<ChannelOwner>,
+    channel_launch: Option<String>,
 }
 type SharedDecision=Arc<Mutex<Decision>>;
 #[derive(Default)]
@@ -35,15 +41,33 @@ fn operation_id()->Result<String> {
     let mut bytes=[0u8;24];OsRng.try_fill_bytes(&mut bytes).map_err(|_|error("ENTROPY_UNAVAILABLE"))?;
     Ok(format!("presentation_{}",peerwork_core::crypto::base64url(&bytes)))
 }
-fn channel_owner(admin: &Path, source: &str) -> Result<SecureStateStore> {
+fn channel_owner(admin: &Path, source: &str, launch: Option<&str>) -> Result<ChannelGuard> {
     if source.len() != 64 || !source.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err(error("PRESENTATION_RESPONSE_INVALID"));
     }
+    if let Some(nonce)=launch {return launch_owner(source,nonce);}
     let path = admin.with_file_name(format!("claude-channel-source-{source}.state"));
-    SecureStateStore::open(&path).map_err(|cause| match cause {
+    SecureStateStore::open(&path).map(|store|ChannelGuard::Original{_store:store}).map_err(|cause| match cause {
         SecureStateError::Busy => error("CLAUDE_CHANNEL_STANDBY"),
         _ => cause.diagnose(error("CLAUDE_CHANNEL_ALREADY_ACTIVE_OR_STATE_UNAVAILABLE"), "OPEN"),
     })
+}
+
+#[cfg(target_os="linux")]
+fn launch_owner(source:&str,nonce:&str)->Result<ChannelGuard> {
+    use std::os::{linux::net::SocketAddrExt,unix::net::{SocketAddr,UnixListener}};
+    let key=peerwork_core::crypto::sha256_hex(format!("{source}:{nonce}").as_bytes());
+    let name=SocketAddr::from_abstract_name(format!("peerwork-claude-{key}").as_bytes())
+        .map_err(|_|error("CLAUDE_CHANNEL_STATE_UNAVAILABLE"))?;
+    UnixListener::bind_addr(&name).map(|listener|ChannelGuard::Launch{_listener:listener}).map_err(|cause| {
+        if cause.kind()==std::io::ErrorKind::AddrInUse {error("CLAUDE_CHANNEL_LAUNCH_ALREADY_CONNECTED")}
+        else {error("CLAUDE_CHANNEL_STATE_UNAVAILABLE")}
+    })
+}
+
+#[cfg(not(target_os="linux"))]
+fn launch_owner(_source:&str,_nonce:&str)->Result<ChannelGuard> {
+    Err(error("CLAUDE_CHANNEL_LAUNCH_UNSUPPORTED"))
 }
 
 fn superseded(code: &str) -> bool {
@@ -55,16 +79,18 @@ async fn complete(decision:&SharedDecision)->Result<Value> {
     if let Some(code)=&decision.terminal {return Err(error(code));}
     if let Some(activation)=&decision.activation {return Ok(activation.clone());}
     if let Some(ChannelOwner::Waiting(selection)) = &decision.channel_owner {
-        // Claude may initialize several processes from one installation. One
-        // live Channel owns presentation for the whole original source group.
-        let guard = channel_owner(&decision.admin, &selection.source)?;
-        let observed = selection.client.call(json!({"method":"presentation_status","options":selection.options})).await?;
-        if observed["group"] != decision.request["activation"]["source_group"] {
-            decision.terminal = Some("PRESENTATION_SOURCE_CHANGED".into());
-            return Err(error("PRESENTATION_SOURCE_CHANGED"));
+        // One MCP child presents for a launch. Separate qualified launches
+        // use the runtime generation fence, even if the incumbent is stalled.
+        let guard = channel_owner(&decision.admin, &selection.source, decision.channel_launch.as_deref())?;
+        if decision.channel_launch.is_none() {
+            let observed = selection.client.call(json!({"method":"presentation_status","options":selection.options})).await?;
+            if observed["group"] != decision.request["activation"]["source_group"] {
+                decision.terminal = Some("PRESENTATION_SOURCE_CHANGED".into());
+                return Err(error("PRESENTATION_SOURCE_CHANGED"));
+            }
+            let generation = observed["current_generation"].as_u64().ok_or_else(|| error("PRESENTATION_RESPONSE_INVALID"))?;
+            decision.request["activation"]["expected_generation"] = generation.into();
         }
-        let generation = observed["current_generation"].as_u64().ok_or_else(|| error("PRESENTATION_RESPONSE_INVALID"))?;
-        decision.request["activation"]["expected_generation"] = generation.into();
         decision.channel_owner = Some(ChannelOwner::Held { _guard: guard });
     }
     // Freeze before mutation. A lost reply repeats the exact native decision.
@@ -121,6 +147,10 @@ impl Lifecycle {
         let endpoint=profile.receive_endpoint_path.clone().unwrap_or_else(||profile.endpoint_path.clone());
         let client=Arc::new(RuntimeClient::connect_bound(endpoint,&profile.expected_origin,&profile.expected_actor,binding).await?);
         let caps=client.call(json!({"method":"capabilities"})).await?;
+        if self.claude_launch.is_some() && !caps["features"].as_array().is_some_and(|features|
+            features.iter().any(|feature|feature=="claude-session-activation-v1")) {
+            return Err(error("CLAUDE_CHANNEL_RUNTIME_UPGRADE_REQUIRED"));
+        }
         if !caps["features"].as_array().is_some_and(|features|features.iter().any(|feature|feature=="presentation-activation-v1")) {
             self.presentation.lock().await.legacy.insert(scope.into());return Ok(None);
         }
@@ -129,24 +159,32 @@ impl Lifecycle {
         let selection=Selection{client,options,source:source.clone()};
         let known=self.presentation.lock().await.groups.get(&source).cloned();
         let candidate=if let Some(known)=known {known} else {
+            let server=self.claude_launch.as_ref().map(|launch|launch.server.as_str());
             let registered=if let Some(directory)=&self.local {
                 let connect=self.inspect(directory)?;
-                connect.presentation_issuer(self.handle.as_deref(),&wanted.workspace_id,&kind)?
+                connect.presentation_issuer(self.handle.as_deref(),&wanted.workspace_id,&kind,server)?
             }else if let Some((_,connect,handle))=self.source_selection(&profile)? {
-                connect.presentation_issuer(Some(&handle),&wanted.workspace_id,&kind)?
+                connect.presentation_issuer(Some(&handle),&wanted.workspace_id,&kind,server)?
             }else{None};
             let Some((admin,registration_id))=registered else {
+                if server.is_some() {return Err(error("CLAUDE_CHANNEL_LAUNCH_MISMATCH"));}
                 if observed["state"]=="UNMANAGED" {self.presentation.lock().await.legacy.insert(scope.into());return Ok(None);}
                 return Err(error("PRESENTATION_ORIGINAL_INSTALLATION_REQUIRED"));
             };
             let source_binding=crate::agent_delivery_status::binding(&context,&serde_json::to_value(&selection.options).unwrap());
-            let request=json!({"method":"presentation_activate","activation":{
+            let mut request=json!({"method":"presentation_activate","activation":{
                 "client_name":source_binding["client_name"],"source_binding":source_binding,
                 "options":selection.options,"source_group":observed["group"],
                 "target":{"kind":kind,"registration_id":registration_id,"host_destination":null},
                 "operation_id":operation_id()?,"expected_generation":observed["current_generation"]}});
+            if let Some(launch)=&self.claude_launch {
+                request["activation"]["target"]["host_session"]=json!(launch.session_digest());
+                request["activation"]["target"]["host_launch"]=json!(launch.order);
+                if launch.select_session {request["activation"]["select_session"]=json!(true);}
+            }
             let channel_owner = (kind == "MCP_STDIO_CHANNEL").then(|| ChannelOwner::Waiting(selection.clone()));
-            Arc::new(Mutex::new(Decision{admin,request,activation:None,terminal:None,channel_owner}))
+            Arc::new(Mutex::new(Decision{admin,request,activation:None,terminal:None,channel_owner,
+                channel_launch:self.claude_launch.as_ref().map(|launch|launch.order.nonce.clone())}))
         };
         // Freeze exactly one decision for all aliases of the source. The
         // directory lock is released before any IPC, including a retry after a
@@ -196,7 +234,8 @@ mod tests {
     #[tokio::test]
     async fn a_waiting_decision_does_not_hold_another_presentation_group() {
         let saved=|generation| Arc::new(Mutex::new(Decision{
-            admin:PathBuf::new(),request:Value::Null,activation:Some(json!({"generation":generation})),terminal:None,channel_owner:None,
+            admin:PathBuf::new(),request:Value::Null,activation:Some(json!({"generation":generation})),terminal:None,
+            channel_owner:None,channel_launch:None,
         }));
         let waiting=saved(1);
         let available=saved(2);

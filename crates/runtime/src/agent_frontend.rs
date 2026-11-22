@@ -13,6 +13,8 @@ pub fn help() -> Value {
 "peerwork agent tools",
 "peerwork connect --help",
 "peerwork agent --local PROTECTED_DIRECTORY context|mcp",
+"peerwork agent claude-start SERVER --resume SESSION_ID [--select-session]",
+"peerwork agent claude-start SERVER --new-session",
 "peerwork agent --local PROTECTED_DIRECTORY --participant HANDLE --workspace WORKSPACE mcp --claude-channel",
 "peerwork agent --profile PROFILE.json mcp --claude-channel",
 "peerwork agent --profile PROFILE.json context",
@@ -99,6 +101,12 @@ pub fn cli(args: &[String]) -> Value {
         return json!({"tools":agent_tools::catalog(),"maturity":"EXPERIMENTAL"});
     }
     let run = || -> Result<Value> {
+        if let [command, arguments @ ..] = args {
+            if command == "claude-start" {
+                crate::claude_channel_launch::start(arguments)?;
+                return Ok(Value::Null);
+            }
+        }
         let [flag, path, rest @ ..] = args else {
             return Err(invalid());
         };

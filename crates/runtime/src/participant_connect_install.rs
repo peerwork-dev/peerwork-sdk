@@ -476,9 +476,9 @@ pub(super) struct Installed {
 /// A Channel/background launch may use only its already committed original
 /// host installation. Directory context disambiguates installations, never a
 /// model conversation or a new receiving destination.
-pub(super) fn presentation_registration(connect:&Connect,participant:&str,workspace:&str,kind:&str)->Result<Option<String>> {
+pub(super) fn presentation_registration(connect:&Connect,participant:&str,workspace:&str,kind:&str,server:Option<&str>)->Result<Option<String>> {
     let host=match kind {"MCP_STDIO_CHANNEL"=>"claude","MCP_BACKGROUND_TOOL"=>"agy",_=>return Err(local("PRESENTATION_TARGET_INVALID"))};
-    let candidates=connect.registry.installations.iter().filter(|(_,entry)|entry.committed&&entry.participant==participant&&entry.workspace_id==workspace&&entry.spec.host==host).collect::<Vec<_>>();
+    let candidates=connect.registry.installations.iter().filter(|(_,entry)|entry.committed&&entry.participant==participant&&entry.workspace_id==workspace&&entry.spec.host==host&&server.is_none_or(|name|entry.name==name)).collect::<Vec<_>>();
     if candidates.len()<=1 {return Ok(candidates.first().map(|(id,_)|(*id).clone()));}
     let cwd=std::env::current_dir().ok().and_then(|path|std::fs::canonicalize(path).ok());
     let exact=candidates.iter().filter(|(_,entry)|cwd.as_ref()==Some(&entry.spec.project)).collect::<Vec<_>>();
@@ -928,7 +928,7 @@ impl Connect {
             "next_action":"REFRESH_HOST_AND_CALL_PEERWORK_CONTEXT","identity_files_copied":false});
         result["automatic_startup"] = self.enroll_startup(participant)?;
         if spec.host=="claude" {
-            result["channel"]=json!({"state":"ACTIVATION_REQUIRED","maturity":"RESEARCH_PREVIEW","start_argv":["claude","--dangerously-load-development-channels",format!("server:{name}")],"host_acceptance":"NOT_ATTESTED","next_action":"ENABLE_CHANNEL_IN_CLAUDE_AND_VERIFY_A_REAL_MESSAGE"});
+            result["channel"]=json!({"state":"ACTIVATION_REQUIRED","maturity":"RESEARCH_PREVIEW","start_argv":[spec.executable,"agent","claude-start",name,"--resume","SESSION_ID","--select-session"],"host_acceptance":"NOT_ATTESTED","next_action":"ENABLE_CHANNEL_IN_CLAUDE_AND_VERIFY_A_REAL_MESSAGE"});
         }
         if spec.host=="opencode" {
             result["supported_host_api"]=json!("OPENCODE_V2");

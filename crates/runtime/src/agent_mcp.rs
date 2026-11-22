@@ -200,10 +200,17 @@ async fn serve_tools<R,W>(tools:Tools,reader:R,writer:W)->Result<()>
 where R:AsyncBufRead+Send+Unpin+'static,W:AsyncWrite+Unpin {
     serve_tools_mode(tools,reader,writer,false).await
 }
-async fn serve_tools_mode<R,W>(tools:Tools,mut reader:R,mut writer:W,claude:bool)->Result<()>
+async fn serve_tools_mode<R,W>(mut tools:Tools,mut reader:R,mut writer:W,claude:bool)->Result<()>
 where R:AsyncBufRead+Send+Unpin+'static,W:AsyncWrite+Unpin {
+    let channel_state=claude_channel::State::default();
+    if claude {
+        match crate::claude_channel_launch::Launch::observe() {
+            Ok(launch)=>tools.claude_launch=Some(launch),
+            Err(error)=>channel_state.validation_failed(&error.code),
+        }
+        tools.presentation_transport("MCP_STDIO_CHANNEL")?;
+    }
     let tools = Arc::new(tools);
-    if claude {tools.presentation_transport("MCP_STDIO_CHANNEL")?;}
     let startup_task = tokio::spawn(tools.clone().recover_startup());
     let (tx, mut rx) = mpsc::channel(8);
     let reading = tokio::spawn(async move {
@@ -231,7 +238,6 @@ where R:AsyncBufRead+Send+Unpin+'static,W:AsyncWrite+Unpin {
     let mut channel_task:Option<tokio::task::JoinHandle<()>>=None;
     let (channel_tx,mut channel_rx)=mpsc::channel::<Value>(8);
     let mut channel_admission: Option<ChannelAdmission> = None;
-    let channel_state=claude_channel::State::default();
     let background_state=background_listener::State::default();
     let capabilities=if claude {json!({"tools":{},"experimental":{"claude/channel":{}}})}else{json!({"tools":{}})};
     let guidance=if claude {format!("{} {}",instructions(),claude_channel::INSTRUCTIONS)}else{instructions().to_owned()};
@@ -270,7 +276,7 @@ where R:AsyncBufRead+Send+Unpin+'static,W:AsyncWrite+Unpin {
                 if id.is_none(){
                     if method=="notifications/initialized"&&initializing{
                         initialized=true;
-                        if claude && channel_task.is_none(){channel_task=Some(tokio::spawn(claude_channel::watch(tools.clone(),channel_tx.clone(),channel_state.clone())));}
+                        if tools.claude_launch.is_some() && channel_task.is_none(){channel_task=Some(tokio::spawn(claude_channel::watch(tools.clone(),channel_tx.clone(),channel_state.clone())));}
                     }
                     if method=="notifications/cancelled"{if let Some(id)=key(&params["requestId"]){if let Some(handle)=calls.get(&id){cancelled.insert(id);handle.abort();}}}
                     continue;

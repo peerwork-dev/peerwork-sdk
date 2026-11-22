@@ -165,6 +165,14 @@ impl Store {
             return Err(error(if selected_session.is_none(){"CLAUDE_CHANNEL_SESSION_SELECTION_REQUIRED"}
                 else {"CLAUDE_CHANNEL_SESSION_MISMATCH"}));
         }
+        if let Some(previous)=selected_target.as_ref().and_then(|value|value.get("host_launch")) {
+            use crate::claude_channel_launch::LaunchOrder;
+            let previous: LaunchOrder=serde_json::from_value(previous.clone())
+                .map_err(|_|error("PRESENTATION_STATE_INVALID"))?;
+            let launch: LaunchOrder=serde_json::from_value(target["host_launch"].clone())
+                .map_err(|_|error("CLAUDE_CHANNEL_LAUNCH_REQUIRED"))?;
+            if !launch.supersedes(&previous) {return Err(error("CLAUDE_CHANNEL_LAUNCH_SUPERSEDED"));}
+        }
         let next=generation.checked_add(1).filter(|g|*g<=i64::MAX as u64)
             .ok_or_else(||error("PRESENTATION_GENERATION_EXHAUSTED"))?;
         let selected=Activation{source:source.into(),operation_id:operation.into(),generation:next,target:target.clone()};

@@ -74,10 +74,14 @@ impl Runtime {
         let host_session = request.target.get("host_session");
         let valid_session = host_session.is_some_and(|value| value.as_str().is_some_and(|digest|
             digest.len()==64 && digest.bytes().all(|byte|byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))));
+        let host_launch = request.target.get("host_launch");
+        let valid_launch = host_launch.is_some_and(|value| serde_json::from_value::<crate::claude_channel_launch::LaunchOrder>(value.clone())
+            .is_ok_and(|launch|launch.verify_shape()));
         if !request.target.is_object() || !matches!(request.target["kind"].as_str(),Some("MCP_STDIO_CHANNEL"|"MCP_BACKGROUND_TOOL"))
             || request.target["registration_id"].as_str().is_none_or(|id|!identifier(id))
-            || request.target.as_object().is_none_or(|object|object.len()!=3+usize::from(host_session.is_some()))
+            || request.target.as_object().is_none_or(|object|object.len()!=3+usize::from(host_session.is_some())+usize::from(host_launch.is_some()))
             || host_session.is_some() && (!valid_session || request.target["kind"]!="MCP_STDIO_CHANNEL")
+            || host_launch.is_some() && (!valid_session || !valid_launch)
             || request.select_session && !valid_session
             || !request.target.get("host_destination").is_some_and(Value::is_null) {
             return Err(local("PRESENTATION_TARGET_INVALID"));

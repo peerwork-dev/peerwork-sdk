@@ -18,6 +18,7 @@ mod communication_notifications;
 pub mod agent_tools;
 pub mod event_replay;
 pub mod agent_frontend;
+mod claude_channel_launch;
 pub mod participant_connect;
 mod onboarding_files;
 mod onboarding_project;

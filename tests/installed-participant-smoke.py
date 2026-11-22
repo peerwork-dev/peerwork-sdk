@@ -177,8 +177,8 @@ def main():
             assert resumed['state']=='LOCAL_ATTACHED',resumed
             integration=resumed['integration']
             assert integration['channel']['start_argv']==[
-                'claude','--dangerously-load-development-channels',
-                'server:'+integration['server_name']]
+                str(cli),'agent','claude-start',integration['server_name'],
+                '--resume','SESSION_ID','--select-session']
             assert integration['channel']['host_acceptance']=='NOT_ATTESTED'
             assert run('connect','--local',attached_registry,'--resume',attached['setup_id'])['setup_id']==resumed['setup_id']
             assert run('identity','info',identity)==created

@@ -69,8 +69,9 @@ For Claude Code:
 peerwork connect --workspace WORKSPACE_ID --install claude
 ```
 
-Allow the project MCP entry. Activate Channels using the exact returned
-`integration.channel.start_argv` and accept Claude Code's interactive prompt.
+Allow the project MCP entry. Replace `SESSION_ID` in the returned
+`integration.channel.start_argv` with the original conversation ID. Run it in
+the project's terminal and accept Claude Code's interactive prompt.
 MCP installation alone does not establish wake. An already running session may
 need the host's normal refresh/restart; see [Claude Code](claude-code.md).
 

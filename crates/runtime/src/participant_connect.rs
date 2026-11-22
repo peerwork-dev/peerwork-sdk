@@ -282,10 +282,10 @@ fn receiving_observation(observed:&Value)->Value {
     json!({"state":observed["state"],"code":observed["code"],"verification_failure":observed["verification_failure"],"notification_delivery":observed["notification_delivery"],"presence":observed["presence"],"receiver_link_verified":observed["receiver_link_verified"],"checkpoint":observed["checkpoint"],"current_delivery":observed["current_delivery"],"transport":observed["transport"],"transport_health":observed["transport_health"],"model_response":"NOT_ATTESTED"})
 }
 impl Connect {
-    pub(crate) fn presentation_issuer(&self,handle:Option<&str>,workspace:&str,kind:&str)->Result<Option<(PathBuf,String)>> {
+    pub(crate) fn presentation_issuer(&self,handle:Option<&str>,workspace:&str,kind:&str,server:Option<&str>)->Result<Option<(PathBuf,String)>> {
         let Some(handle)=self.selected_handle(handle)? else{return Ok(None);};
         let Some(admin)=self.registry.local_runtime_admins.get(&handle) else{return Ok(None);};
-        let Some(registration)=install::presentation_registration(self,&handle,workspace,kind)? else{return Ok(None);};
+        let Some(registration)=install::presentation_registration(self,&handle,workspace,kind,server)? else{return Ok(None);};
         Ok(Some((admin.clone(),registration)))
     }
     pub fn selection_required(setup_id: &str) -> Value {

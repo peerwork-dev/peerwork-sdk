@@ -18,9 +18,15 @@ struct InstalledChannel {
 }
 
 impl InstalledChannel {
-    async fn start(project: &Path, entry: &Value) -> Self {
+    async fn start(project: &Path, entry: &Value, launch: Option<&crate::claude_channel_launch::Launch>) -> Self {
         use std::process::Stdio;
-        let mut child = tokio::process::Command::new(entry["command"].as_str().unwrap())
+        let mut command = tokio::process::Command::new(entry["command"].as_str().unwrap());
+        command.env_remove(crate::claude_channel_launch::LAUNCH_ENV).env_remove(crate::claude_channel_launch::SESSION_ENV);
+        if let Some(launch)=launch {
+            command.env(crate::claude_channel_launch::LAUNCH_ENV, serde_json::to_string(launch).unwrap());
+            command.env(crate::claude_channel_launch::SESSION_ENV,&launch.session);
+        }
+        let mut child = command
             .args(entry["args"].as_array().unwrap().iter().map(|arg| arg.as_str().unwrap()))
             .current_dir(project)
             .stdin(Stdio::piped())
@@ -245,39 +251,15 @@ async fn original_two_space_presentations_replace_without_reclaim_or_pending_ope
     assert_eq!(tool(&current,"delivery",json!({"mode":"status"})).await["destinations"][0]["control_state"],"PAUSED");
     assert_eq!(std::fs::read(&config.identity_path).unwrap(),identity);
 
-    // Exercise the actual Channel transport and final output gate over duplex
-    // MCP. This qualifies native projection, not an authenticated Claude model.
+    // Exercise the installed Claude stdio entry and the final output gate.
+    // The driver models the launcher and host marker, without attesting a
+    // signed-in Claude model turn.
     service.config(json!({"offline":false})).await;
     for watch in &options {ready(&original,watch).await;}
-    tool(&ordinary,"delivery",json!({"mode":"self_test"})).await;
     drop(current);
-    let(server,host)=tokio::io::duplex(1024*1024);
-    let(sr,sw)=tokio::io::split(server);let(hr,mut hw)=tokio::io::split(host);
-    let mut hr=tokio::io::BufReader::new(hr);
-    let channel=tokio::spawn(crate::agent_mcp::serve_claude_local(directory.clone(),Some(handle.clone()),None,tokio::io::BufReader::new(sr),sw));
-    hw.write_all(format!("{}\n",json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"presentation-test-host","version":"1"}}})).as_bytes()).await.unwrap();
-    let mut line=String::new();tokio::time::timeout(Duration::from_secs(10),hr.read_line(&mut line)).await.unwrap().unwrap();
-    let initialized:Value=serde_json::from_str(&line).unwrap();assert_eq!(initialized["id"],1);
-    hw.write_all(b"{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n").await.unwrap();
-    line.clear();tokio::time::timeout(Duration::from_secs(30),hr.read_line(&mut line)).await.unwrap().unwrap();
-    let notice:Value=serde_json::from_str(&line).unwrap();
-    assert_eq!(notice["method"],"notifications/claude/channel","{notice}");
-    assert!(notice.get("_presentation").is_none());assert!(!line.contains("registration_id"));assert!(!line.contains("operation_id"));
-    assert_eq!(original.call(json!({"method":"presentation_resume","options":options[0],"activation":activation_c})).await.unwrap()["state"],"SUPERSEDED");
-    hw.write_all(format!("{}\n",json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"peerwork_inbox","arguments":{"batch":notice["params"]["meta"]["batch"]}}})).as_bytes()).await.unwrap();
-    let observed=tokio::time::timeout(Duration::from_secs(10),async {loop {
-        line.clear();assert!(hr.read_line(&mut line).await.unwrap()>0);
-        let response:Value=serde_json::from_str(&line).unwrap();if response["id"]==2{return response;}
-        assert_eq!(response["method"],"notifications/claude/channel","{response}");
-    }}).await.unwrap();
-    assert_eq!(observed["result"]["isError"],false,"{observed}");
-    assert_eq!(observed["result"]["structuredContent"]["state"],"SELF_TEST_OBSERVED","{observed}");
-    drop(hw);drop(hr);tokio::time::timeout(Duration::from_secs(10),channel).await.unwrap().unwrap().unwrap();
-    assert_eq!(tool(&ordinary,"delivery",json!({"mode":"status"})).await["destinations"][0]["control_state"],"PAUSED");
-
     let installed: Value = serde_json::from_slice(&std::fs::read(project.join(".mcp.json")).unwrap()).unwrap();
-    let entry = |space: &str| installed["mcpServers"].as_object().unwrap().values()
-        .find(|entry| entry["args"].as_array().unwrap().iter().any(|arg| arg == space)).unwrap();
+    let (server,entry) = installed["mcpServers"].as_object().unwrap().iter()
+        .find(|(_,entry)| entry["args"].as_array().unwrap().iter().any(|arg| arg == &spaces[0])).unwrap();
     let host_cli = |entry: &str| {
         let mut command = tokio::process::Command::new(&executable);
         command.arg(entry).arg("--local").arg(&directory).current_dir(&project);
@@ -292,78 +274,85 @@ async fn original_two_space_presentations_replace_without_reclaim_or_pending_ope
     let generation = || async {
         original.call(json!({"method":"presentation_status","options":options[0]})).await.unwrap()["current_generation"].as_u64().unwrap()
     };
-    let mut foreground = InstalledChannel::start(&project, entry(&spaces[0])).await;
+    let launch = crate::claude_channel_launch::Launch {
+        server: server.clone(), session: "a1ac3c82-ade4-4ae8-8fdb-5292340edf0e".into(),
+        order:crate::claude_channel_launch::LaunchOrder::new().unwrap(), select_session:true,
+    };
+    let mut foreground = InstalledChannel::start(&project, entry, Some(&launch)).await;
     tool(&ordinary,"delivery",json!({"mode":"self_test"})).await;
     foreground.read_probe().await;
     let selected = generation().await;
-    let mut standby = InstalledChannel::start(&project, entry(&spaces[1])).await;
-    tokio::time::timeout(Duration::from_secs(15), async {
-        loop {
-            let standby_context = standby.context().await;
-            assert_eq!(standby_context["actor_id"], config.expected_actor);
-            if standby_context["host_channel"]["scopes"].as_object().is_some_and(|scopes|
-                scopes.values().any(|scope| scope["code"] == "CLAUDE_CHANNEL_STANDBY")) {break;}
-            assert_eq!(generation().await, selected, "handshake-only spare displaced the installed Channel");
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-    }).await.expect("overlapping installed Channels did not identify the standby");
-    // A spare that only initializes must not replace a working connection.
-    // A real batch exposes the ownership difference without changing the
-    // service consumer or treating the MCP handshake as a wake receipt.
-    tool(&ordinary,"delivery",json!({"mode":"self_test"})).await;
-    let notice = tokio::select! {
-        result = foreground.next() => result,
-        _ = standby.next() => panic!("an initialized standby intercepted the active Channel batch"),
-        _ = tokio::time::sleep(Duration::from_secs(12)) => panic!("neither Channel presented the pending batch"),
-    };
-    foreground.observe_probe(notice).await;
-    assert_eq!(generation().await, selected, "handshake-only spare displaced the installed Channel");
-    foreground.close().await;
-    tool(&ordinary,"delivery",json!({"mode":"self_test"})).await;
-    standby.read_probe().await;
-    assert_eq!(generation().await, selected + 1);
-    assert_eq!(tool(&ordinary,"delivery",json!({"mode":"status"})).await["destinations"][0]["control_state"],"PAUSED");
-    standby.close().await;
+    assert!(selected>activation_c["generation"].as_u64().unwrap());
 
-    // The installed MCP fixture above exercises the existing startup path.
-    // Exercise the session-qualified successor through the same authenticated
-    // runtime entry before teaching the frontend to send the host marker.
-    let observed=original.call(json!({"method":"presentation_status","options":options[0]})).await.unwrap();
-    let opts=serde_json::to_value(&options[0]).unwrap();
-    let source=crate::agent_delivery_status::binding(&context,&opts);
-    let activate=|operation:&str,generation:u64,marker:Value,select:bool| {
-        let mut target=json!({"kind":"MCP_STDIO_CHANNEL","registration_id":"installed-claude-session","host_destination":null});
-        if !marker.is_null() {target["host_session"]=marker;}
-        json!({"method":"presentation_activate","activation":{
-            "client_name":source["client_name"],"source_binding":source,"source_group":observed["group"],
-            "options":opts,"target":target,"operation_id":operation,"expected_generation":generation,"select_session":select}})
+    let mut handshake_only=InstalledChannel::start(&project,entry,None).await;
+    let handshake_context=handshake_only.context().await;
+    assert_eq!(handshake_context["actor_id"],config.expected_actor);
+    assert_eq!(handshake_context["host_channel"]["validation_error"],"CLAUDE_CHANNEL_LAUNCH_REQUIRED");
+    assert_eq!(generation().await,selected);
+
+    let mut duplicate=InstalledChannel::start(&project,entry,Some(&launch)).await;
+    tokio::time::timeout(Duration::from_secs(12),async {
+        loop {
+            let duplicate_context=duplicate.context().await;
+            if duplicate_context["host_channel"]["scopes"].as_object().is_some_and(|scopes|
+                scopes.values().any(|scope| scope["code"]=="CLAUDE_CHANNEL_LAUNCH_ALREADY_CONNECTED")) {break;}
+            assert_eq!(generation().await,selected);
+            tokio::time::sleep(Duration::from_millis(150)).await;
+        }
+    }).await.expect("duplicate subprocess did not yield to its own active launch");
+
+    let other_launch=crate::claude_channel_launch::Launch {
+        session: "bf52dc5c-ac99-4a49-959d-6c7bfe4073f4".into(),order:crate::claude_channel_launch::LaunchOrder::new().unwrap(),
+        select_session:false,..launch.clone()
     };
-    let submit=|value| crate::communication_runtime::call(&runtime_ready.admin_endpoint,value);
-    let current=generation().await;
-    let selected_session=json!("a".repeat(64));
-    let wrong_session=json!("b".repeat(64));
-    let invalid=submit(activate("invalid-marker",current,json!("not-a-digest"),true)).await.unwrap();
-    assert_eq!(invalid["error"]["code"],"PRESENTATION_TARGET_INVALID");
-    let initial=submit(activate("initial-handshake",current,selected_session.clone(),false)).await.unwrap();
-    assert_eq!(initial["error"]["code"],"CLAUDE_CHANNEL_SESSION_SELECTION_REQUIRED");
-    let initial=submit(activate("choose-this-session",current,selected_session.clone(),true)).await.unwrap();
-    assert_eq!(initial["value"]["state"],"ACTIVE","{initial}");
-    let pinned=generation().await;
-    for marker in [wrong_session,Value::Null] {
-        let result=submit(activate("standby-handshake",pinned,marker,false)).await.unwrap();
-        assert_eq!(result["error"]["code"],"CLAUDE_CHANNEL_SESSION_MISMATCH");
-        assert_eq!(generation().await,pinned);
-    }
-    let same=activate("original-session-returned",pinned,selected_session,false);
-    let activated=submit(same.clone()).await.unwrap();
-    assert_eq!(activated["value"]["current_generation"],pinned+1);
-    let retried=submit(same).await.unwrap();
-    assert_eq!(retried["ok"],true);
-    assert_eq!(retried["value"],activated["value"]);
-    let old=original.call(json!({"method":"presentation_resume","options":options[1],"activation":initial["value"]["activation"]})).await.unwrap();
-    assert_eq!(old["state"],"SUPERSEDED");
+    let mut other=InstalledChannel::start(&project,entry,Some(&other_launch)).await;
+    tokio::time::timeout(Duration::from_secs(12),async {
+        loop {
+            let observed=other.context().await;
+            if observed["host_channel"]["scopes"].as_object().is_some_and(|scopes|
+                scopes.values().any(|scope| scope["code"]=="CLAUDE_CHANNEL_SESSION_MISMATCH")) {break;}
+            assert_eq!(generation().await,selected);
+            tokio::time::sleep(Duration::from_millis(150)).await;
+        }
+    }).await.expect("unrelated launch did not preserve the original session");
+
+    let resumed_launch=crate::claude_channel_launch::Launch {
+        order:crate::claude_channel_launch::LaunchOrder::new().unwrap(),select_session:false,..launch.clone()
+    };
+    let mut resumed=InstalledChannel::start(&project,entry,Some(&resumed_launch)).await;
+    tokio::time::timeout(Duration::from_secs(12),async {
+        while generation().await == selected {tokio::time::sleep(Duration::from_millis(100)).await;}
+    }).await.expect("qualified successor did not commit while the incumbent was alive");
+    assert_eq!(generation().await,selected+1);
+    tool(&ordinary,"delivery",json!({"mode":"self_test"})).await;
+    let resumed_notice=tokio::select! {
+        notice=resumed.next()=>notice,
+        _=foreground.next()=>panic!("the displaced launch presented a new batch"),
+        _=duplicate.next()=>panic!("a duplicate presented a new batch"),
+        _=other.next()=>panic!("another session presented a new batch"),
+        _=handshake_only.next()=>panic!("a handshake-only process presented a new batch"),
+    };
+    resumed.observe_probe(resumed_notice).await;
+    foreground.close().await;
+    let mut retired_child=InstalledChannel::start(&project,entry,Some(&launch)).await;
+    tokio::time::timeout(Duration::from_secs(12),async {
+        loop {
+            let observed=retired_child.context().await;
+            if observed["host_channel"]["scopes"].as_object().is_some_and(|scopes|
+                scopes.values().any(|scope| scope["code"]=="CLAUDE_CHANNEL_LAUNCH_SUPERSEDED")) {break;}
+            assert_eq!(generation().await,selected+1);
+            tokio::time::sleep(Duration::from_millis(150)).await;
+        }
+    }).await.expect("a new child of the retired launch tried to reclaim its old generation");
+    retired_child.close().await;
+    resumed.close().await;
+    tokio::time::sleep(Duration::from_secs(6)).await;
+    assert_eq!(generation().await,selected+1,"closing both launches must not promote a standby");
     assert_eq!(tool(&ordinary,"delivery",json!({"mode":"status"})).await["destinations"][0]["control_state"],"PAUSED");
     assert_eq!(original.call(json!({"method":"binding"})).await.unwrap(),binding);
     assert_eq!(tool(&ordinary,"status",json!({"operation_id":"presentation-original-message"})).await["command_id"],message["command_id"]);
+    duplicate.close().await;
+    other.close().await;
+    handshake_only.close().await;
     stop.cancel();task.await.unwrap().unwrap();
 }
