@@ -48,6 +48,9 @@ let keyDelayMs=0,earlyEofCount=0,timeoutAction=null;const timeoutReleases=new Se
 let resourceRefusal=null;const signedResourceRefusals=new Map();
 let ignoreLeasePreference=false;
 const leaseReplies={preferred:0,compact:0,full:0};
+let expiredStreamMailboxes=[];
+let expireAtNextGrant=false;
+const streamGrants={granted_by_scope_count:{},expired_group_refusals:0,blocked_pulses:0};
 const counts={commands:0,discovery:0,context:0,journal_reads:0,dropped:0,native_streams:0,corrupted_frames:0,delayed_keys:0,delayed:0,delayed_completed:0,members_batches:0,grant_batches:0,claim_commands:[],actions:{},ack_batches:{RECEIVER_STORED:{requests:0,items:0,max:0},APPLICATION_CONSUMED:{requests:0,items:0,max:0}},command_request_bytes:0,command_response_bytes:0,sse_bytes:0};
 const commandIds=new Set();
 // Explicit maintainer measurement only. Buffer closed metadata in memory and
@@ -84,6 +87,10 @@ const handle=async request=>{
    if(!reportQuotaBlocked){for(const [workspace,limit]of reportQuotaLimits)await f.store.pool.query(`UPDATE "${f.schema}".workspace_capacity SET byte_limit=$2 WHERE workspace_id=$1`,[workspace,limit]);reportQuotaLimits.clear();}
   }
   if(options.fence_mailbox!==undefined)await f.store.pool.query(`UPDATE "${f.schema}".communication_mailboxes SET epoch=epoch+1,lease_until=0,ready=false WHERE mailbox_id=$1`,[options.fence_mailbox]);
+  if(options.expire_stream_mailboxes!==undefined){
+   expiredStreamMailboxes=options.expire_stream_mailboxes;
+   expireAtNextGrant=expiredStreamMailboxes.length>0;
+  }
   if(options.clock_offset_ms!==undefined){clockOffset=options.clock_offset_ms;f.clock.now=Date.now()+clockOffset;}
   if(options.drop_action!==undefined)dropAction=options.drop_action;
   if(options.reject_next_rebind_mailbox!==undefined)rejectNextRebindMailbox=options.reject_next_rebind_mailbox;
@@ -96,7 +103,7 @@ const handle=async request=>{
   if(options.release){release?.();release=null;delayName=null;timeoutAction=null;for(const fn of timeoutReleases)fn();timeoutReleases.clear();}
   return Response.json({ok:true});
  }
- if(path==='/__test/counts')return Response.json({...counts,lease_replies:leaseReplies,...(captureDisclosure?{last_disclosure:lastDisclosure}:{}),unique_commands:commandIds.size,resident_worker_running:residentWorker!==null&&residentWorker.exitCode===null,
+ if(path==='/__test/counts')return Response.json({...counts,lease_replies:leaseReplies,stream_grants:streamGrants,...(captureDisclosure?{last_disclosure:lastDisclosure}:{}),unique_commands:commandIds.size,resident_worker_running:residentWorker!==null&&residentWorker.exitCode===null,
   workspaces:Number((await f.store.pool.query(`SELECT count(*) n FROM "${f.schema}".workspaces`)).rows[0].n),
   key_epochs:Number((await f.store.pool.query(`SELECT count(*) n FROM "${f.schema}".structure_content_key_epochs`)).rows[0].n),
   events:Number((await f.store.pool.query(`SELECT count(*) n FROM "${f.schema}".events`)).rows[0].n),
@@ -118,6 +125,16 @@ const handle=async request=>{
   if(command.action_id==='structure.members.read'&&Array.isArray(command.body.actor_ids))counts.members_batches++;
   if(command.action_id==='structure.grant.get'&&Array.isArray(command.body.actor_ids))counts.grant_batches++;
   if(command.action_id==='structure.mailbox.claim')counts.claim_commands.push({command_id:command.command_id,receiver_id:command.body.receiver_id,replace:command.body.replace,expected_epoch:command.body.expected_epoch});
+  if(command.action_id==='structure.mailbox.pulse'&&expiredStreamMailboxes.includes(command.body.mailbox_id)){
+   streamGrants.blocked_pulses++;
+   return new Response('synthetic lost mailbox pulse',{status:503});
+  }
+  if(command.action_id==='structure.communication.stream.get'&&expireAtNextGrant&&command.body.scopes.some(scope=>expiredStreamMailboxes.includes(scope.mailbox_id))){
+   // Expire the durable lease before evaluating the original signed grant.
+   // The next successful original pulse can renew it without a new epoch.
+   expireAtNextGrant=false;
+   await f.store.pool.query(`UPDATE "${f.schema}".communication_mailboxes SET lease_until=0 WHERE mailbox_id=ANY($1::text[])`,[expiredStreamMailboxes]);
+  }
   const refusalKey=command.actor_id+':'+command.command_id;
   if(signedResourceRefusals.has(refusalKey)){
    counts.replayed_signed_resource_refusals=(counts.replayed_signed_resource_refusals??0)+1;
@@ -161,6 +178,15 @@ const handle=async request=>{
  }
  const measured=queryObserver?await queryObserver.measure(()=>app.fetch(request)):null;
  const response=measured?measured.value:await app.fetch(request);
+ if(command?.action_id==='structure.communication.stream.get'){
+  const {result,error}=await response.clone().json();
+  if(result?.stream){
+   const size=result.stream.scopes.length;
+   streamGrants.granted_by_scope_count[size]=(streamGrants.granted_by_scope_count[size]??0)+1;
+  }else if((result?.error?.code??error?.code??error)==='MAILBOX_EPOCH_MISMATCH'&&command.body.scopes.length>1){
+   streamGrants.expired_group_refusals++;
+  }
+ }
  if(pulse&&response.ok)leaseReplies[response.headers.get('Preference-Applied')==='return=minimal'?'compact':'full']++;
  if(captureDisclosure&&command?.action_id==='structure.conversation.messages.read'&&response.ok){const value=await response.clone().json();lastDisclosure=value.result?.messages?.[0]??lastDisclosure;}
  if(wasDelayed)counts.delayed_completed++;

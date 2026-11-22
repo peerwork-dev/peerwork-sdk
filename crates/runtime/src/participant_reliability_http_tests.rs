@@ -330,6 +330,103 @@ async fn slow_workspace_key_refresh_does_not_stall_other_workspace() {
     watch_until(&mut c.members[0].watch,|s|s.presence["body_key"]["state"]=="READY"&&s.presence["key_current"]==true).await;
     c.client.close().await.unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires explicit synthetic PostgreSQL and real product HTTP fixture"]
+async fn shared_stream_recovers_healthy_mailboxes_before_expired_mailboxes_can_renew() {
+    for expired_count in [1, 3] {
+        let mut cohort = Cohort::start(4).await;
+        let mut before = Vec::new();
+        let mut checkpoints = Vec::new();
+        for index in 0..4 {
+            let sent = cohort.send(index, &format!("before-expiry-{index}")).await;
+            let member = &mut cohort.members[index];
+            before.push(selected(
+                &cohort.client,
+                "structure.mailbox.get",
+                &member.scope,
+                json!({"mailbox_id": member.options.mailbox_id}),
+            ).await["mailbox"].clone());
+            let delivered = watch_until(&mut member.watch, |snapshot| {
+                snapshot.receiver_link_verified && snapshot.items.iter().any(|item| {
+                    item["envelope"]["message"]["message_id"] == sent["message_id"]
+                })
+            }).await;
+            checkpoints.push(delivered.checkpoint);
+        }
+        let baseline = cohort.service.counts().await;
+        assert_eq!(baseline["claim_commands"].as_array().unwrap().len(), 4);
+        assert!(before.iter().all(|mailbox| {
+            mailbox["epoch"] == 1 && mailbox["receiver_id"].as_str().is_some()
+        }));
+        let four_scope_grants = baseline["stream_grants"]["granted_by_scope_count"]["4"].as_u64().unwrap();
+        let expired = cohort.members[..expired_count].iter()
+            .map(|member| member.options.mailbox_id.as_str()).collect::<Vec<_>>();
+        let start = std::time::Instant::now();
+        cohort.service.config(json!({
+            "expire_stream_mailboxes": expired,
+            "close_connections": true,
+        })).await;
+        tokio::time::timeout(Duration::from_secs(8), async {
+            loop {
+                if cohort.service.counts().await["stream_grants"]["expired_group_refusals"] == 1 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        }).await.expect("the signed shared grant must observe the expired mailbox lease");
+        let mut messages = Vec::new();
+        for index in 0..4 {
+            messages.push(cohort.send(index, &format!("during-expiry-{index}")).await);
+        }
+        let mut healthy_ms = 0;
+        for index in expired_count..4 {
+            let snapshot = watch_until(&mut cohort.members[index].watch, |snapshot| {
+                snapshot.receiver_link_verified && snapshot.items.iter().any(|item| {
+                    item["envelope"]["message"]["message_id"] == messages[index]["message_id"]
+                })
+            }).await;
+            assert!(snapshot.checkpoint > checkpoints[index]);
+            healthy_ms = start.elapsed().as_millis();
+        }
+        let faulted = cohort.service.counts().await;
+        let healthy_scope_count = (4 - expired_count).to_string();
+        assert!(faulted["stream_grants"]["blocked_pulses"].as_u64().unwrap() > 0);
+        assert!(faulted["stream_grants"]["granted_by_scope_count"][&healthy_scope_count].as_u64().unwrap_or(0)
+            > baseline["stream_grants"]["granted_by_scope_count"][&healthy_scope_count].as_u64().unwrap_or(0));
+        assert_eq!(faulted["stream_grants"]["granted_by_scope_count"]["4"], four_scope_grants);
+
+        let restored_at = std::time::Instant::now();
+        cohort.service.config(json!({"expire_stream_mailboxes": []})).await;
+        for (index, member) in cohort.members.iter_mut().enumerate() {
+            let snapshot = watch_until(&mut member.watch, |snapshot| {
+                snapshot.receiver_link_verified && snapshot.items.iter().any(|item| {
+                    item["envelope"]["message"]["message_id"] == messages[index]["message_id"]
+                })
+            }).await;
+            let delivered = snapshot.items.iter().filter(|item| {
+                item["envelope"]["message"]["message_id"] == messages[index]["message_id"]
+            }).collect::<Vec<_>>();
+            assert_eq!(delivered.len(), 1);
+            assert_eq!(delivered[0]["opened_message"]["text"], format!("during-expiry-{index}"));
+            assert!(snapshot.checkpoint > checkpoints[index]);
+            let current = selected(&cohort.client, "structure.mailbox.get", &member.scope,
+                json!({"mailbox_id": member.options.mailbox_id})).await;
+            assert_eq!(current["mailbox"]["epoch"], before[index]["epoch"]);
+            assert_eq!(current["mailbox"]["receiver_id"], before[index]["receiver_id"]);
+        }
+        let after = cohort.service.counts().await;
+        assert!(after["stream_grants"]["granted_by_scope_count"]["4"].as_u64().unwrap() > four_scope_grants);
+        assert_eq!(after["claim_commands"], baseline["claim_commands"]);
+        assert_eq!(after["journal_reads"], baseline["journal_reads"]);
+        eprintln!(
+            "expired={expired_count} healthy_delivery_ms={healthy_ms} full_recovery_ms={} stream_grants={}",
+            restored_at.elapsed().as_millis(), after["stream_grants"],
+        );
+        cohort.client.close().await.unwrap();
+    }
+}
+
 #[tokio::test(flavor="multi_thread",worker_threads=2)]
 #[ignore="requires explicit synthetic PostgreSQL and real product HTTP fixture"]
 async fn expired_frame_context_is_reverified_without_skipping_delivery() {
