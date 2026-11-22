@@ -59,6 +59,7 @@ def host(args):
         try:
             request('initialize', {'protocolVersion':'2025-11-25','capabilities':{},'clientInfo':{'name':'native-claude-fixture','version':'1'}})
             write({'method':'notifications/initialized'})
+            catalog_started = time.monotonic()
             request('tools/list', {})
             expected = 'CLAUDE_CHANNEL_LAUNCH_REQUIRED' if outcome == 'inbox' else 'CLAUDE_CHANNEL_LIFECYCLE_UNCONFIRMED'
             if outcome == 'inbox' or order == 'after':
@@ -72,6 +73,7 @@ def host(args):
             if order == 'after': hook('SessionStart')
             startup=notification()
             assert startup['kind']=='activation'
+            assert time.monotonic() - catalog_started >= 0.7, 'startup notification raced the host tool discovery'
             assert tool('peerwork_inbox',{'batch':startup['batch']})['state']=='CLAUDE_CHANNEL_CONFIRMED'
             if outcome == 'mismatch':
                 for _ in range(45):

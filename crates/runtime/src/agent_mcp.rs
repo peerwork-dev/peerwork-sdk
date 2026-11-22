@@ -267,9 +267,16 @@ where R:AsyncBufRead+Send+Unpin+'static,W:AsyncWrite+Unpin {
                 channel_state.session_ended();
             }
         }
+        let awaiting_start = catalog_listed && channel_probe.as_ref().is_some_and(claude_channel::ActivationProbe::awaiting_start);
+        let mut activation_offer = None;
         if let Some(probe) = channel_probe.as_mut().filter(|_| catalog_listed && !channel_ended) {
-            if let Some(notice) = probe.offer() {
+            let now = tokio::time::Instant::now();
+            activation_offer = probe.schedule(now);
+            if activation_offer.is_some() {
                 channel_state.startup_offered();
+            }
+            if let Some(notice) = probe.offer(now) {
+                activation_offer = None;
                 tokio::select! {
                     biased;
                     _ = channel_lifetime.as_ref().expect("active Claude Channel").cancelled() => break,
@@ -280,10 +287,10 @@ where R:AsyncBufRead+Send+Unpin+'static,W:AsyncWrite+Unpin {
             }
         }
         let activation_timeout=channel_probe.as_ref().and_then(|probe|probe.deadline);
-        let awaiting_start=catalog_listed && channel_probe.as_ref().is_some_and(claude_channel::ActivationProbe::awaiting_start);
         tokio::select!{
             _ = async { channel_lifetime.as_ref().unwrap().cancelled().await }, if channel_lifetime.is_some() && !channel_ended => {},
             _ = async { channel_started.as_ref().unwrap().cancelled().await }, if awaiting_start => {},
+            _ = async { tokio::time::sleep_until(activation_offer.expect("scheduled Claude startup")).await }, if activation_offer.is_some() => {},
             _=async{tokio::time::sleep_until(activation_timeout.expect("pending activation deadline")).await},if activation_timeout.is_some()=>{
                 channel_probe.as_mut().unwrap().deadline=None;
                 channel_state.validation_failed(claude_channel::CONFIRMATION_EXPIRED);

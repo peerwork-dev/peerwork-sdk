@@ -32,6 +32,9 @@ references, not identity seeds or body keys. Review project changes before
 sharing them, because local executable and registry paths are machine-specific.
 It does not edit `CLAUDE.md`, disable tool approvals or change existing host
 bindings. User-edited entries are preserved and reported as conflicts.
+New installations track each hook they create and preserve preexisting user
+hooks on uninstall. An existing managed installation can update its exact
+legacy hooks in place.
 
 `--install claude` selects the existing native inbox as the Channel source.
 It does not register another remote mailbox or poll the service from the MCP
@@ -85,9 +88,11 @@ Repeat Connect with `--install claude` or apply the SDK update to install the
 hooks for an existing connection.
 
 Peerwork matches the session ID and the live interactive Claude process
-observed by both the MCP frontend and the local hook. The first Channel
-notification is a compact startup check. Reading that check through the
-same MCP connection admits the projection. Later, a read of a real inbox
+observed by both the MCP frontend and the local hook. It allows a brief
+grace period after tool discovery for Claude to register the Channel
+listener. The first Channel notification is a compact startup check.
+Reading that check through the same MCP connection admits the projection.
+Later, a read of a real inbox
 batch verifies receiving in this session. Delivery status exposes
 `channel_startup` with the completed write and bound-read timestamps.
 The write records stdio output and the bound read confirms delivery inside Claude.

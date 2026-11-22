@@ -242,10 +242,14 @@ pub(super) const ACTIVATION_PREFIX:&str="claude-activation-";
 pub(super) const CONFIRMATION_REQUIRED: &str = "CLAUDE_CHANNEL_CONFIRMATION_REQUIRED";
 pub(super) const CONFIRMATION_EXPIRED: &str = "CLAUDE_CHANNEL_CONFIRMATION_EXPIRED";
 const CONFIRMATION_WINDOW: Duration = Duration::from_secs(120);
+// Claude installs the handler after tool discovery. The protocol has no
+// registration acknowledgement, so allow the host to finish its startup.
+const HOST_STARTUP_GRACE: Duration = Duration::from_millis(750);
 pub(super) struct ActivationProbe {
     token:String,
     armed: bool,
     attempts: u8,
+    offer_at: Option<tokio::time::Instant>,
     pub(super) deadline:Option<tokio::time::Instant>,
     #[cfg(target_os="linux")]
     launch:crate::claude_channel_launch::SessionGuard,
@@ -260,7 +264,7 @@ impl ActivationProbe {
             let mut bytes=[0u8;24];
             OsRng.try_fill_bytes(&mut bytes).map_err(|_|ParticipantError::local("ENTROPY_UNAVAILABLE","CLAUDE_CHANNEL"))?;
             let token=format!("{ACTIVATION_PREFIX}{}",peerwork_core::crypto::base64url(&bytes));
-            Ok(Self { token, armed: true, attempts: 0, deadline: None, launch: guard })
+            Ok(Self { token, armed: true, attempts: 0, offer_at: None, deadline: None, launch: guard })
         }
         #[cfg(not(target_os="linux"))]
         Err(ParticipantError::local("CLAUDE_CHANNEL_LAUNCH_UNSUPPORTED","CLAUDE_CHANNEL"))
@@ -288,14 +292,25 @@ impl ActivationProbe {
     }
 
     pub(super) fn awaiting_start(&self) -> bool {
-        self.armed && !self.lifetime().is_cancelled()
+        self.armed && !self.started().is_cancelled() && !self.lifetime().is_cancelled()
+    }
+
+    pub(super) fn schedule(&mut self, now: tokio::time::Instant) -> Option<tokio::time::Instant> {
+        if !self.armed || !self.current() {
+            return None;
+        }
+        let grace = if self.attempts == 0 { HOST_STARTUP_GRACE } else { Duration::ZERO };
+        Some(*self.offer_at.get_or_insert(now + grace))
     }
 
     /// A transient, content-free probe. It is never registered as mailbox
     /// work or sent through the resident runtime.
-    pub(super) fn offer(&mut self)->Option<Value> {
-        if !self.armed || !self.current() {return None;}
+    pub(super) fn offer(&mut self, now: tokio::time::Instant) -> Option<Value> {
+        if now < self.schedule(now)? {
+            return None;
+        }
         self.armed = false;
+        self.offer_at = None;
         let reference=json!({"batch":self.token});
         Some(json!({"jsonrpc":"2.0","method":"notifications/claude/channel","params":{
             "content":format!("Peerwork Channel startup check. Call peerwork_inbox with {reference}. No message or reply is needed."),
@@ -493,11 +508,16 @@ mod tests {
             .mode(0o600).open(&proof).unwrap();
         marker.write_all(&[2,1,0,0,0]).unwrap();
         let mut probe=ActivationProbe{token:"claude-activation-demo".into(),
-            armed:true,attempts:0,deadline:None,launch:launch.acquire_at(proof.clone()).unwrap()};
+            armed:true,attempts:0,offer_at:None,deadline:None,launch:launch.acquire_at(proof.clone()).unwrap()};
         let arguments=json!({"batch":probe.token});
         assert!(!probe.confirm(&arguments));
         let state = State::default();
-        let notice = probe.offer().unwrap();
+        let start = tokio::time::Instant::now();
+        let registered = start + HOST_STARTUP_GRACE;
+        assert_eq!(probe.schedule(start), Some(registered));
+        assert!(!probe.awaiting_start(), "observed proof must not keep waking the MCP select loop");
+        assert!(probe.offer(registered - Duration::from_millis(1)).is_none());
+        let notice = probe.offer(registered).unwrap();
         assert_eq!(notice["params"]["meta"]["kind"], "activation");
         assert!(!probe.confirm(&arguments));
         assert!(!probe.rearm_expired());
@@ -509,7 +529,7 @@ mod tests {
         assert_eq!(state.startup_check()["writes"], 1);
         assert_eq!(state.status()["notifications_written"], 0);
         assert!(state.startup_check()["bound_read_at_ms"].is_null());
-        assert!(probe.offer().is_none());
+        assert!(probe.offer(registered).is_none());
         assert!(!probe.rearm_expired());
         assert!(!probe.confirm(&json!({"batch":"claude-activation-another"})));
 
@@ -518,7 +538,7 @@ mod tests {
         assert_eq!(state.startup_check()["same_session_retry_available"], true);
         assert!(probe.rearm_expired());
         assert!(!probe.rearm_expired());
-        assert_eq!(probe.offer(), Some(notice));
+        assert_eq!(probe.offer(registered), Some(notice));
         probe.written();
         state.startup_written();
         assert_eq!(state.startup_check()["writes"], 2);
@@ -531,8 +551,17 @@ mod tests {
         assert!(!probe.rearm_expired());
         state.session_ended();
         assert_eq!(state.startup_check()["code"], crate::claude_channel_launch::SESSION_ENDED);
+        let mut pending = ActivationProbe {
+            token: "claude-activation-ended".into(),
+            armed: true,
+            attempts: 0,
+            offer_at: None,
+            deadline: None,
+            launch: probe.launch,
+        };
+        assert!(pending.schedule(start).is_some());
         std::fs::remove_file(proof).unwrap();
-        assert!(!probe.current(),"losing the session proof closes admission");
+        assert!(pending.offer(registered).is_none(), "session end during grace must suppress the notification");
     }
     #[test]
     fn new_channel_requires_its_own_written_batch_read_and_resets_on_source_change() {
