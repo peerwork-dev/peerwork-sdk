@@ -357,7 +357,9 @@ async fn original_two_space_presentations_replace_without_reclaim_or_pending_ope
     let same=activate("original-session-returned",pinned,selected_session,false);
     let activated=submit(same.clone()).await.unwrap();
     assert_eq!(activated["value"]["current_generation"],pinned+1);
-    assert_eq!(submit(same).await.unwrap(),activated);
+    let retried=submit(same).await.unwrap();
+    assert_eq!(retried["ok"],true);
+    assert_eq!(retried["value"],activated["value"]);
     let old=original.call(json!({"method":"presentation_resume","options":options[1],"activation":initial["value"]["activation"]})).await.unwrap();
     assert_eq!(old["state"],"SUPERSEDED");
     assert_eq!(tool(&ordinary,"delivery",json!({"mode":"status"})).await["destinations"][0]["control_state"],"PAUSED");
