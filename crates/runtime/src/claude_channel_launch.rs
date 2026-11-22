@@ -126,6 +126,18 @@ impl Launch {
     pub(crate) fn session_digest(&self) -> String {
         peerwork_core::crypto::sha256_hex(format!("peerwork.claude-session.v1\0{}", self.session).as_bytes())
     }
+
+    #[cfg(target_os="linux")]
+    pub(crate) fn acquire(&self) -> Result<std::os::unix::net::UnixListener> {
+        use std::os::{linux::net::SocketAddrExt,unix::net::{SocketAddr,UnixListener}};
+        let key=peerwork_core::crypto::sha256_hex(format!("{}:{}",self.server,self.order.nonce).as_bytes());
+        let name=SocketAddr::from_abstract_name(format!("peerwork-claude-{key}").as_bytes())
+            .map_err(|_|failure("CLAUDE_CHANNEL_STATE_UNAVAILABLE"))?;
+        UnixListener::bind_addr(&name).map_err(|cause| {
+            if cause.kind()==std::io::ErrorKind::AddrInUse {failure("CLAUDE_CHANNEL_LAUNCH_ALREADY_CONNECTED")}
+            else {failure("CLAUDE_CHANNEL_STATE_UNAVAILABLE")}
+        })
+    }
 }
 
 /// Keep the foreground terminal and its signal handling with Claude. The

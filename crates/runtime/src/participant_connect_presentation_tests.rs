@@ -42,6 +42,8 @@ impl InstalledChannel {
         assert_eq!(initialized["id"], 1);
         assert!(initialized["result"]["capabilities"]["experimental"]["claude/channel"].is_object());
         channel.send(json!({"jsonrpc":"2.0","method":"notifications/initialized"})).await;
+        channel.send(json!({"jsonrpc":"2.0","id":4,"method":"tools/list","params":{}})).await;
+        assert_eq!(channel.next().await["id"],4);
         channel
     }
 
@@ -58,6 +60,31 @@ impl InstalledChannel {
     async fn read_probe(&mut self) {
         let notice = self.next().await;
         self.observe_probe(notice).await;
+    }
+
+    async fn pending_activation(&mut self)->Value {
+        let notice=self.next().await;
+        assert_eq!(notice["method"],"notifications/claude/channel");
+        assert_eq!(notice["params"]["meta"]["kind"],"activation");
+        notice["params"]["meta"]["batch"].clone()
+    }
+
+    async fn answer_activation(&mut self,batch:Value,accepted:bool) {
+        self.send(json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"peerwork_inbox",
+            "arguments":{"batch":batch}}})).await;
+        let response=self.next().await;
+        assert_eq!(response["id"],5,"{response}");
+        assert_eq!(response["result"]["isError"],!accepted,"{response}");
+        if accepted {
+            assert_eq!(response["result"]["structuredContent"],json!({"state":"CLAUDE_CHANNEL_CONFIRMED","items":[]}));
+        }else{
+            assert_eq!(response["result"]["structuredContent"]["error"]["code"],"CLAUDE_CHANNEL_CONFIRMATION_INVALID");
+        }
+    }
+
+    async fn confirm_activation(&mut self) {
+        let token=self.pending_activation().await;
+        self.answer_activation(token,true).await;
     }
 
     async fn observe_probe(&mut self, notice: Value) {
@@ -279,6 +306,7 @@ async fn original_two_space_presentations_replace_without_reclaim_or_pending_ope
         order:crate::claude_channel_launch::LaunchOrder::new().unwrap(), select_session:true,
     };
     let mut foreground = InstalledChannel::start(&project, entry, Some(&launch)).await;
+    foreground.confirm_activation().await;
     tool(&ordinary,"delivery",json!({"mode":"self_test","scope":"one"})).await;
     foreground.read_probe().await;
     let selected = generation().await;
@@ -294,21 +322,28 @@ async fn original_two_space_presentations_replace_without_reclaim_or_pending_ope
     assert_eq!(generation().await,selected);
 
     let mut duplicate=InstalledChannel::start(&project,entry,Some(&launch)).await;
-    tokio::time::timeout(Duration::from_secs(12),async {
-        loop {
-            let duplicate_context=duplicate.context().await;
-            if duplicate_context["host_channel"]["scopes"].as_object().is_some_and(|scopes|
-                scopes.values().any(|scope| scope["code"]=="CLAUDE_CHANNEL_LAUNCH_ALREADY_CONNECTED")) {break;}
-            assert_eq!(generation().await,selected);
-            tokio::time::sleep(Duration::from_millis(150)).await;
-        }
-    }).await.expect("duplicate subprocess did not yield to its own active launch");
+    assert_eq!(duplicate.context().await["host_channel"]["validation_error"],"CLAUDE_CHANNEL_LAUNCH_ALREADY_CONNECTED");
+    assert_eq!(generation().await,selected);
+
+    let declined_launch=crate::claude_channel_launch::Launch {
+        order:crate::claude_channel_launch::LaunchOrder::new().unwrap(),select_session:false,..launch.clone()
+    };
+    let mut declined=InstalledChannel::start(&project,entry,Some(&declined_launch)).await;
+    let unanswered=declined.pending_activation().await;
+    assert_eq!(declined.context().await["host_channel"]["validation_error"],"CLAUDE_CHANNEL_CONFIRMATION_REQUIRED");
+    handshake_only.answer_activation(unanswered,false).await;
+    assert_eq!(generation().await,selected,"a dropped Channel notification must not advance presentation");
+    tool(&ordinary,"delivery",json!({"mode":"self_test","scope":"one"})).await;
+    foreground.read_probe().await;
+    assert_eq!(generation().await,selected,"the incumbent remains able to receive while confirmation is missing");
+    declined.close().await;
 
     let other_launch=crate::claude_channel_launch::Launch {
         session: "bf52dc5c-ac99-4a49-959d-6c7bfe4073f4".into(),order:crate::claude_channel_launch::LaunchOrder::new().unwrap(),
         select_session:false,..launch.clone()
     };
     let mut other=InstalledChannel::start(&project,entry,Some(&other_launch)).await;
+    other.confirm_activation().await;
     tokio::time::timeout(Duration::from_secs(12),async {
         loop {
             let observed=other.context().await;
@@ -323,6 +358,7 @@ async fn original_two_space_presentations_replace_without_reclaim_or_pending_ope
         order:crate::claude_channel_launch::LaunchOrder::new().unwrap(),select_session:false,..launch.clone()
     };
     let mut resumed=InstalledChannel::start(&project,entry,Some(&resumed_launch)).await;
+    resumed.confirm_activation().await;
     tokio::time::timeout(Duration::from_secs(12),async {
         while generation().await == selected {tokio::time::sleep(Duration::from_millis(100)).await;}
     }).await.expect("qualified successor did not commit while the incumbent was alive");
@@ -338,6 +374,7 @@ async fn original_two_space_presentations_replace_without_reclaim_or_pending_ope
     resumed.observe_probe(resumed_notice).await;
     foreground.close().await;
     let mut retired_child=InstalledChannel::start(&project,entry,Some(&launch)).await;
+    retired_child.confirm_activation().await;
     tokio::time::timeout(Duration::from_secs(12),async {
         loop {
             let observed=retired_child.context().await;

@@ -83,9 +83,12 @@ conversation, use `--new-session` instead of `--resume SESSION_ID`.
 
 The native launch selects the installed server and checks the session ID
 reported to its MCP subprocess by Claude. An ordinary tool handshake can use
-the inbox without taking over receiving. The session marker proves which
-conversation was launched. A bound batch read is still required to verify
-automatic wake.
+the inbox without taking over receiving. The new Channel receives one startup
+check with no message content. It must read the check through that connection
+before it can take over. A dropped check or declined host prompt leaves the
+existing Channel in place. The check expires after two minutes and does not
+create a message, consume anything, or request a reply. A bound read of an
+actual inbox batch remains the receiving verification.
 
 Native0.3.27 and later automatically select the initialized MCP stdio
 handshake supported by Claude Channels, including when the host probes for
