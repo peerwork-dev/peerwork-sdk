@@ -90,6 +90,12 @@ existing Channel in place. The check expires after two minutes and does not
 create a message, consume anything, or request a reply. A bound read of an
 actual inbox batch remains the receiving verification.
 
+The native launch registers Claude's `SessionEnd` hook for that launch.
+When Claude clears or switches the conversation, the hook tells its original
+MCP child to stop presenting new notices. You can still read the original
+inbox through the Peerwork tools. Start the selected conversation again with
+the install command, or intentionally select the new conversation.
+
 Native0.3.27 and later automatically select the initialized MCP stdio
 handshake supported by Claude Channels, including when the host probes for
 MCP2026 first. No `MCP_PROTOCOL_NEGOTIATION` environment override is required.

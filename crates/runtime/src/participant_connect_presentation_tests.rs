@@ -149,6 +149,19 @@ fn new_frontend(directory:&Path,handle:&str,kind:&str)->Lifecycle {
     lifecycle.presentation_transport(kind).unwrap();lifecycle
 }
 
+async fn end_claude_session(executable:&Path, launch:&crate::claude_channel_launch::Launch,
+    session:&str, reason:&str) -> std::process::Output {
+    use std::process::Stdio;
+    let mut child=tokio::process::Command::new(executable)
+        .args(["agent","claude-session-end"])
+        .env(crate::claude_channel_launch::LAUNCH_ENV,serde_json::to_string(launch).unwrap())
+        .env(crate::claude_channel_launch::SESSION_ENV,"323ae6a5-ee4d-4337-82ef-b8ffe7d41c46")
+        .stdin(Stdio::piped()).stdout(Stdio::piped()).kill_on_drop(true).spawn().unwrap();
+    let event=json!({"hook_event_name":"SessionEnd","session_id":session,"reason":reason});
+    child.stdin.take().unwrap().write_all(event.to_string().as_bytes()).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(3),child.wait_with_output()).await.unwrap().unwrap()
+}
+
 #[tokio::test(flavor="multi_thread",worker_threads=4)]
 #[ignore="requires isolated TEST PostgreSQL, product HTTP and a persistent candidate executable"]
 async fn original_two_space_presentations_replace_without_reclaim_or_pending_operation_loss() {
@@ -331,11 +344,14 @@ async fn original_two_space_presentations_replace_without_reclaim_or_pending_ope
     let mut declined=InstalledChannel::start(&project,entry,Some(&declined_launch)).await;
     let unanswered=declined.pending_activation().await;
     assert_eq!(declined.context().await["host_channel"]["validation_error"],"CLAUDE_CHANNEL_CONFIRMATION_REQUIRED");
-    handshake_only.answer_activation(unanswered,false).await;
+    handshake_only.answer_activation(unanswered.clone(),false).await;
     assert_eq!(generation().await,selected,"a dropped Channel notification must not advance presentation");
     tool(&ordinary,"delivery",json!({"mode":"self_test","scope":"one"})).await;
     foreground.read_probe().await;
     assert_eq!(generation().await,selected,"the incumbent remains able to receive while confirmation is missing");
+    assert!(end_claude_session(&executable,&declined_launch,&declined_launch.session,"resume").await.status.success());
+    declined.answer_activation(unanswered,false).await;
+    assert_eq!(declined.context().await["host_channel"]["validation_error"],"CLAUDE_CHANNEL_SESSION_ENDED");
     declined.close().await;
 
     let other_launch=crate::claude_channel_launch::Launch {
@@ -372,6 +388,40 @@ async fn original_two_space_presentations_replace_without_reclaim_or_pending_ope
         _=handshake_only.next()=>panic!("a handshake-only process presented a new batch"),
     };
     resumed.observe_probe(resumed_notice).await;
+    let mismatched=end_claude_session(&executable,&resumed_launch,&other_launch.session,"clear").await;
+    assert!(!mismatched.status.success());
+    assert_eq!(serde_json::from_slice::<Value>(&mismatched.stdout).unwrap()["error"]["code"],"CLAUDE_CHANNEL_LAUNCH_MISMATCH");
+    tool(&ordinary,"delivery",json!({"mode":"self_test","scope":"one"})).await;
+    resumed.read_probe().await;
+    for _ in 0..2 {
+        assert!(end_claude_session(&executable,&resumed_launch,&resumed_launch.session,"clear").await.status.success());
+    }
+    let ended=resumed.context().await;
+    assert_eq!(ended["host_channel"]["validation_error"],"CLAUDE_CHANNEL_SESSION_ENDED");
+    assert_eq!(ended["actor_id"],config.expected_actor);
+    tool(&ordinary,"delivery",json!({"mode":"resume"})).await;
+    let after_switch=original.call(json!({"method":"invoke","wait_ms":5000,"request":native_message("message-after-claude-clear",
+        &Scope{workspace_id:Some(spaces[0].clone()),..Default::default()},&mailboxes[0],&mailboxes[0],
+        &"p".repeat(43),"Read this from the original inbox after Claude clear")})).await.unwrap();
+    assert_eq!(after_switch["state"],"ACCEPTED","{after_switch}");
+    let mut visible=false;
+    for _ in 0..30 {
+        resumed.send(json!({"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"peerwork_inbox",
+            "arguments":{"scope":"one","view":"active"}}})).await;
+        let page=resumed.next().await;
+        assert_eq!(page["id"],6,"a retired session emitted a notification: {page}");
+        assert_eq!(page["result"]["isError"],false,"{page}");
+        if page["result"]["structuredContent"].to_string().contains("Read this from the original inbox after Claude clear") {
+            visible=true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(visible,"the host switch must leave signed messages readable in the original inbox");
+    assert!(tokio::time::timeout(Duration::from_secs(3),resumed.output.next_line()).await.is_err(),
+        "a retired session presented a new message or closed its tool connection");
+    tool(&ordinary,"delivery",json!({"mode":"pause"})).await;
+    assert_eq!(generation().await,selected+1,"ending the projection must not reset its route");
     foreground.close().await;
     let mut retired_child=InstalledChannel::start(&project,entry,Some(&launch)).await;
     retired_child.confirm_activation().await;

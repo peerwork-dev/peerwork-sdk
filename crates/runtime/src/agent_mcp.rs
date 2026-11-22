@@ -246,13 +246,28 @@ where R:AsyncBufRead+Send+Unpin+'static,W:AsyncWrite+Unpin {
     let mut channel_task:Option<tokio::task::JoinHandle<()>>=None;
     let (channel_tx,mut channel_rx)=mpsc::channel::<Value>(8);
     let mut channel_admission: Option<ChannelAdmission> = None;
+    let channel_lifetime = channel_probe.as_ref().map(claude_channel::ActivationProbe::lifetime);
+    let mut channel_ended = false;
     let background_state=background_listener::State::default();
     let capabilities=if claude {json!({"tools":{},"experimental":{"claude/channel":{}}})}else{json!({"tools":{}})};
     let guidance=if claude {format!("{} {}",instructions(),claude_channel::INSTRUCTIONS)}else{instructions().to_owned()};
     let outcome=async{
     loop{
+        if let Some(lifetime) = &channel_lifetime {
+            if !channel_ended && lifetime.is_cancelled() {
+                channel_ended = true;
+                channel_admission = None;
+                channel_probe.as_mut().unwrap().deadline = None;
+                if let Some(task) = channel_task.take() {
+                    task.abort();
+                    let _ = task.await;
+                }
+                channel_state.session_ended();
+            }
+        }
         let activation_timeout=channel_probe.as_ref().and_then(|probe|probe.deadline);
         tokio::select!{
+            _ = async { channel_lifetime.as_ref().unwrap().cancelled().await }, if channel_lifetime.is_some() && !channel_ended => {},
             _=async{tokio::time::sleep_until(activation_timeout.expect("pending activation deadline")).await},if activation_timeout.is_some()=>{
                 channel_probe.as_mut().unwrap().deadline=None;
                 channel_state.validation_failed("CLAUDE_CHANNEL_CONFIRMATION_EXPIRED");
@@ -262,7 +277,16 @@ where R:AsyncBufRead+Send+Unpin+'static,W:AsyncWrite+Unpin {
             },
             (notification, allowed)=async {channel_admission.as_mut().expect("pending channel admission").await},if channel_admission.is_some()=>{
                 channel_admission = None;
-                write_channel(&mut writer, notification, &channel_state, std::future::ready(allowed)).await?;
+                let lifetime = channel_lifetime.as_ref().expect("active Claude Channel");
+                if !lifetime.is_cancelled() {
+                    tokio::select! {
+                        biased;
+                        // A concurrent end can interrupt a partially written
+                        // frame. Close stdio rather than append to that frame.
+                        _ = lifetime.cancelled() => break,
+                        result = write_channel(&mut writer, notification, &channel_state, std::future::ready(allowed)) => result?,
+                    }
+                }
             },
             joined=jobs.join_next_with_id(),if !jobs.is_empty()=>if let Some(joined)=joined{
                 match joined{
@@ -336,8 +360,14 @@ where R:AsyncBufRead+Send+Unpin+'static,W:AsyncWrite+Unpin {
                             if modern{result["ttlMs"]=json!(0);result["cacheScope"]=json!("private");}
                             write(&mut writer,success(id,result,modern)).await?
                         }};
-                        if let Some(notice)=channel_probe.as_mut().and_then(claude_channel::ActivationProbe::offer) {
-                            write(&mut writer,notice).await?;
+                        if let Some(lifetime) = channel_lifetime.as_ref().filter(|lifetime| !lifetime.is_cancelled()) {
+                            if let Some(notice)=channel_probe.as_mut().and_then(claude_channel::ActivationProbe::offer) {
+                                tokio::select! {
+                                    biased;
+                                    _ = lifetime.cancelled() => break,
+                                    result = write(&mut writer,notice) => result?,
+                                }
+                            }
                         }
                     },
                     "tools/call"=>{
@@ -346,12 +376,13 @@ where R:AsyncBufRead+Send+Unpin+'static,W:AsyncWrite+Unpin {
                         if name.is_none()||params.as_object().is_none_or(|o|o.keys().any(|k|!["name","arguments","_meta"].contains(&k.as_str()))){write(&mut writer,error(id,-32602,"Unknown tool or invalid parameters")).await?;continue;}
                         let arguments=params.get("arguments").cloned().unwrap_or(json!({}));
                         if claude && name==Some("inbox") && arguments["batch"].as_str().is_some_and(|batch|batch.starts_with(claude_channel::ACTIVATION_PREFIX)) {
-                            let accepted=channel_probe.as_mut().is_some_and(|probe|probe.confirm(&arguments));
+                            let accepted=channel_lifetime.as_ref().is_some_and(|lifetime| !lifetime.is_cancelled())
+                                && channel_probe.as_mut().is_some_and(|probe|probe.confirm(&arguments));
                             let result=if accepted{json!({"state":"CLAUDE_CHANNEL_CONFIRMED","items":[]})}
                             else{json!({"error":ParticipantError::local("CLAUDE_CHANNEL_CONFIRMATION_INVALID","CLAUDE_CHANNEL")})};
                             let out=json!({"content":[{"type":"text","text":result.to_string()}],"structuredContent":result,"isError":!accepted});
                             write(&mut writer,success(id,out,modern)).await?;
-                            if accepted {
+                            if accepted && channel_lifetime.as_ref().is_some_and(|lifetime| !lifetime.is_cancelled()) {
                                 channel_state.validation_finished();
                                 channel_task=Some(tokio::spawn(claude_channel::watch(tools.clone(),channel_tx.clone(),channel_state.clone())));
                             }

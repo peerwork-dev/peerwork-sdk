@@ -7,6 +7,23 @@ use std::{io::IsTerminal, process::Command};
 
 pub(crate) const LAUNCH_ENV: &str = "PEERWORK_CLAUDE_CHANNEL_LAUNCH";
 pub(crate) const SESSION_ENV: &str = "CLAUDE_CODE_SESSION_ID";
+pub(crate) const SESSION_ENDED: &str = "CLAUDE_CHANNEL_SESSION_ENDED";
+
+#[cfg(target_os = "linux")]
+const END: u8 = 1;
+
+#[cfg(target_os = "linux")]
+pub(crate) struct SessionGuard {
+    pub(crate) ended: crate::KernelCancellationToken,
+    listener: tokio::task::JoinHandle<()>,
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for SessionGuard {
+    fn drop(&mut self) {
+        self.listener.abort();
+    }
+}
 
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -112,12 +129,16 @@ impl Launch {
         Ok(())
     }
 
-    pub(crate) fn observe() -> Result<Self> {
+    fn inherited() -> Result<Self> {
         let wire = std::env::var(LAUNCH_ENV).map_err(|_| failure("CLAUDE_CHANNEL_LAUNCH_REQUIRED"))?;
         if wire.len() > 512 {
             return Err(failure("CLAUDE_CHANNEL_LAUNCH_MISMATCH"));
         }
-        let launch: Self = serde_json::from_str(&wire).map_err(|_| failure("CLAUDE_CHANNEL_LAUNCH_MISMATCH"))?;
+        serde_json::from_str(&wire).map_err(|_| failure("CLAUDE_CHANNEL_LAUNCH_MISMATCH"))
+    }
+
+    pub(crate) fn observe() -> Result<Self> {
+        let launch = Self::inherited()?;
         let marker = std::env::var(SESSION_ENV).map_err(|_| failure("CLAUDE_CHANNEL_LAUNCH_MISMATCH"))?;
         launch.validate(&marker)?;
         Ok(launch)
@@ -128,16 +149,101 @@ impl Launch {
     }
 
     #[cfg(target_os="linux")]
-    pub(crate) fn acquire(&self) -> Result<std::os::unix::net::UnixListener> {
-        use std::os::{linux::net::SocketAddrExt,unix::net::{SocketAddr,UnixListener}};
+    fn socket_address(&self) -> Result<std::os::unix::net::SocketAddr> {
+        use std::os::{linux::net::SocketAddrExt, unix::net::SocketAddr};
         let key=peerwork_core::crypto::sha256_hex(format!("{}:{}",self.server,self.order.nonce).as_bytes());
-        let name=SocketAddr::from_abstract_name(format!("peerwork-claude-{key}").as_bytes())
-            .map_err(|_|failure("CLAUDE_CHANNEL_STATE_UNAVAILABLE"))?;
-        UnixListener::bind_addr(&name).map_err(|cause| {
+        SocketAddr::from_abstract_name(format!("peerwork-claude-{key}").as_bytes())
+            .map_err(|_|failure("CLAUDE_CHANNEL_STATE_UNAVAILABLE"))
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn acquire(&self) -> Result<SessionGuard> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = std::os::unix::net::UnixListener::bind_addr(&self.socket_address()?).map_err(|cause| {
             if cause.kind()==std::io::ErrorKind::AddrInUse {failure("CLAUDE_CHANNEL_LAUNCH_ALREADY_CONNECTED")}
             else {failure("CLAUDE_CHANNEL_STATE_UNAVAILABLE")}
-        })
+        })?;
+        let unavailable = |_| failure("CLAUDE_CHANNEL_STATE_UNAVAILABLE");
+        listener.set_nonblocking(true).map_err(unavailable)?;
+        let listener = tokio::net::UnixListener::from_std(listener).map_err(unavailable)?;
+        let ended = crate::KernelCancellationToken::new();
+        let signal = ended.clone();
+        let uid = unsafe { libc::geteuid() };
+        let listener = tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                if !stream.peer_cred().is_ok_and(|peer| peer.uid() == uid) {
+                    continue;
+                }
+                let _ = tokio::time::timeout(std::time::Duration::from_millis(200), async {
+                    if stream.read_u8().await? == END {
+                        // Stop admission before allowing the hook to return.
+                        signal.cancel();
+                        stream.write_u8(END).await?;
+                    }
+                    Ok::<(), std::io::Error>(())
+                }).await;
+            }
+            // Losing the listener also means losing the lifecycle signal.
+            signal.cancel();
+        });
+        Ok(SessionGuard { ended, listener })
     }
+}
+
+fn end_hook_settings(executable: &std::path::Path) -> Result<String> {
+    let executable = executable.to_str().ok_or_else(|| failure("CLAUDE_CHANNEL_EXECUTABLE_UNAVAILABLE"))?;
+    let command = format!("'{}' agent claude-session-end", executable.replace('\'', "'\"'\"'"));
+    Ok(serde_json::json!({"hooks":{"SessionEnd":[{"hooks":[
+        {"type":"command","command":command,"timeout":1}
+    ]}]}}).to_string())
+}
+
+/// Invoked by the host's lifecycle hook using the ended session ID. Claude's
+/// MCP subprocess environment retains its original session across a switch.
+#[cfg(target_os = "linux")]
+pub(crate) fn end_session() -> Result<()> {
+    use std::{io::{Read, Write}, os::unix::net::UnixStream, time::Duration};
+
+    #[derive(Deserialize)]
+    struct Event {
+        session_id: String,
+        hook_event_name: String,
+    }
+    let invalid = |_| failure("CLAUDE_CHANNEL_SESSION_EVENT_INVALID");
+    let mut input = Vec::new();
+    std::io::stdin().lock().take(8193).read_to_end(&mut input)
+        .map_err(invalid)?;
+    if input.len() > 8192 {
+        return Err(failure("CLAUDE_CHANNEL_SESSION_EVENT_INVALID"));
+    }
+    let event: Event = serde_json::from_slice(&input)
+        .map_err(|_| failure("CLAUDE_CHANNEL_SESSION_EVENT_INVALID"))?;
+    if event.hook_event_name != "SessionEnd" {
+        return Err(failure("CLAUDE_CHANNEL_SESSION_EVENT_INVALID"));
+    }
+    let launch = Launch::inherited()?;
+    launch.validate(&event.session_id)?;
+    let mut stream = match UnixStream::connect_addr(&launch.socket_address()?) {
+        Ok(stream) => stream,
+        Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => return Ok(()),
+        Err(_) => return Err(failure("CLAUDE_CHANNEL_LIFECYCLE_UNAVAILABLE")),
+    };
+    let budget = Some(Duration::from_millis(500));
+    let unavailable = |_| failure("CLAUDE_CHANNEL_LIFECYCLE_UNAVAILABLE");
+    stream.set_read_timeout(budget).map_err(unavailable)?;
+    stream.set_write_timeout(budget).map_err(unavailable)?;
+    stream.write_all(&[END]).map_err(unavailable)?;
+    let mut acknowledgement = [0];
+    stream.read_exact(&mut acknowledgement).map_err(unavailable)?;
+    if acknowledgement != [END] {
+        return Err(failure("CLAUDE_CHANNEL_LIFECYCLE_UNAVAILABLE"));
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn end_session() -> Result<()> {
+    Err(failure("CLAUDE_CHANNEL_LAUNCH_UNSUPPORTED"))
 }
 
 /// Keep the foreground terminal and its signal handling with Claude. The
@@ -163,8 +269,11 @@ pub(crate) fn start(args: &[String]) -> Result<()> {
         server: server.clone(), session, order: LaunchOrder::new()?, select_session,
     };
     let wire = serde_json::to_string(&launch).map_err(|_|failure("CLAUDE_CHANNEL_LAUNCH_ARGUMENT_INVALID"))?;
+    let executable = std::env::current_exe().map_err(|_| failure("CLAUDE_CHANNEL_EXECUTABLE_UNAVAILABLE"))?;
+    let settings = end_hook_settings(&executable)?;
     let mut command = Command::new("claude");
     command.args([session_flag, &launch.session, "--dangerously-load-development-channels", &format!("server:{server}")])
+        .args(["--settings", &settings])
         .env_remove(SESSION_ENV).env(LAUNCH_ENV, wire);
     #[cfg(unix)]
     {

@@ -56,6 +56,17 @@ impl State {
     pub(super) fn consumed(&self) {self.1.notify_waiters();}
     pub(super) fn validation_failed(&self,code:&str) {self.0.lock().unwrap().validation_error=Some(code.into());}
     pub(super) fn validation_finished(&self) { self.0.lock().unwrap().validation_error = None; }
+    pub(super) fn session_ended(&self) {
+        let code = crate::claude_channel_launch::SESSION_ENDED;
+        let mut observed = self.0.lock().unwrap();
+        observed.validation_error = Some(code.into());
+        for scope in observed.scopes.values_mut() {
+            *scope = json!({"binding":scope["binding"],"state":"BLOCKED","code":code,
+                "session_receiving":"UNCONFIRMED","recovery":crate::host_recovery_policy::diagnostic(code)});
+        }
+        let now = std::time::Instant::now();
+        observed.at.values_mut().for_each(|at| *at = now);
+    }
     fn scope(&self,alias:&str,state:&str,code:Option<&str>) {
         let mut observed=self.0.lock().unwrap();
         let mut value=observed.scopes.get(alias).cloned().unwrap_or_else(||json!({"binding":null,"session_receiving":"UNCONFIRMED"}));
@@ -191,7 +202,7 @@ pub(super) struct ActivationProbe {
     sent:bool,
     pub(super) deadline:Option<tokio::time::Instant>,
     #[cfg(target_os="linux")]
-    _launch:std::os::unix::net::UnixListener,
+    launch:crate::claude_channel_launch::SessionGuard,
 }
 
 impl ActivationProbe {
@@ -204,10 +215,17 @@ impl ActivationProbe {
             let mut bytes=[0u8;24];
             OsRng.try_fill_bytes(&mut bytes).map_err(|_|ParticipantError::local("ENTROPY_UNAVAILABLE","CLAUDE_CHANNEL"))?;
             let token=format!("{ACTIVATION_PREFIX}{}",peerwork_core::crypto::base64url(&bytes));
-            Ok(Self{token,sent:false,deadline:None,_launch:guard})
+            Ok(Self{token,sent:false,deadline:None,launch:guard})
         }
         #[cfg(not(target_os="linux"))]
         Err(ParticipantError::local("CLAUDE_CHANNEL_LAUNCH_UNSUPPORTED","CLAUDE_CHANNEL"))
+    }
+
+    pub(super) fn lifetime(&self) -> crate::KernelCancellationToken {
+        #[cfg(target_os = "linux")]
+        { self.launch.ended.clone() }
+        #[cfg(not(target_os = "linux"))]
+        unreachable!("Linux is required to prepare a Claude Channel")
     }
 
     /// One transient, content-free probe per launch connection. It is never
@@ -384,14 +402,14 @@ mod tests {
     use super::*;
 
     #[cfg(target_os="linux")]
-    #[test]
-    fn activation_probe_is_single_use_and_connection_local() {
+    #[tokio::test]
+    async fn activation_probe_is_single_use_and_connection_local() {
         use crate::claude_channel_launch::{Launch,LaunchOrder};
         let launch=Launch{server:"peerwork-0123456789abcdef".into(),
             session:"a1ac3c82-ade4-4ae8-8fdb-5292340edf0e".into(),
             order:LaunchOrder::new().unwrap(),select_session:false};
         let mut probe=ActivationProbe{token:"claude-activation-demo".into(),
-            sent:false,deadline:None,_launch:launch.acquire().unwrap()};
+            sent:false,deadline:None,launch:launch.acquire().unwrap()};
         let arguments=json!({"batch":probe.token});
         assert!(!probe.confirm(&arguments));
         let notice=probe.offer().unwrap();

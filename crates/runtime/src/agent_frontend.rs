@@ -106,6 +106,10 @@ pub fn cli(args: &[String]) -> Value {
                 crate::claude_channel_launch::start(arguments)?;
                 return Ok(Value::Null);
             }
+            if command == "claude-session-end" && arguments.is_empty() {
+                crate::claude_channel_launch::end_session()?;
+                return Ok(Value::Null);
+            }
         }
         let [flag, path, rest @ ..] = args else {
             return Err(invalid());
