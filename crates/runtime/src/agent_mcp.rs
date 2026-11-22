@@ -483,6 +483,76 @@ mod tests {
         let output=String::from_utf8(wire).unwrap();
         assert!(output.contains("original"));assert!(!output.contains("_presentation"));assert!(!output.contains("private-decision"));assert!(!output.contains("private-host"));
     }
+    #[tokio::test]
+    async fn successor_delivers_a_fresh_batch_while_the_incumbent_write_is_in_flight() {
+        use crate::notification_delivery::{activation::Activation, SourceHead, Store, Wake};
+        use tokio::io::AsyncReadExt;
+
+        let root = crate::test_support::protected_test_dir();
+        let store = Store::open(&root.path().join("state")).unwrap();
+        let members = vec!["member".into()];
+        let target = json!({"kind":"MCP_STDIO_CHANNEL","registration_id":"entry",
+            "host_destination":null,"host_session":"a".repeat(64)});
+        let select = |operation: &str, generation| -> Activation {
+            let reply = store.presentation_replace("source", &members, operation, generation,
+                &target, generation == 0).unwrap();
+            serde_json::from_value(reply["activation"].clone()).unwrap()
+        };
+        let head = |checkpoint| [SourceHead {
+            key: "space".into(), checkpoint, has_pending: checkpoint > 0,
+        }];
+        let frame_for = |wake: &Wake| json!({"method":"notifications/claude/channel",
+            "params":{"meta":{"batch":wake.batch,"revision":wake.revision.to_string()}},
+            "_presentation":{"scope":"space"}});
+        let admit = |activation: &Activation, wake: &Wake| std::future::ready(
+            store.presentation_notification_allowed("source", &members, Some(activation),
+                "owner", &wake.batch, wake.revision));
+
+        let incumbent = select("incumbent", 0);
+        let setup = store.due("owner", &head(0), 0).unwrap().unwrap();
+        store.observed("owner", &setup.batch).unwrap();
+        let old = store.due("owner", &head(1), 1).unwrap().unwrap();
+        let old_state = claude_channel::State::default();
+        let (mut old_writer, mut old_host) = tokio::io::duplex(1);
+        let old_write = write_channel(&mut old_writer, frame_for(&old), &old_state, admit(&incumbent, &old));
+        tokio::pin!(old_write);
+        let mut first_byte = [0; 1];
+        tokio::select! {
+            read = old_host.read_exact(&mut first_byte) => { read.unwrap(); },
+            _ = &mut old_write => panic!("the single-byte host must hold the old write open"),
+        }
+        assert_eq!(old_state.status()["notifications_written"], 0);
+        assert_eq!(store.status("owner").unwrap()["pending"]["replay_blocked"], "RESULT_UNKNOWN");
+        assert!(!admit(&incumbent, &old).await.unwrap());
+
+        let successor = select("successor", 1);
+        assert_eq!(admit(&incumbent, &old).await.unwrap_err().code, "PRESENTATION_ACTIVATION_SUPERSEDED");
+        assert!(store.due("owner", &head(1), 4500).unwrap().is_none());
+        let latest = store.due("owner", &head(2), 5000).unwrap().unwrap();
+        assert_ne!(latest.batch, old.batch, "the successor must reach the fresh head without replaying the incumbent");
+        assert_eq!((latest.ranges[0].after, latest.ranges[0].through), (1, 2));
+        let current_state = claude_channel::State::default();
+        current_state.scope_observed("space", &json!({"state":"NOTIFICATION_DUE","batch":latest.batch}));
+        let mut current_wire = Vec::new();
+        write_channel(&mut current_wire, frame_for(&latest), &current_state, admit(&successor, &latest)).await.unwrap();
+        let delivered: Value = serde_json::from_slice(&current_wire).unwrap();
+        assert_eq!(delivered["params"]["meta"]["batch"], latest.batch);
+
+        let mut old_host = BufReader::new(old_host);
+        let mut old_wire = first_byte.to_vec();
+        let (read, written) = tokio::join!(old_host.read_until(b'\n', &mut old_wire), &mut old_write);
+        read.unwrap();
+        written.unwrap();
+        let delayed: Value = serde_json::from_slice(&old_wire).unwrap();
+        assert_eq!(delayed["params"]["meta"]["batch"], old.batch);
+        assert_eq!(store.observed("owner", &old.batch).unwrap()["accepted_generation"], false);
+        assert_eq!(store.current("owner").unwrap().unwrap().batch, latest.batch);
+        current_state.batch_read(&old.batch);
+        assert_eq!(current_state.status()["scopes"]["space"]["session_receiving"], "UNCONFIRMED");
+        current_state.batch_read(&latest.batch);
+        assert_eq!(current_state.status()["scopes"]["space"]["session_receiving"], "VERIFIED");
+        assert_eq!(store.observed("owner", &latest.batch).unwrap()["accepted_generation"], true);
+    }
     use super::*;
     use tokio::io::{AsyncBufReadExt, BufReader};
     #[tokio::test]

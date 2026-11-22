@@ -152,6 +152,12 @@ relay is not enabled.
   selection by reopening MCP. Ordinary tools and the native inbox remain
   available. Each new presentation still requires its own bound read to verify
   automatic wake.
+- When the managed runtime reserves a business notification for Channel
+  output, a connection change does not send that same notification again.
+  Its original batch remains readable when the outcome is uncertain. A
+  later batch can be announced independently, and a late read applies to
+  the original batch. A notification already submitted to the host can
+  still appear after the connection changes.
 - A source already bound to Codex, AGY or another native host is not mirrored
   into a new Claude session just because MCP was installed. It reports
   `CLAUDE_CHANNEL_SOURCE_ALREADY_BOUND_TO_ANOTHER_HOST`; retain that working

@@ -249,13 +249,26 @@ async fn original_two_space_presentations_replace_without_reclaim_or_pending_ope
     assert_eq!(activation_b["generation"].as_u64().unwrap(),activation_a["generation"].as_u64().unwrap()+1);
     assert_eq!(old.presentation_poll("one",&activation_a).await.unwrap_err().code,"PRESENTATION_ACTIVATION_SUPERSEDED");
     assert_eq!(old.presentation_allowed("one",&activation_a,batch,revision).await.unwrap_err().code,"PRESENTATION_ACTIVATION_SUPERSEDED");
-    assert!(successor.presentation_allowed("two",&activation_b,batch,revision).await.unwrap(),"coalesced notification admission retains the original destination batch");
+    assert!(!successor.presentation_allowed("two",&activation_b,batch,revision).await.unwrap(),
+        "the incumbent's in-flight admission cannot repeat through a different presentation mode");
+    let fresh_message=original.call(json!({"method":"invoke","wait_ms":5000,"request":native_message("presentation-fresh-message",
+        &Scope{workspace_id:Some(spaces[0].clone()),..Default::default()},&mailboxes[0],&mailboxes[0],&"p".repeat(43),"Fresh encrypted presentation body")})).await.unwrap();
+    assert_eq!(fresh_message["state"],"ACCEPTED","{fresh_message}");
+    let fresh_notice=due(&successor,"one",&activation_b).await;
+    let fresh_batch=fresh_notice["batch"].as_str().unwrap();
+    assert_ne!(fresh_batch,batch);
+    assert!(successor.presentation_allowed("one",&activation_b,fresh_batch,fresh_notice["revision"].as_u64().unwrap()).await.unwrap());
     assert_eq!(old.presentation_selection("one").await.unwrap().unwrap(),activation_a,"old observer must resume its frozen decision, never reclaim");
     assert_eq!(original.call(json!({"method":"presentation_status","options":options[0]})).await.unwrap()["current_generation"],activation_b["generation"]);
     let page=tool(&old,"inbox",json!({"batch":batch})).await;
     assert!(page.to_string().contains("Original encrypted presentation body"),"{page}");
     let item=page["items"][0]["item"].clone();assert!(item["delivery_id"].is_string(),"{page}");
     tool(&old,"consume",json!({"scope":"one","items":[item]})).await;
+    let fresh_page=tool(&successor,"inbox",json!({"batch":fresh_batch})).await;
+    assert!(fresh_page.to_string().contains("Fresh encrypted presentation body"),"{fresh_page}");
+    let fresh_item=fresh_page["items"][0]["item"].clone();
+    assert!(fresh_item["delivery_id"].is_string(),"{fresh_page}");
+    tool(&successor,"consume",json!({"scope":"one","items":[fresh_item]})).await;
     assert!(tool(&successor,"inbox",json!({"scope":"one","view":"active"})).await["items"].as_array().unwrap().is_empty(),"same binding shares original consumption");
     assert_eq!(tool(&ordinary,"status",json!({"operation_id":"presentation-original-message"})).await["command_id"],message["command_id"]);
 

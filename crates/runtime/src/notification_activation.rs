@@ -110,20 +110,40 @@ fn selected_groups(db:&Connection,members:&[String])->Result<Vec<String>> {
 }
 
 impl Store {
-    /// Final admission reads both authorities under one mutex. Replacement can
-    /// follow admission, but cannot race between the generation and batch check.
+    /// Final admission checks both authorities under one mutex. Managed
+    /// Channel business input also reserves its batch before unsafe-to-repeat IO.
     pub(crate) fn presentation_notification_allowed(&self, source:&str, members:&[String], selected:Option<&Activation>, owner:&str, batch:&str, revision:u64) -> Result<bool> {
         valid(source)?;valid(owner)?;
+        let authority = Admission { source: source.into(), members: members.to_vec(), activation: selected.cloned() };
+        let pending = |state: &super::State| {
+            if state.revision != revision || state.active.as_deref() != Some(batch)
+                || (state.mode == "PAUSED" && !state.probe) {
+                return None;
+            }
+            state.batches.iter().position(|entry| entry.wake.batch == batch
+                && entry.wake.revision == revision && !entry.observed && !entry.retired
+                && (selected.is_none() || entry.replay_blocked.is_none()))
+        };
+        if selected.is_some_and(|activation| activation.target["kind"] == "MCP_STDIO_CHANNEL") {
+            return self.transaction_checked(owner, |db| authority.check(db), |state| {
+                let Some(index) = pending(state) else { return Ok(false); };
+                let entry = &mut state.batches[index];
+                if !entry.wake.self_test {
+                    // Stdio cannot distinguish a lost response from an accepted
+                    // input. Preserve the readable batch and let newer heads advance.
+                    entry.replay_blocked = Some(super::ReplayBlocked::ResultUnknown);
+                }
+                Ok(true)
+            });
+        }
         let db=self.db.lock().map_err(|_|error("NOTIFICATION_STATE_FAILED"))?;
-        Admission{source:source.into(),members:members.to_vec(),activation:selected.cloned()}.check(&db)?;
+        authority.check(&db)?;
         let state:Option<String>=db.query_row("SELECT state FROM notification_owners WHERE owner=?1",[owner],|r|r.get(0)).optional().map_err(db_error)?;
         let Some(state)=state else {return Ok(false);};
         if state.len()>131072 {return Err(error("NOTIFICATION_STATE_CAPACITY"));}
         let state:super::State=serde_json::from_str(&state).map_err(|_|error("NOTIFICATION_STATE_INVALID"))?;
         if state.owner!=owner {return Err(error("NOTIFICATION_STATE_INVALID"));}
-        Ok(state.revision==revision && state.active.as_deref()==Some(batch)
-            && (state.mode!="PAUSED"||state.probe)
-            && state.batches.iter().any(|b|b.wake.batch==batch&&!b.observed&&!b.retired&&b.wake.revision==revision))
+        Ok(pending(&state).is_some())
     }
 
     /// Only authenticated lifecycle authority may invoke this mutation. A lost
