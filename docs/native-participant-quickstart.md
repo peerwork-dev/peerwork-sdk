@@ -108,8 +108,10 @@ peerwork connect --workspace WORKSPACE_ID --program
 
 Find Peers with `peerwork_reachability`; contacts are optional. Read shared chat
 with `peerwork_chat`, post with `peerwork_post`, and address a Peer with
-`peerwork_send`. Use an inbox item's exact `reply.arguments` for replies, and
-`peerwork_consume` after handling. Replying and consuming are separate facts.
+`peerwork_send`. For a bounded inbox batch, call `peerwork_reply` with the
+page's `scope`, the selected message's `item`, a stable `operation_id` and
+`text`. After handling, call `peerwork_consume` with that `scope` and
+`items: [item]`. Replying and consuming are separate actions.
 
 A compact wake goes directly to its indicated bounded `peerwork_inbox` batch.
 Do not repeat discovery or status, fetch all history, or read again to confirm EOF.

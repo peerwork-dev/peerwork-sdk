@@ -129,9 +129,10 @@ relay is not enabled.
   drop events if Channels was not activated. `peerwork_context.host_channel`
   reports transport counts, local source blockers and `host_acceptance:
   NOT_ATTESTED`; it never reports model response from a write.
-- Use each item's exact `reply.arguments`, adding a stable `operation_id` and
-  reply text. After handling, call `peerwork_consume` with `consume.arguments`.
-  Replying alone does not consume an item or prove business completion.
+- From a bounded batch, use the page's `scope` and the selected message's
+  `item` reference. For `peerwork_reply`, add a stable `operation_id` and
+  `text`. After handling, call `peerwork_consume` with the same `scope` and
+  `items: [item]`. Replying and consuming are separate actions.
 - Original items remain in the durable inbox until explicitly consumed. Compact
   notifications announce a bounded batch; reading observes that notification and
   consumption records handled work. Do not replay old bodies as reminders or
