@@ -267,14 +267,16 @@ where R:AsyncBufRead+Send+Unpin+'static,W:AsyncWrite+Unpin {
                 channel_state.session_ended();
             }
         }
-        if catalog_listed && !channel_ended {
-            if let Some(notice) = channel_probe.as_mut().and_then(claude_channel::ActivationProbe::offer) {
-                channel_state.validation_failed("CLAUDE_CHANNEL_CONFIRMATION_REQUIRED");
+        if let Some(probe) = channel_probe.as_mut().filter(|_| catalog_listed && !channel_ended) {
+            if let Some(notice) = probe.offer() {
+                channel_state.startup_offered();
                 tokio::select! {
                     biased;
                     _ = channel_lifetime.as_ref().expect("active Claude Channel").cancelled() => break,
                     result = write(&mut writer,notice) => result?,
                 }
+                probe.written();
+                channel_state.startup_written();
             }
         }
         let activation_timeout=channel_probe.as_ref().and_then(|probe|probe.deadline);
@@ -284,7 +286,7 @@ where R:AsyncBufRead+Send+Unpin+'static,W:AsyncWrite+Unpin {
             _ = async { channel_started.as_ref().unwrap().cancelled().await }, if awaiting_start => {},
             _=async{tokio::time::sleep_until(activation_timeout.expect("pending activation deadline")).await},if activation_timeout.is_some()=>{
                 channel_probe.as_mut().unwrap().deadline=None;
-                channel_state.validation_failed("CLAUDE_CHANNEL_CONFIRMATION_EXPIRED");
+                channel_state.validation_failed(claude_channel::CONFIRMATION_EXPIRED);
             },
             notification=channel_rx.recv(),if channel_task.is_some() && channel_admission.is_none()=>if let Some(notification)=notification {
                 channel_admission = Some(Box::pin(admit_channel(tools.clone(), notification)));
@@ -388,12 +390,21 @@ where R:AsyncBufRead+Send+Unpin+'static,W:AsyncWrite+Unpin {
                             let out=json!({"content":[{"type":"text","text":result.to_string()}],"structuredContent":result,"isError":!accepted});
                             write(&mut writer,success(id,out,modern)).await?;
                             if accepted && channel_probe.as_ref().is_some_and(claude_channel::ActivationProbe::current) {
-                                channel_state.validation_finished();
+                                channel_state.startup_read();
                                 channel_task=Some(tokio::spawn(claude_channel::watch(tools.clone(),channel_tx.clone(),channel_state.clone())));
                             }
                             continue;
                         }
                         let request=match AgentRequest::parse(name.unwrap(),arguments.clone()){Ok(v)=>v,Err(_)=>{write(&mut writer,argument_error(id,name.unwrap(),&arguments)).await?;continue;}};
+                        if claude && matches!(&request, AgentRequest::Delivery{mode,..} if mode == "self_test")
+                            && channel_state.validation_error().as_deref() == Some(claude_channel::CONFIRMATION_EXPIRED)
+                            && channel_probe.as_mut().is_some_and(claude_channel::ActivationProbe::rearm_expired) {
+                            let result = json!({"state":"PENDING","code":claude_channel::CONFIRMATION_REQUIRED,
+                                "next_action":"WAIT_FOR_CURRENT_CLAUDE_CHANNEL_STARTUP_CHECK"});
+                            let payload = json!({"content":[{"type":"text","text":result.to_string()}],"structuredContent":result,"isError":false});
+                            write(&mut writer,success(id,payload,modern)).await?;
+                            continue;
+                        }
                         let projected=claude||background_state.enabled();
                         let context=projected&&matches!(request,AgentRequest::Context);
                         let delivery=projected&&matches!(&request,AgentRequest::Delivery{mode,..} if mode=="status");
@@ -414,7 +425,9 @@ where R:AsyncBufRead+Send+Unpin+'static,W:AsyncWrite+Unpin {
                                 AgentRequest::Delivery { ref mode, .. } if claude && mode == "self_test" => {
                                     if let Some(code) = channel_state.validation_error() {
                                         let mut error = ParticipantError::local(&code, "CLAUDE_CHANNEL");
-                                        error.details = Some(crate::host_recovery_policy::diagnostic(&code));
+                                        let mut details = crate::host_recovery_policy::diagnostic(&code);
+                                        details["startup_check"] = channel_state.startup_check();
+                                        error.details = Some(details);
                                         Err(error)
                                     } else {
                                         tools.call(request).await

@@ -92,6 +92,9 @@ fn refresh_at(context: &mut Value, now: i64) {
 /// The frontend refines the runtime observation with its exact MCP connection
 /// and selected source. No extra runtime or service request.
 pub(crate) fn refresh_delivery(value:&mut Value, channel:&Value) {
+    if channel["transport"] == "MCP_STDIO_CHANNEL" && channel["startup_check"].is_object() {
+        value["channel_startup"] = channel["startup_check"].clone();
+    }
     let identity=json!({"actor_id":value["actor_id"],"origin":value["origin"]});
     let transport = projection_transport(channel);
     let mut pending_read = false;
@@ -220,6 +223,17 @@ mod tests {
         delivery["observations"][0]["transport"]=json!("NATIVE_INBOX");
         refresh_delivery(&mut delivery,&json!({"scopes":{"space":{"binding":binding(&context,&context["scopes"]["space"]),"state":"STARTING","observation_age_ms":0}}}));
         assert_eq!(delivery["state"],"UNKNOWN");assert_eq!(delivery["observations"][0]["transport"],"MCP_STDIO_CHANNEL");
+    }
+
+    #[test]
+    fn claude_startup_status_is_visible_before_an_automatic_source_is_active() {
+        let context = context();
+        let mut delivery = json!({"observations":context["delivery_observations"]["observations"]});
+        delivery["observations"][0]["transport"] = json!("NATIVE_INBOX");
+        let startup = json!({"code":"CLAUDE_CHANNEL_CONFIRMATION_REQUIRED","writes":1,"last_written_at_ms":1000,"bound_read_at_ms":null});
+        refresh_delivery(&mut delivery, &json!({"transport":"MCP_STDIO_CHANNEL","startup_check":startup,"scopes":{}}));
+        assert_eq!(delivery["channel_startup"], startup);
+        assert_eq!(delivery["observations"][0]["transport"], "NATIVE_INBOX");
     }
 
     #[test]

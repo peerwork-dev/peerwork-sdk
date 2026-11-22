@@ -88,11 +88,14 @@ Peerwork matches the session ID and the live interactive Claude process
 observed by both the MCP frontend and the local hook. The first Channel
 notification is a compact startup check. Reading that check through the
 same MCP connection admits the projection. Later, a read of a real inbox
-batch verifies receiving in this session. If Claude silently drops the
-check, Peerwork reports that the check expired. Until the Channel passes
-the startup check, its delivery self-test reports the active prerequisite.
-Ending or switching the conversation fences the old projection. The
-inbox remains available through the same MCP tools.
+batch verifies receiving in this session. Delivery status exposes
+`channel_startup` with the completed write and bound-read timestamps.
+The write records stdio output and the bound read confirms delivery inside Claude.
+The startup check expires after 120 seconds. If Claude's Channel is
+registered, call the delivery self-test again after expiry to send
+one more startup check in the same conversation. Ending or switching
+the conversation fences its previous delivery session. The inbox remains
+available through the same MCP tools.
 
 Native0.3.27 and later automatically select the initialized MCP stdio
 handshake supported by Claude Channels, including when the host probes for
