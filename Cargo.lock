@@ -3,6 +3,12 @@
 version = 4
 
 [[package]]
+name = "adler2"
+version = "2.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
+
+[[package]]
 name = "aead"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1208,6 +1214,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "miniz_oxide"
+version = "0.8.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1fa76a2c86f704bdb222d66965fb3d63269ce38518b83cb0575fca855ebb6316"
+dependencies = [
+ "adler2",
+]
+
+[[package]]
 name = "mio"
 version = "1.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1333,7 +1348,7 @@ dependencies = [
 
 [[package]]
 name = "peerwork-cli"
-version = "0.3.60"
+version = "0.3.61"
 dependencies = [
  "libc",
  "peerwork-core",
@@ -1343,7 +1358,7 @@ dependencies = [
 
 [[package]]
 name = "peerwork-core"
-version = "0.3.60"
+version = "0.3.61"
 dependencies = [
  "aes-gcm 0.10.3",
  "base64 0.22.1",
@@ -1361,7 +1376,7 @@ dependencies = [
 
 [[package]]
 name = "peerwork-node-native"
-version = "0.3.60"
+version = "0.3.61"
 dependencies = [
  "napi",
  "napi-derive",
@@ -1372,7 +1387,7 @@ dependencies = [
 
 [[package]]
 name = "peerwork-python-native"
-version = "0.3.60"
+version = "0.3.61"
 dependencies = [
  "peerwork-core",
  "peerwork-runtime",
@@ -1382,7 +1397,7 @@ dependencies = [
 
 [[package]]
 name = "peerwork-runtime"
-version = "0.3.60"
+version = "0.3.61"
 dependencies = [
  "aes-gcm 0.10.3",
  "ed25519-dalek",
@@ -1390,6 +1405,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "libc",
+ "miniz_oxide",
  "peerwork-core",
  "rand_core 0.6.4",
  "reqwest",

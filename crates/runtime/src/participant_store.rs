@@ -3,7 +3,7 @@
 use crate::{
     communication_store::single_owner_database as database,
     kernel_identity::KernelIdentity,
-    kernel_intents::parent_operations::{open, seal},
+    kernel_intents::parent_operations::{open_bytes, seal, seal_bytes, MAX_PLAN},
     participant::{Capability, Invoke, Operation, Scope, ParticipantError, Result},
 };
 use peerwork_core::crypto::sha256_hex;
@@ -13,8 +13,35 @@ use std::{
     path::Path,
     time::{SystemTime, UNIX_EPOCH},
 };
+use zeroize::Zeroizing;
 
 pub(crate) const OUTCOME_RESERVE: usize = 262144;
+const HISTORY_BATCH: usize = 4;
+const COMPACT_V1: &[u8] = b"\0PW\x01";
+
+fn read_blob(identity: &KernelIdentity, aad: &str, sealed: &[u8]) -> Result<Zeroizing<Vec<u8>>> {
+    let wire = open_bytes(identity, aad, sealed, MAX_PLAN).map_err(|_| corrupt())?;
+    if let Some(deflated) = wire.strip_prefix(COMPACT_V1) {
+        return miniz_oxide::inflate::decompress_to_vec_with_limit(deflated, MAX_PLAN)
+            .map(Zeroizing::new)
+            .map_err(|_| corrupt());
+    }
+    Ok(wire)
+}
+
+fn compact_blob(identity: &KernelIdentity, aad: &str, sealed: &[u8]) -> Result<Option<Vec<u8>>> {
+    let wire = read_blob(identity, aad, sealed)?;
+    let deflated = Zeroizing::new(miniz_oxide::deflate::compress_to_vec(&wire, 2));
+    if deflated.len() + COMPACT_V1.len() >= wire.len() {
+        return Ok(None);
+    }
+    let mut compact = Zeroizing::new(COMPACT_V1.to_vec());
+    compact.extend_from_slice(&deflated);
+    // The codec marker and the compressed data are authenticated under the
+    // same identity, session, operation, request hash and field as legacy JSON.
+    seal_bytes(identity, aad, &compact, MAX_PLAN).map(Some).map_err(|_| corrupt())
+}
+
 pub(crate) fn now() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -57,6 +84,10 @@ fn state_error(code: &str) -> ParticipantError {
 pub(crate) struct Store {
     db: Connection,
     binding: String,
+    // One engine owns this database. Reconstruct the counter from the due
+    // index on open and change it only after a successful SQLite commit.
+    pending_bytes: usize,
+    pub(crate) history_due: bool,
 }
 impl Store {
     pub fn open(directory: &Path, identity: &KernelIdentity, origin: &str) -> Result<Self> {
@@ -92,18 +123,59 @@ impl Store {
                 "LOCAL_STATE",
             ));
         }
-        let store=Self{db,binding};store.reconcile_accounting()?;Ok(store)
+        let pending_bytes = db.query_row(
+            "SELECT COALESCE(sum(allocation),0) FROM participant_operations INDEXED BY participant_due
+             WHERE status IN ('ADMITTED','PENDING','RUNNING','BLOCKED')",
+            [],
+            |row| row.get(0),
+        ).map_err(|_| storage())?;
+        Ok(Self { db, binding, pending_bytes, history_due: true })
     }
-    fn reconcile_accounting(&self)->Result<()> {
-        // Correct retained legacy byte accounting in bounded pages, without
-        // deleting business input, command IDs or idempotency evidence.
-        let rows=self.db.prepare("SELECT session,id,allocation,CASE WHEN status IN ('ACCEPTED','REJECTED_NO_EFFECT') THEN length(input)+COALESCE(length(resolved),0)+COALESCE(length(outcome),0)+1024 ELSE allocation END FROM participant_operations WHERE allocation_version=0 ORDER BY session,id LIMIT 32").map_err(|_|storage())?.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,u64>(2)?,r.get::<_,u64>(3)?))).map_err(|_|storage())?.collect::<std::result::Result<Vec<_>,_>>().map_err(|_|storage())?;
-        let tx=self.db.unchecked_transaction().map_err(|_|storage())?;
-        for (session,id,old,actual) in rows {
-            tx.execute("UPDATE participant_operations SET allocation=?3,allocation_version=1 WHERE session=?1 AND id=?2",params![session,id,actual]).map_err(|_|storage())?;
-            tx.execute("UPDATE participant_meta SET allocated=allocated-?1+?2 WHERE id=1",params![old,actual]).map_err(|_|storage())?;
+
+    pub(crate) fn compact_history(&mut self, identity: &KernelIdentity) -> Result<()> {
+        let keys = self.db.prepare(
+            "SELECT session,id,input_hash FROM participant_operations INDEXED BY participant_accounting_upgrade
+             WHERE allocation_version<2 AND status IN ('ACCEPTED','REJECTED_NO_EFFECT')
+             ORDER BY allocation_version,session,id LIMIT ?1",
+        ).map_err(|_| storage())?.query_map([HISTORY_BATCH], |row| Ok((
+            row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?,
+        ))).map_err(|_| storage())?.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|_| storage())?;
+        if keys.is_empty() {
+            self.history_due = false;
+            return Ok(());
         }
-        tx.commit().map_err(|_|storage())?;Ok(())
+        let tx = self.db.unchecked_transaction().map_err(|_| storage())?;
+        for (session, id, hash) in &keys {
+            let (input, resolved, outcome, old): (Vec<u8>, Option<Vec<u8>>, Option<Vec<u8>>, usize) =
+                tx.query_row(
+                    "SELECT input,resolved,outcome,allocation FROM participant_operations WHERE session=?1 AND id=?2",
+                    params![session, id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                ).map_err(|_| storage())?;
+            let compact = |field, sealed: &[u8]| {
+                compact_blob(identity, &self.aad(session, id, hash, field), sealed)
+            };
+            let compact_input = compact("INPUT", &input)?;
+            let compact_resolved = resolved.as_deref().map(|blob| compact("RESOLVED", blob))
+                .transpose()?.flatten();
+            let compact_outcome = outcome.as_deref().map(|blob| compact("OUTCOME", blob))
+                .transpose()?.flatten();
+            let actual = compact_input.as_ref().unwrap_or(&input).len()
+                + compact_resolved.as_ref().or(resolved.as_ref()).map_or(0, Vec::len)
+                + compact_outcome.as_ref().or(outcome.as_ref()).map_or(0, Vec::len)
+                + 1024;
+            tx.execute(
+                "UPDATE participant_operations SET input=COALESCE(?3,input),resolved=COALESCE(?4,resolved),
+                 outcome=COALESCE(?5,outcome),allocation=?6,allocation_version=2 WHERE session=?1 AND id=?2",
+                params![session, id, compact_input, compact_resolved, compact_outcome, actual],
+            ).map_err(|_| storage())?;
+            tx.execute("UPDATE participant_meta SET allocated=allocated-?1+?2 WHERE id=1", params![old, actual])
+                .map_err(|_| storage())?;
+        }
+        tx.commit().map_err(|_| storage())?;
+        self.history_due = keys.len() == HISTORY_BATCH;
+        Ok(())
     }
     fn aad(&self, session: &str, id: &str, hash: &str, kind: &str) -> String {
         json!({"format":"peerwork.participant-local.v1","binding":self.binding,"session":session,"operation_id":id,"input_hash":hash,"kind":kind}).to_string()
@@ -125,7 +197,6 @@ impl Store {
         self.reserve_resolved(session,request,request,identity,max_pending,max_bytes,false)
     }
     pub fn reserve_resolved(&mut self,session:&str,request:&Invoke,resolved:&Invoke,identity:&KernelIdentity,max_pending:usize,max_bytes:usize,protocol_route:bool)->Result<Operation>{
-        self.reconcile_accounting()?;
         let wire = serde_json::to_string(request).map_err(|_| corrupt())?;
         let hash = sha256_hex(wire.as_bytes());
         if let Some(old) = self.hash(session, &request.operation_id)? {
@@ -153,14 +224,10 @@ impl Store {
             .map_err(|_| storage())?;
         let logical=if protocol_route{Some(protocol_route_selection(request)?)}else{None};
         if let Some((route,hash))=&logical{verify_protocol_route(&tx,session,route,hash,&request.operation_id)?;}
-        let (pending, bytes, rows): (usize, usize, usize) = tx
-            .query_row(
-                "SELECT pending,allocated,rows FROM participant_meta WHERE id=1",
-                [],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-            )
+        let pending: usize = tx.query_row("SELECT pending FROM participant_meta WHERE id=1", [], |r| r.get(0))
             .map_err(|_| storage())?;
-        if pending >= max_pending || bytes.saturating_add(allocated) > max_bytes || rows >= 65536 {
+        let pending_bytes = self.pending_bytes.saturating_add(allocated);
+        if pending >= max_pending || pending_bytes > max_bytes {
             return Err(ParticipantError::local(
                 "NOT_ADMITTED_CAPACITY",
                 "ADMISSION",
@@ -180,6 +247,7 @@ impl Store {
             params![session,request.operation_id,hash,request.action,s.workspace_id,s.instance_id,s.protocol_digest,sealed,allocated,lane,selected,logical.as_ref().map(|v|&v.0),logical.as_ref().map(|v|&v.1)]).map_err(|_|storage())?;
         tx.execute("UPDATE participant_meta SET pending=pending+1,allocated=allocated+?1,rows=rows+1 WHERE id=1",[allocated]).map_err(|_|storage())?;
         tx.commit().map_err(|_| storage())?;
+        self.pending_bytes = pending_bytes;
         // Nothing fallible after durable admission: a failed follow-up read
         // must not misreport an operation the engine can now execute.
         Ok(Operation {
@@ -243,9 +311,8 @@ impl Store {
             .map_err(|_| storage())?;
         let (hash, sealed,resolved) =
             row.ok_or_else(|| ParticipantError::local("OPERATION_NOT_FOUND", "OBSERVATION"))?;
-        let wire = open(identity, &self.aad(session, id, &hash, "INPUT"), &sealed)
-            .map_err(|_| corrupt())?;
-        let request: Invoke = serde_json::from_str(&wire).map_err(|_| corrupt())?;
+        let wire = read_blob(identity, &self.aad(session, id, &hash, "INPUT"), &sealed)?;
+        let request: Invoke = serde_json::from_slice(&wire).map_err(|_| corrupt())?;
         if request.operation_id != id
             || sha256_hex(
                 serde_json::to_string(&request)
@@ -256,8 +323,8 @@ impl Store {
             return Err(corrupt());
         }
         if let Some(resolved)=resolved {
-            let wire=open(identity,&self.aad(session,id,&hash,"RESOLVED"),&resolved).map_err(|_|corrupt())?;
-            let selected:Invoke=serde_json::from_str(&wire).map_err(|_|corrupt())?;
+            let wire=read_blob(identity,&self.aad(session,id,&hash,"RESOLVED"),&resolved)?;
+            let selected:Invoke=serde_json::from_slice(&wire).map_err(|_|corrupt())?;
             if selected.operation_id!=request.operation_id||selected.action!=request.action||selected.scope.workspace_id!=request.scope.workspace_id{return Err(corrupt());}Ok(selected)
         }else{Ok(request)}
     }
@@ -267,9 +334,8 @@ impl Store {
             row.ok_or_else(|| ParticipantError::local("OPERATION_NOT_FOUND", "OBSERVATION"))?;
         let out = outcome
             .map(|bytes| {
-                open(identity, &self.aad(session, id, &hash, "OUTCOME"), &bytes)
-                    .map_err(|_| corrupt())
-                    .and_then(|v| serde_json::from_str::<Value>(&v).map_err(|_| corrupt()))
+                read_blob(identity, &self.aad(session, id, &hash, "OUTCOME"), &bytes)
+                    .and_then(|v| serde_json::from_slice::<Value>(&v).map_err(|_| corrupt()))
             })
             .transpose()?;
         Ok(Self::operation(id,status,command,out,Scope{workspace_id,instance_id,protocol_digest}))
@@ -386,10 +452,15 @@ impl Store {
         };
         let delay = 500i64.saturating_mul(1i64 << failures.min(6)).min(30000);
         tx.execute("UPDATE participant_operations SET status=?1,outcome=?2,command_id=COALESCE(?3,command_id),failures=failures+1,next_retry=?4,allocation=?5,allocation_version=1 WHERE session=?6 AND id=?7",params![state,sealed,command,now()+delay,next_allocation,session,id]).map_err(|_|storage())?;
-        if terminal {
+        let pending_bytes = if terminal {
             tx.execute("UPDATE participant_meta SET pending=pending-1,allocated=allocated-?1+?2 WHERE id=1",params![allocation,next_allocation]).map_err(|_|storage())?;
-        }
+            self.pending_bytes.checked_sub(allocation).ok_or_else(corrupt)?
+        } else {
+            self.pending_bytes
+        };
         tx.commit().map_err(|_| storage())?;
+        self.pending_bytes = pending_bytes;
+        self.history_due |= terminal;
         // The committed bytes were just sealed from this exact value. Return
         // it without another SELECT/decrypt/parse cycle. Reopens and selected
         // reads still authenticate the durable ciphertext through get().
@@ -431,6 +502,22 @@ impl Store {
 }
 
 #[cfg(test)]
+pub(crate) fn fill_legacy_history(directory: &Path, identity: &KernelIdentity, origin: &str) {
+    let mut store = Store::open(directory, identity, origin).unwrap();
+    let result = json!({"state":"ACCEPTED","result":{"description":"synthetic history ".repeat(14500)}});
+    for i in 0..127 {
+        let request = Invoke::new(
+            format!("legacy-{i:03}"), "structure.workspace.create", Scope::default(),
+            json!({"name":"Synthetic legacy operation"}),
+        );
+        store.reserve("program", &request, identity, 64, 32 * 1024 * 1024).unwrap();
+        store.finish("program", &request.operation_id, identity, &result).unwrap();
+    }
+    let allocated: usize = store.db.query_row("SELECT allocated FROM participant_meta", [], |row| row.get(0)).unwrap();
+    assert!((32 * 1024 * 1024 - OUTCOME_RESERVE + 1..=32 * 1024 * 1024).contains(&allocated));
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::participant::Scope;
@@ -444,9 +531,84 @@ mod tests {
         store.finish("program","original-operation",&identity,&json!({"state":"ACCEPTED","result":{"command_id":"unchanged-original-command"}})).unwrap();
         let (allocation,actual,resolved_bytes):(u64,u64,u64)=store.db.query_row("SELECT allocation,length(input)+length(resolved)+length(outcome)+1024,length(resolved) FROM participant_operations",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap();assert_eq!(allocation,actual);
         store.db.execute("UPDATE participant_operations SET allocation=allocation-?1,allocation_version=0",[resolved_bytes]).unwrap();store.db.execute("UPDATE participant_meta SET allocated=allocated-?1",[resolved_bytes]).unwrap();drop(store);
-        let store=Store::open(&directory,&identity,"https://example.invalid/").unwrap();assert_eq!(store.db.query_row("SELECT allocated FROM participant_meta",[],|r|r.get::<_,u64>(0)).unwrap(),actual);
+        let mut store=Store::open(&directory,&identity,"https://example.invalid/").unwrap();
+        store.compact_history(&identity).unwrap();
+        let compact: u64=store.db.query_row("SELECT allocated FROM participant_meta",[],|r|r.get(0)).unwrap();
+        assert!(compact < actual);
         assert_eq!(store.get("program","original-operation",&identity).unwrap().command_id.as_deref(),Some("unchanged-original-command"));
         assert_eq!(serde_json::to_value(store.request("program","original-operation",&identity).unwrap()).unwrap(),serde_json::to_value(resolved).unwrap());
+    }
+    #[test]
+    fn full_legacy_history_leaves_capacity_for_new_work_and_resumes_compaction() {
+        let root = crate::test_support::protected_test_dir();
+        let identity = KernelIdentity::create(&root.path().join("identity")).unwrap();
+        let directory = root.path().join("state");
+        let origin = "https://example.invalid/";
+        let budget = 32 * 1024 * 1024;
+        fill_legacy_history(&directory, &identity, origin);
+        let mut store = Store::open(&directory, &identity, origin).unwrap();
+        let retained = store.get("program", "legacy-000", &identity).unwrap();
+        let pending = Invoke::new("new", "structure.workspace.create", Scope::default(), json!({"name":"New"}));
+        store.reserve("program", &pending, &identity, 64, budget).unwrap();
+        assert_eq!(store.pending_bytes, OUTCOME_RESERVE + serde_json::to_vec(&pending).unwrap().len() + 28 + 1024);
+        let running_bytes = store.pending_bytes;
+        let before: usize = store.db.query_row("SELECT allocated FROM participant_meta", [], |row| row.get(0)).unwrap();
+        store.compact_history(&identity).unwrap();
+        let migrated: usize = store.db.query_row(
+            "SELECT count(*) FROM participant_operations WHERE allocation_version=2", [], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(migrated, HISTORY_BATCH);
+        drop(store);
+
+        let mut store = Store::open(&directory, &identity, origin).unwrap();
+        assert_eq!(store.pending_bytes, running_bytes);
+        assert_eq!(serde_json::to_value(store.request("program", "new", &identity).unwrap()).unwrap(),
+            serde_json::to_value(&pending).unwrap());
+        let another = Invoke::new("next", "structure.workspace.create", Scope::default(), json!({"name":"Next"}));
+        assert_eq!(store.reserve("program", &another, &identity, 64, running_bytes).unwrap_err().code, "NOT_ADMITTED_CAPACITY");
+        store.finish("program", "new", &identity, &json!({"state":"FAILED","effect_certainty":"UNKNOWN"})).unwrap();
+        assert_eq!(store.pending_bytes, running_bytes);
+        store.recover("program", "new").unwrap();
+        store.finish("program", "new", &identity, &json!({"state":"ACCEPTED","command_id":"original-command"})).unwrap();
+        assert_eq!(store.pending_bytes, 0);
+        store.reserve("program", &another, &identity, 64, running_bytes).unwrap();
+
+        while store.history_due {
+            store.compact_history(&identity).unwrap();
+        }
+        let after: usize = store.db.query_row("SELECT allocated FROM participant_meta", [], |row| row.get(0)).unwrap();
+        assert!(after < before / 10);
+        let replay = Invoke::new("legacy-000", "structure.workspace.create", Scope::default(), json!({"name":"Synthetic legacy operation"}));
+        assert_eq!(serde_json::to_value(store.reserve("program", &replay, &identity, 64, budget).unwrap()).unwrap(),
+            serde_json::to_value(retained).unwrap());
+        let mut conflict = replay;
+        conflict.body["name"] = json!("Changed");
+        assert_eq!(store.reserve("program", &conflict, &identity, 64, budget).unwrap_err().code, "OPERATION_INPUT_CONFLICT");
+    }
+
+    #[test]
+    fn compact_history_preserves_protocol_route_and_current_capability() {
+        let root = crate::test_support::protected_test_dir();
+        let identity = KernelIdentity::create(&root.path().join("identity")).unwrap();
+        let mut store = Store::open(&root.path().join("state"), &identity, "https://example.invalid/").unwrap();
+        let scope = Scope {
+            workspace_id: Some("W".repeat(43)), instance_id: Some("I".repeat(43)), protocol_digest: Some("a".repeat(64)),
+        };
+        let old = Invoke::new("original", "structure.action", scope, json!({"action_id":"task.report","report":"x".repeat(1024)}));
+        store.reserve_resolved("first", &old, &old, &identity, 4, 1024 * 1024, true).unwrap();
+        store.finish("first", "original", &identity, &json!({"state":"ACCEPTED","command_id":"original"})).unwrap();
+        store.compact_history(&identity).unwrap();
+        let mut alias = old.clone();
+        alias.scope.protocol_digest = Some("b".repeat(64));
+        assert_eq!(store.reserve_resolved("second", &alias, &alias, &identity, 4, 1024 * 1024, true).unwrap_err().code,
+            "PROTOCOL_OPERATION_ROUTE_EXISTS");
+        alias.body["report"] = json!("different report");
+        assert_eq!(store.reserve_resolved("second", &alias, &alias, &identity, 4, 1024 * 1024, true).unwrap_err().code,
+            "OPERATION_INPUT_CONFLICT");
+        let mut capability = Capability::owner();
+        capability.business_actions = Some(["task.create".to_owned()].into());
+        let page = store.list("first", &capability, &identity, "", 4, &Default::default()).unwrap();
+        assert_eq!(page["items"], json!([]));
     }
     #[test]
     fn admission_is_recoverable_without_a_durable_running_transition() {

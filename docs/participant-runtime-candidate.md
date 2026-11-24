@@ -431,12 +431,19 @@ bounded prerequisite refresh task. Maintenance runs at most one active operation
 and ordinary queued work has priority. Pending verified results awaiting local
 persistence continue occupying their slots. Shutdown tracks all owned tasks.
 
-Protected queue storage defaults to a 32 MiB logical allocation limit; configuration
+The protected queue defaults to a 32 MiB logical admission budget. Configuration
 allows up to 48 MiB, 1,024 pending mutations and 32 foreground operations. Each
-pending operation reserves outcome capacity before starting. The index also has
-a 65,536-row bound. Terminal metadata remains for deduplication; there is no
-automatic pruning. Large verified outcomes retain a bounded local summary and a
-native-journal reference. `operation_result` accesses those selected details.
+pending operation reserves outcome capacity before starting and releases its
+allocation when a terminal result commits. This budget covers outstanding work.
+Previously retained history does not consume it, including on the first open
+after an upgrade. Actual disk space must still be available.
+
+The runtime losslessly compresses terminal request and outcome data in small
+background batches. It keeps the original scope, identity, operation ID and
+idempotency mapping. History is retained and space freed inside SQLite can be
+reused. Large verified outcomes retain a bounded local summary and a native
+journal reference. `operation_result` accesses those selected details. Open
+compacted history with a runtime that supports its encoding.
 
 ## Management conveniences and coverage
 

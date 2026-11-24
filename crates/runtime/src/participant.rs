@@ -1333,6 +1333,11 @@ async fn engine_loop(
     let mut waiters: BTreeMap<(String, String), Vec<oneshot::Sender<Operation>>> = BTreeMap::new();
     let mut tick = tokio::time::interval(Duration::from_millis(100));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut history = tokio::time::interval_at(
+        tokio::time::Instant::now() + Duration::from_millis(250),
+        Duration::from_millis(250),
+    );
+    history.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut refresh = tokio::time::interval(Duration::from_secs(40));
     refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut refresh_running = false;
@@ -1474,6 +1479,11 @@ async fn engine_loop(
                 job_kinds.insert(handle.id(),JobKind::Refresh);
             },
             _=tick.tick()=>{},
+            _=history.tick(),if store.history_due=>{
+                if store.compact_history(&identity).is_err() {
+                    history.reset_after(Duration::from_secs(5));
+                }
+            },
         }
         retry_persistence.retain(|key, value| {
             let _phase = access.phase(crate::transport::ClientPhase::CompletionStore);

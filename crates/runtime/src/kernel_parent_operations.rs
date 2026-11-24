@@ -28,7 +28,7 @@ pub(super) fn objects()->Vec<(String,String,String)>{vec![
     ("index".into(),"kernel_parent_preparations_by_key".into(),KEY_SQL.into()),
     ("trigger".into(),"kernel_parent_signed".into(),SIGNED_SQL.into()),
 ]}
-const MAX_PLAN:usize=524288;
+pub(crate) const MAX_PLAN:usize=524288;
 #[derive(Debug,PartialEq,Eq)]
 pub(crate) struct ParentSelection {
     pub kind:String,
@@ -56,19 +56,25 @@ pub(crate) fn open(identity:&KernelIdentity,aad:&str,sealed:&[u8])->Result<Zeroi
     open_bounded(identity,aad,sealed,MAX_PLAN)
 }
 pub(crate) fn open_bounded(identity:&KernelIdentity,aad:&str,sealed:&[u8],limit:usize)->Result<Zeroizing<String>,JournalError>{
-    if !(29..=limit+28).contains(&sealed.len()){return Err(JournalError::IncompatibleStore);}
-    let bytes=Zeroizing::new(cipher(identity)?.decrypt(Nonce::from_slice(&sealed[..12]),Payload{msg:&sealed[12..],aad:aad.as_bytes()})
-        .map_err(|_|JournalError::IncompatibleStore)?);
-    let text=std::str::from_utf8(&bytes).map_err(|_|JournalError::IncompatibleStore)?;
+    let bytes = open_bytes(identity, aad, sealed, limit)?;
+    let text = std::str::from_utf8(&bytes).map_err(|_| JournalError::IncompatibleStore)?;
     Ok(Zeroizing::new(text.to_owned()))
+}
+pub(crate) fn open_bytes(identity:&KernelIdentity,aad:&str,sealed:&[u8],limit:usize)->Result<Zeroizing<Vec<u8>>,JournalError>{
+    if !(29..=limit+28).contains(&sealed.len()){return Err(JournalError::IncompatibleStore);}
+    cipher(identity)?.decrypt(Nonce::from_slice(&sealed[..12]),Payload{msg:&sealed[12..],aad:aad.as_bytes()})
+        .map(Zeroizing::new).map_err(|_|JournalError::IncompatibleStore)
 }
 pub(crate) fn seal(identity:&KernelIdentity,aad:&str,wire:&str)->Result<Vec<u8>,JournalError>{
     seal_bounded(identity,aad,wire,MAX_PLAN)
 }
 pub(crate) fn seal_bounded(identity:&KernelIdentity,aad:&str,wire:&str,limit:usize)->Result<Vec<u8>,JournalError>{
+    seal_bytes(identity,aad,wire.as_bytes(),limit)
+}
+pub(crate) fn seal_bytes(identity:&KernelIdentity,aad:&str,wire:&[u8],limit:usize)->Result<Vec<u8>,JournalError>{
     if wire.is_empty()||wire.len()>limit{return Err(JournalError::InvalidIntent);}
     let mut nonce=[0;12];OsRng.try_fill_bytes(&mut nonce).map_err(|_|JournalError::InvalidIntent)?;
-    let encrypted=cipher(identity)?.encrypt(Nonce::from_slice(&nonce),Payload{msg:wire.as_bytes(),aad:aad.as_bytes()}).map_err(|_|JournalError::InvalidIntent)?;
+    let encrypted=cipher(identity)?.encrypt(Nonce::from_slice(&nonce),Payload{msg:wire,aad:aad.as_bytes()}).map_err(|_|JournalError::InvalidIntent)?;
     let mut sealed=nonce.to_vec();sealed.extend_from_slice(&encrypted);Ok(sealed)
 }
 

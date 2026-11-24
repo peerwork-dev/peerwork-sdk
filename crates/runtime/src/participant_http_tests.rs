@@ -1307,6 +1307,13 @@ async fn native_program_mail_crypto_reply_sse_and_original_packet_recovery() {
         json!({"key_id":key,"expected_epoch":0,"expected_head_revision":null}),
     )
     .await;
+    // Upgrade with a full v0.3.60-shaped participant ledger. A signed send
+    // must be admissible immediately, even before history compaction finishes.
+    owner.close().await.unwrap();
+    let identity = KernelIdentity::open(&owner_config.identity_path).unwrap();
+    let origin = crate::transport::canonical_lifecycle_origin(&owner_config.origin, true).unwrap();
+    crate::participant_store::fill_legacy_history(&owner_config.state_directory, &identity, &origin);
+    let owner = ParticipantClient::open(owner_config.clone()).await.unwrap();
     // Offline mailbox accepts mail before a receiver exists. This is not a task report.
     let send = native_message(
         "message-one",
