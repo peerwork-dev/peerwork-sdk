@@ -17,7 +17,7 @@ from version import TARGETS,NATIVE_TARGETS,ReleaseError,check,check_native,autho
 from assets import sha,wire,tar_members
 
 MAX_NOTICE=8*1024*1024
-LICENSE_IDS={'MIT','MIT-0','Apache-2.0','BSD-2-Clause','BSD-3-Clause','ISC','Zlib','Unicode-3.0','CC0-1.0','Unlicense'}
+LICENSE_IDS={'0BSD','MIT','MIT-0','Apache-2.0','BSD-2-Clause','BSD-3-Clause','ISC','Zlib','Unicode-3.0','CC0-1.0','Unlicense'}
 EXCEPTIONS={'LLVM-exception'}
 ICU_FILES={'third_party/icu4c-78.3/icu4c-78.3-sources.tgz':'3a2e7a47604ba702f345878308e6fefeca612ee895cf4a5f222e7955fabfe0c0','third_party/icu4c-78.3/icudt78l.dat':'790a1d07c4a9e4d7de4eab025cc97b54e0097de2ad94408d190ea55c37fcd7e5'}
 
