@@ -723,6 +723,9 @@ async fn killed_native_runtime_reconciles_committed_packet_without_duplicate_eff
     let service = Service::start();
     let temp = crate::test_support::protected_test_dir();
     let engine = configuration(temp.path(), &service.origin);
+    let identity = KernelIdentity::open(&engine.identity_path).unwrap();
+    let origin = crate::transport::canonical_lifecycle_origin(&engine.origin, true).unwrap();
+    crate::participant_store::fill_legacy_history(&engine.state_directory, &identity, &origin);
     let options = RuntimeConfig {
         format: "peerwork.participant-runtime.v1".into(),
         hosts: Vec::new(),
@@ -740,7 +743,7 @@ async fn killed_native_runtime_reconciles_committed_packet_without_duplicate_eff
             transport: engine.transport,
             max_inflight: 2,
             max_pending: 4,
-            max_stored_bytes: 2 * 1024 * 1024,
+            max_stored_bytes: 32 * 1024 * 1024,
         }],
         clients: vec![ClientConfig {
             name: "master".into(),
@@ -1604,6 +1607,8 @@ async fn native_program_mail_crypto_reply_sse_and_original_packet_recovery() {
     );
     action.expected_instance_revision = Some(1);
     let action = structure(&owner.invoke(action, Duration::from_secs(5)).await.unwrap());
+    // The isolated fixture does not run the asynchronous event worker.
+    service.config(json!({"pump_events":true})).await;
     let mut selection = fence.clone();
     selection["after_sequence"] = json!(2);
     selection["after_control_sequence"] = json!(after_control);
@@ -1641,6 +1646,7 @@ async fn native_program_mail_crypto_reply_sse_and_original_packet_recovery() {
         stop,
     )
     .await;
+    service.config(json!({"pump_events":true})).await;
     selection["after_sequence"] = business_page["checkpoint"].clone();
     let controls = selected(&worker, "structure.mailbox.inbox.read", &scope, selection).await;
     assert_eq!(controls["controls"].as_array().unwrap().len(), 2);
