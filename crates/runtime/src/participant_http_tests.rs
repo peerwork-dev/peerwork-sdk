@@ -1265,6 +1265,95 @@ async fn historical_unknown_to_not_sent_preserves_both_signed_observations_after
     client.close().await.unwrap();
 }
 
+async fn mail_pair(
+    owner: &ParticipantClient,
+    owner_config: &ParticipantConfig,
+    worker_config: &ParticipantConfig,
+) -> (Scope, Value, Value, String) {
+    let created = mutate(
+        owner,
+        "mail-space",
+        "structure.workspace.create",
+        &Scope::default(),
+        json!({"name":"Native program mail"}),
+    )
+    .await;
+    let ws = created["workspace_id"].as_str().unwrap();
+    let scope = Scope {
+        workspace_id: Some(ws.to_owned()),
+        ..Default::default()
+    };
+    let meta = selected(owner, "structure.workspace.get", &scope, json!({})).await;
+    let mut join = Invoke::new(
+        "join",
+        "structure.member.set",
+        scope.clone(),
+        json!({"actor_id":worker_config.expected_actor,"state":"ACTIVE","expected_membership_id":null}),
+    );
+    join.expected_workspace_revision = meta["workspace_revision"].as_u64();
+    let joined = structure(&owner.invoke(join, Duration::from_secs(5)).await.unwrap());
+    let owner_box=mutate(owner,"grant-owner","structure.communication.grant.set",&scope,json!({"actor_id":owner_config.expected_actor,"membership_id":meta["membership"]["membership_id"],"expected_revision":null,"send":true,"receive":true})).await["mailbox"].clone();
+    let worker_box=mutate(owner,"grant-worker","structure.communication.grant.set",&scope,json!({"actor_id":worker_config.expected_actor,"membership_id":joined["membership_id"],"expected_revision":null,"send":true,"receive":true})).await["mailbox"].clone();
+    let key = install_synthetic_key(owner_config, ws, &[19; 32], None);
+    mutate(
+        owner,
+        "select-key",
+        "structure.content-key.set",
+        &scope,
+        json!({"key_id":key,"expected_epoch":0,"expected_head_revision":null}),
+    )
+    .await;
+    (scope, owner_box, worker_box, key)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires explicit synthetic PostgreSQL and real product HTTP fixture"]
+async fn full_legacy_ledger_admits_signed_mail_and_recovers_the_original_message() {
+    let service = Service::start();
+    let owner_dir = crate::test_support::protected_test_dir();
+    let worker_dir = crate::test_support::protected_test_dir();
+    let owner_config = configuration(owner_dir.path(), &service.origin);
+    let worker_config = configuration(worker_dir.path(), &service.origin);
+    let owner = ParticipantClient::open(owner_config.clone()).await.unwrap();
+    let (scope, owner_box, worker_box, _) = mail_pair(&owner, &owner_config, &worker_config).await;
+    owner.close().await.unwrap();
+    let identity = KernelIdentity::open(&owner_config.identity_path).unwrap();
+    let origin = crate::transport::canonical_lifecycle_origin(&owner_config.origin, true).unwrap();
+    crate::participant_store::fill_legacy_history(&owner_config.state_directory, &identity, &origin);
+
+    let owner = ParticipantClient::open(owner_config.clone()).await.unwrap();
+    service.config(json!({"drop_action":"structure.message.send"})).await;
+    let request = native_message(
+        "full-ledger-mail", &scope, &worker_box, &owner_box, &"V".repeat(43),
+        "Original signed message across a full ledger upgrade",
+    );
+    let admitted = owner.invoke(request.clone(), Duration::ZERO).await.unwrap();
+    assert_eq!(admitted.operation_id, "full-ledger-mail");
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while service.counts().await["dropped"] != 1 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }).await.unwrap();
+    owner.close().await.unwrap();
+    service.config(json!({"offline":false})).await;
+
+    let owner = ParticipantClient::open(owner_config).await.unwrap();
+    let recovered = wait_terminal(&owner, &request.operation_id).await;
+    assert_eq!(recovered.effect_certainty, "COMMITTED");
+    let message_id = &structure(&recovered)["message_id"];
+    let fetched = owner.request(Invoke::new(
+        "read-recovered-mail", "structure.message.get", scope, json!({"message_id":message_id}),
+    )).await.unwrap();
+    assert_eq!(fetched["result"]["opened_messages"][0]["text"], "Original signed message across a full ledger upgrade");
+    assert_eq!(fetched["result"]["opened_messages"][0]["assurance"], "AUTHOR_SIGNATURE_AND_AEAD");
+    let before = service.counts().await;
+    let replay = owner.invoke(request, Duration::ZERO).await.unwrap();
+    assert_eq!(replay.command_id, recovered.command_id);
+    assert_eq!(structure(&replay)["message_id"], *message_id);
+    assert_eq!(service.counts().await["events"], before["events"]);
+    owner.close().await.unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires explicit synthetic PostgreSQL and real product HTTP fixture"]
 async fn native_program_mail_crypto_reply_sse_and_original_packet_recovery() {
@@ -1274,49 +1363,9 @@ async fn native_program_mail_crypto_reply_sse_and_original_packet_recovery() {
     let owner_config = configuration(owner_dir.path(), &service.origin);
     let worker_config = configuration(worker_dir.path(), &service.origin);
     let owner = ParticipantClient::open(owner_config.clone()).await.unwrap();
-    let worker = ParticipantClient::open(worker_config.clone())
-        .await
-        .unwrap();
-    let created = mutate(
-        &owner,
-        "mail-space",
-        "structure.workspace.create",
-        &Scope::default(),
-        json!({"name":"Native program mail"}),
-    )
-    .await;
-    let ws = created["workspace_id"].as_str().unwrap().to_owned();
-    let scope = Scope {
-        workspace_id: Some(ws.clone()),
-        ..Default::default()
-    };
-    let meta = selected(&owner, "structure.workspace.get", &scope, json!({})).await;
-    let mut join = Invoke::new(
-        "join",
-        "structure.member.set",
-        scope.clone(),
-        json!({"actor_id":worker_config.expected_actor,"state":"ACTIVE","expected_membership_id":null}),
-    );
-    join.expected_workspace_revision = meta["workspace_revision"].as_u64();
-    let joined = structure(&owner.invoke(join, Duration::from_secs(5)).await.unwrap());
-    let owner_box=mutate(&owner,"grant-owner","structure.communication.grant.set",&scope,json!({"actor_id":owner_config.expected_actor,"membership_id":meta["membership"]["membership_id"],"expected_revision":null,"send":true,"receive":true})).await["mailbox"].clone();
-    let worker_box=mutate(&owner,"grant-worker","structure.communication.grant.set",&scope,json!({"actor_id":worker_config.expected_actor,"membership_id":joined["membership_id"],"expected_revision":null,"send":true,"receive":true})).await["mailbox"].clone();
-    let key = install_synthetic_key(&owner_config, &ws, &[19; 32], None);
-    mutate(
-        &owner,
-        "select-key",
-        "structure.content-key.set",
-        &scope,
-        json!({"key_id":key,"expected_epoch":0,"expected_head_revision":null}),
-    )
-    .await;
-    // Upgrade with a full v0.3.60-shaped participant ledger. A signed send
-    // must be admissible immediately, even before history compaction finishes.
-    owner.close().await.unwrap();
-    let identity = KernelIdentity::open(&owner_config.identity_path).unwrap();
-    let origin = crate::transport::canonical_lifecycle_origin(&owner_config.origin, true).unwrap();
-    crate::participant_store::fill_legacy_history(&owner_config.state_directory, &identity, &origin);
-    let owner = ParticipantClient::open(owner_config.clone()).await.unwrap();
+    let worker = ParticipantClient::open(worker_config.clone()).await.unwrap();
+    let (scope, owner_box, worker_box, key) = mail_pair(&owner, &owner_config, &worker_config).await;
+    let ws = scope.workspace_id.clone().unwrap();
     // Offline mailbox accepts mail before a receiver exists. This is not a task report.
     let send = native_message(
         "message-one",
@@ -1607,8 +1656,6 @@ async fn native_program_mail_crypto_reply_sse_and_original_packet_recovery() {
     );
     action.expected_instance_revision = Some(1);
     let action = structure(&owner.invoke(action, Duration::from_secs(5)).await.unwrap());
-    // The isolated fixture does not run the asynchronous event worker.
-    service.config(json!({"pump_events":true})).await;
     let mut selection = fence.clone();
     selection["after_sequence"] = json!(2);
     selection["after_control_sequence"] = json!(after_control);
@@ -1646,7 +1693,6 @@ async fn native_program_mail_crypto_reply_sse_and_original_packet_recovery() {
         stop,
     )
     .await;
-    service.config(json!({"pump_events":true})).await;
     selection["after_sequence"] = business_page["checkpoint"].clone();
     let controls = selected(&worker, "structure.mailbox.inbox.read", &scope, selection).await;
     assert_eq!(controls["controls"].as_array().unwrap().len(), 2);
