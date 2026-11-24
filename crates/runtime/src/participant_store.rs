@@ -564,7 +564,7 @@ mod tests {
         assert_eq!(store.pending_bytes, running_bytes);
         assert_eq!(serde_json::to_value(store.request("program", "new", &identity).unwrap()).unwrap(),
             serde_json::to_value(&pending).unwrap());
-        let another = Invoke::new("next", "structure.workspace.create", Scope::default(), json!({"name":"Next"}));
+        let another = Invoke::new("two", "structure.workspace.create", Scope::default(), json!({"name":"Two"}));
         assert_eq!(store.reserve("program", &another, &identity, 64, running_bytes).unwrap_err().code, "NOT_ADMITTED_CAPACITY");
         store.finish("program", "new", &identity, &json!({"state":"FAILED","effect_certainty":"UNKNOWN"})).unwrap();
         assert_eq!(store.pending_bytes, running_bytes);
