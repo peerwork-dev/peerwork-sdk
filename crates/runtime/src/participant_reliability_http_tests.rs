@@ -235,6 +235,44 @@ async fn resident_pulse_accepts_compact_and_full_signed_leases() {
 
 #[tokio::test(flavor="multi_thread",worker_threads=2)]
 #[ignore="requires explicit synthetic PostgreSQL and real product HTTP fixture"]
+async fn member_directory_projects_native_queue_live_unavailable_and_expired() {
+    use crate::participant_inbox::{HostBinding, HostOperation};
+    let binding = HostBinding::new(json!({"host":"CODEX_APP_SERVER","conversation_id":"presence",
+        "session_id":"presence","endpoint":"unix:///synthetic/unused.sock"})).unwrap();
+    let c = Cohort::with_destination(1, Some(binding.digest.clone())).await;
+    let member = &c.members[0];
+    c.client.host_operation(&member.options, HostOperation::Attach(binding)).await.unwrap();
+    let delivery = json!({"state":"RUNNING","automatic_receiving":"VERIFIED"});
+    let active = json!({"mode":"LIVE","ready":true,"execution_state":"IDLE"});
+    for (health, age, expected) in [
+        (json!({"mode":"LIVE","ready":false,"can_attempt":true,
+            "input_delivery":"DURABLE_QUEUE","execution_state":"UNKNOWN"}), 0, "QUEUED"),
+        (active.clone(), 0, "REALTIME"),
+        (json!({"mode":"LIVE","ready":false,"reason":"HOST_SESSION_NOT_LOADED",
+            "execution_state":"UNKNOWN"}), 0, "UNCONFIRMED"),
+        (active.clone(), 0, "REALTIME"),
+        (active, 11, "UNCONFIRMED"),
+    ] {
+        c.client.host_operation(&member.options, HostOperation::Presence {
+            value: crate::delivery_health::host_presence(&health, &delivery),
+            observed_at: std::time::Instant::now() - Duration::from_secs(age),
+        }).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(12), async {
+            loop {
+                let directory = selected(&c.client, "structure.members.read", &member.scope,
+                    json!({"view":"COLLABORATION","actor_id":c.client.actor_id(),"limit":1})).await;
+                if directory["members"][0]["receiving"]["state"] == expected {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(150)).await;
+            }
+        }).await.unwrap_or_else(|_| panic!("the member directory did not report {expected}"));
+    }
+    c.client.close().await.unwrap();
+}
+
+#[tokio::test(flavor="multi_thread",worker_threads=2)]
+#[ignore="requires explicit synthetic PostgreSQL and real product HTTP fixture"]
 async fn unchanged_host_probes_coalesce_wire_traffic_without_stopping_the_receiver() {
     use crate::participant_inbox::{HostBinding,HostOperation};
     let binding=HostBinding::new(json!({"host":"CODEX_APP_SERVER","conversation_id":"synthetic-control-cost","session_id":"synthetic-probe-session","endpoint":"unix:///synthetic/unused.sock"})).unwrap();
