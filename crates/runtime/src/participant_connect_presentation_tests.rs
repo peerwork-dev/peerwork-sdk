@@ -143,13 +143,24 @@ async fn ready(client:&RuntimeClient,options:&WatchOptions) {
 }
 async fn due(lifecycle:&Lifecycle,scope:&str,activation:&Value)->Value {
     tokio::time::timeout(Duration::from_secs(30),async {loop {
-        let value=lifecycle.presentation_poll(scope,activation).await.unwrap();
+        let value=lifecycle.presentation_poll(scope,activation,false).await.unwrap();
         if value["state"]=="NOTIFICATION_DUE" {return value;}
         tokio::time::sleep(Duration::from_millis(25)).await;
     }}).await.expect("original notification did not become due")
 }
 async fn tool(lifecycle:&Lifecycle,name:&str,args:Value)->Value {
     lifecycle.call(AgentRequest::parse(name,args).unwrap()).await.unwrap()
+}
+async fn receiving_state(lifecycle: &Lifecycle, workspace: &str, expected: &str) {
+    tokio::time::timeout(Duration::from_secs(12), async {
+        loop {
+            let result = tool(lifecycle, "reachability", json!({"workspace":workspace})).await;
+            if result["members"][0]["receiving"]["state"] == expected {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(150)).await;
+        }
+    }).await.unwrap_or_else(|_| panic!("the member directory did not report {expected}"));
 }
 fn new_frontend(directory:&Path,handle:&str,kind:&str)->Lifecycle {
     let lifecycle=Lifecycle::local(directory.into(),Some(handle.into()),None);
@@ -235,10 +246,20 @@ async fn original_two_space_presentations_replace_without_reclaim_or_pending_ope
     let initial=due(&old,"one",&activation_a).await;
     assert_eq!(initial["self_test"],true);
     assert_eq!(tool(&old,"inbox",json!({"batch":initial["batch"]})).await["state"],"SELF_TEST_OBSERVED");
+    receiving_state(&ordinary, &spaces[0], "UNCONFIRMED").await;
+    let poll = {
+        let old = old.clone();
+        let activation = activation_a.clone();
+        tokio::spawn(async move { old.presentation_poll("one", &activation, true).await.unwrap() })
+    };
+    receiving_state(&ordinary, &spaces[0], "REALTIME").await;
     let message=original.call(json!({"method":"invoke","wait_ms":5000,"request":native_message("presentation-original-message",
         &Scope{workspace_id:Some(spaces[0].clone()),..Default::default()},&mailboxes[0],&mailboxes[0],&"p".repeat(43),"Original encrypted presentation body")})).await.unwrap();
     assert_eq!(message["state"],"ACCEPTED","{message}");
-    let pending_notice=due(&old,"one",&activation_a).await;
+    let mut pending_notice = poll.await.unwrap();
+    if pending_notice["state"] == "WAITING_NATIVE_INBOX" {
+        pending_notice = due(&old,"one",&activation_a).await;
+    }
     assert_eq!(pending_notice["self_test"],false);
     let batch=pending_notice["batch"].as_str().unwrap();let revision=pending_notice["revision"].as_u64().unwrap();
     assert!(old.presentation_allowed("one",&activation_a,batch,revision).await.unwrap());
@@ -247,7 +268,8 @@ async fn original_two_space_presentations_replace_without_reclaim_or_pending_ope
     let activation_b=successor.presentation_selection("two").await.unwrap().unwrap();
     assert_eq!(successor.presentation_selection("one").await.unwrap().unwrap(),activation_b);
     assert_eq!(activation_b["generation"].as_u64().unwrap(),activation_a["generation"].as_u64().unwrap()+1);
-    assert_eq!(old.presentation_poll("one",&activation_a).await.unwrap_err().code,"PRESENTATION_ACTIVATION_SUPERSEDED");
+    receiving_state(&ordinary, &spaces[0], "UNCONFIRMED").await;
+    assert_eq!(old.presentation_poll("one",&activation_a,true).await.unwrap_err().code,"PRESENTATION_ACTIVATION_SUPERSEDED");
     assert_eq!(old.presentation_allowed("one",&activation_a,batch,revision).await.unwrap_err().code,"PRESENTATION_ACTIVATION_SUPERSEDED");
     assert!(!successor.presentation_allowed("two",&activation_b,batch,revision).await.unwrap(),
         "the incumbent's in-flight admission cannot repeat through a different presentation mode");
@@ -272,7 +294,15 @@ async fn original_two_space_presentations_replace_without_reclaim_or_pending_ope
     assert!(tool(&successor,"inbox",json!({"scope":"one","view":"active"})).await["items"].as_array().unwrap().is_empty(),"same binding shares original consumption");
     assert_eq!(tool(&ordinary,"status",json!({"operation_id":"presentation-original-message"})).await["command_id"],message["command_id"]);
 
-    tool(&ordinary,"delivery",json!({"mode":"pause"})).await;
+    let (poll, ()) = tokio::join!(
+        successor.presentation_poll("one", &activation_b, true),
+        async {
+            receiving_state(&ordinary, &spaces[0], "REALTIME").await;
+            tool(&ordinary,"delivery",json!({"mode":"pause"})).await;
+            receiving_state(&ordinary, &spaces[0], "UNCONFIRMED").await;
+        },
+    );
+    poll.unwrap();
     tool(&ordinary,"delivery",json!({"mode":"self_test"})).await;
     let paused_probe=due(&successor,"two",&activation_b).await;assert_eq!(paused_probe["self_test"],true);
     let current=new_frontend(&directory,&handle,"MCP_STDIO_CHANNEL");
@@ -310,8 +340,8 @@ async fn original_two_space_presentations_replace_without_reclaim_or_pending_ope
     assert_eq!(current.presentation_selection("one").await.unwrap().unwrap(),activation_c);
     let resumed=original.call(json!({"method":"presentation_resume","options":options[1],"activation":activation_c})).await.unwrap();
     assert_eq!(resumed["state"],"ACTIVE");assert_eq!(resumed["activation"],activation_c);
-    assert_eq!(old.presentation_poll("two",&activation_a).await.unwrap_err().code,"PRESENTATION_ACTIVATION_SUPERSEDED");
-    assert_eq!(successor.presentation_poll("one",&activation_b).await.unwrap_err().code,"PRESENTATION_ACTIVATION_SUPERSEDED");
+    assert_eq!(old.presentation_poll("two",&activation_a,true).await.unwrap_err().code,"PRESENTATION_ACTIVATION_SUPERSEDED");
+    assert_eq!(successor.presentation_poll("one",&activation_b,true).await.unwrap_err().code,"PRESENTATION_ACTIVATION_SUPERSEDED");
     let after=tool(&old,"status",json!({"operation_id":"presentation-original-pending"})).await;
     assert_eq!(after["command_id"],snapshot["command_id"]);assert_eq!(after["operation_id"],snapshot["operation_id"]);
     assert_eq!(tool(&ordinary,"status",json!({"operation_id":"presentation-original-message"})).await["command_id"],message["command_id"]);

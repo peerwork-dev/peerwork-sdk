@@ -89,7 +89,7 @@ impl State {
                             projection
                         }
                     };
-                    let value = wait(&alias, &state, || projection.poll(&tools)).await?;
+                    let value = wait(&alias, &state, || projection.poll(&tools, &state)).await?;
                     admit(&tools, &state, value).await
                 }.await;
                 if let Err(error) = &result { state.scope_failed(&alias, error); }

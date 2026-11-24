@@ -42,7 +42,6 @@ impl Presence {
                 value["execution_state"].as_str(),
                 Some("IDLE" | "BUSY" | "WAITING_APPROVAL" | "UNKNOWN" | "OFFLINE")
             )
-            || value["mode"] == "QUEUED_ONLY" && value["ready"] == true
         {
             return Err(ParticipantError::local(
                 "HOST_PRESENCE_INVALID",
@@ -99,6 +98,9 @@ impl Presence {
     pub fn local(&self) -> Value {
         json!({"host":self.host,"host_current":self.host_at.is_some_and(|t|t.elapsed()<Duration::from_secs(10)),"body_key":self.keys,"key_current":self.keys_at.is_some_and(|t|t.elapsed()<Duration::from_secs(15)),"model_response":"NOT_ATTESTED"})
     }
+    pub fn current_host_ready(&self) -> bool {
+        self.host["ready"] == true && self.host_at.is_some_and(|at| at.elapsed() < Duration::from_secs(10))
+    }
 }
 #[cfg(test)]
 mod tests {
@@ -116,9 +118,9 @@ mod tests {
         assert_eq!(p.local()["key_current"], false);
         assert!(p.wire("d", false)["host_age_ms"].as_u64().unwrap() >= 11000);
         assert_eq!(p.wire("d", false)["ordered_ready"], false);
-        assert!(p
-            .host(json!({"mode":"QUEUED_ONLY","ready":true,"execution_state":"IDLE"}))
-            .is_err());
+        p.host(json!({"mode":"QUEUED_ONLY","ready":true,"execution_state":"UNKNOWN"})).unwrap();
+        assert_eq!(p.wire("d", true)["mode"], "QUEUED_ONLY");
+        assert_eq!(p.wire("d", true)["host_ready"], true);
     }
     #[test]
     fn repeated_current_observations_refresh_age_without_forcing_extra_pulses() {

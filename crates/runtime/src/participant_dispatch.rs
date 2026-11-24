@@ -893,7 +893,7 @@ async fn run_owned(
                     .host_operation(
                         options,
                         HostOperation::Presence {
-                            value: json!({"mode":value["mode"],"ready":value["ready"]==true&&delivery["state"]=="RUNNING","execution_state":value["execution_state"]}),
+                            value: crate::delivery_health::host_presence(&value, &delivery),
                             observed_at:source_observed_at,
                         },
                     )

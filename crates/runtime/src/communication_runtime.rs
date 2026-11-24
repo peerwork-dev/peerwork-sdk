@@ -65,6 +65,7 @@ pub(crate) const CONNECT_FEATURES: [&str; 15] = [
 fn runtime_features() -> Vec<&'static str> {
     CONNECT_FEATURES.into_iter().chain([
         "host-observation-upload-deadline-v1", "current-delivery-observation-v1", "current-host-delivery-health-v1", "opencode-v2-host-v1", "harness-connection-context-v1", "presentation-activation-v1", "claude-session-activation-v1", "claude-native-auto-attach-v1", "receiving-lifecycle-recovery-v1",
+        crate::delivery_health::PRESENTATION_PRESENCE_FEATURE,
     ]).collect()
 }
 const REQUEST_FORMAT: &str = "peerwork.participant-request.v1";
@@ -247,7 +248,12 @@ pub enum ClientRequest {
     Delivery { mode:String, #[serde(default)] options:Option<WatchOptions> },
     PresentationStatus { options:WatchOptions },
     PresentationResume { options:WatchOptions, activation:PresentationActivation },
-    NotificationPoll { options:WatchOptions, #[serde(default)] wait_ms:u64, #[serde(default)] activation:Option<PresentationActivation> },
+    NotificationPoll {
+        options: WatchOptions,
+        #[serde(default)] wait_ms: u64,
+        #[serde(default)] activation: Option<PresentationActivation>,
+        #[serde(default, skip_serializing_if = "Option::is_none")] session_receiving_verified: Option<bool>,
+    },
     NotificationValidate { batch:String, revision:u64, #[serde(default)] options:Option<WatchOptions>, #[serde(default)] activation:Option<PresentationActivation> },
     NotificationObserve { batch:String },
     NotificationRead {
@@ -509,6 +515,13 @@ impl Runtime {
             match request{
                 ClientRequest::Delivery{mode,options}=>{
                     let mut value=self.notifications.control(client,options.as_ref(),&mode).await?;
+                    if mode == "pause" && options.as_ref().is_none_or(|watch| watch.host_destination.is_none()) {
+                        let observed_at = std::time::Instant::now();
+                        for watch in client.watch_bindings().await.unwrap_or_default()
+                            .into_iter().filter(|watch| watch.host_destination.is_none()) {
+                            self.observe_presentation_presence(client, &watch, false, observed_at).await;
+                        }
+                    }
                     value["actor_id"]=json!(client.actor_id());value["origin"]=json!(client.origin());
                     if mode=="status" {
                         value["sdk_version"] = json!(env!("CARGO_PKG_VERSION"));
@@ -531,10 +544,27 @@ impl Runtime {
                 },
                 ClientRequest::PresentationStatus{options}=>self.presentation_status(client,&options).await,
                 ClientRequest::PresentationResume{options,activation}=>self.presentation_resume(client,&options,&activation).await,
-                ClientRequest::NotificationPoll{options,wait_ms,activation}=>{
+                ClientRequest::NotificationPoll{options,wait_ms,activation,session_receiving_verified}=>{
                     if options.host_destination.is_some(){return Err(local("CLAUDE_CHANNEL_SOURCE_ALREADY_BOUND_TO_ANOTHER_HOST"));}
+                    let observed_at = std::time::Instant::now();
                     let admission=self.presentation_admit(client,&options,activation.as_ref()).await?;
-                    let wake=self.notifications.wait_poll(client,&options,wait_ms,&admission).await?;
+                    let report = session_receiving_verified.filter(|_| activation.is_some()
+                        && wait_ms > 0 && wait_ms <= crate::delivery_health::PRESENTATION_WAIT_MS);
+                    if let Some(verified) = report {
+                        let ready = verified && self.notifications.store.status(
+                            &crate::communication_notifications::owner(client, &options)
+                        ).is_ok_and(|status| status["automatic_receiving"] == "VERIFIED");
+                        self.observe_presentation_presence(client, &options, ready, observed_at).await;
+                    }
+                    let wake=self.notifications.wait_poll(client,&options,wait_ms,&admission).await;
+                    if report.is_some() && wake.is_err() {
+                        self.observe_presentation_presence(client, &options, false, observed_at).await;
+                    }
+                    // A completed notification can rearm within the existing
+                    // freshness window without publishing an offline/online
+                    // transition for every message. Without a new wait its
+                    // last observation expires at the service.
+                    let wake = wake?;
                     self.presentation_admit(client,&options,activation.as_ref()).await?;
                     let key=crate::communication_notifications::channel_key(&crate::communication_notifications::owner(client,&options),&options,session.generation);
                     self.notifications.note_channel(&key)?;

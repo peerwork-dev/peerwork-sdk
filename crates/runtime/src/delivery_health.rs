@@ -1,6 +1,24 @@
 //! One interpretation of current receiving and automatic-delivery evidence.
 use serde_json::{json, Value};
 pub(crate) const FRESH_MS: u64 = 10_000;
+pub(crate) const PRESENTATION_PRESENCE_FEATURE: &str = "verified-presentation-presence-v1";
+pub(crate) const PRESENTATION_WAIT_MS: u64 = 7_000;
+
+/// Publish queue acceptance independently of the session's ability to run.
+/// Current host health alone does not establish a successful live wake.
+pub(crate) fn host_presence(health: &Value, delivery: &Value) -> Value {
+    let queued = health["mode"] == "QUEUED_ONLY" || health["input_delivery"] == "DURABLE_QUEUE";
+    let ready = delivery["state"] == "RUNNING" && if queued {
+        health["can_attempt"] == true || health["ready"] == true
+    } else {
+        health["ready"] == true && delivery["automatic_receiving"] == "VERIFIED"
+    };
+    json!({
+        "mode": if queued { "QUEUED_ONLY" } else { "LIVE" },
+        "ready": ready,
+        "execution_state": health["execution_state"],
+    })
+}
 
 pub(crate) fn mcp_transport(transport: &str) -> bool {
     matches!(transport, "MCP_STDIO_CHANNEL" | "MCP_BACKGROUND_TOOL")
@@ -76,6 +94,22 @@ pub(crate) fn host_observation(host: &Value) -> Value {
     use super::*;
     fn receiver()->Value{json!({"state":"RECEIVER_LINK_VERIFIED","receiver_link_verified":true,"presence":{"key_current":true,"body_key":{"state":"READY"}}})}
     fn verified()->Value{json!({"state":"RUNNING","automatic_receiving":"VERIFIED","last_verified_at":123})}
+    #[test]
+    fn member_presence_separates_live_host_proof_from_known_queue_acceptance() {
+        let live = json!({"mode":"LIVE","ready":true,"execution_state":"IDLE"});
+        let queued = json!({"mode":"LIVE","ready":false,"can_attempt":true,
+            "input_delivery":"DURABLE_QUEUE","execution_state":"UNKNOWN"});
+        let app = json!({"mode":"QUEUED_ONLY","ready":false,"can_attempt":true,"execution_state":"UNKNOWN"});
+        let wrong_codex = json!({"mode":"LIVE","ready":false,"reason":"HOST_SESSION_NOT_LOADED","execution_state":"UNKNOWN"});
+        assert_eq!(host_presence(&live, &verified())["ready"], true);
+        assert_eq!(host_presence(&live, &json!({"state":"RUNNING","automatic_receiving":"VERIFYING"}))["ready"], false);
+        assert_eq!(host_presence(&wrong_codex, &verified())["ready"], false);
+        for health in [queued, app] {
+            assert_eq!(host_presence(&health, &verified())["mode"], "QUEUED_ONLY");
+            assert_eq!(host_presence(&health, &verified())["ready"], true);
+            assert_eq!(host_presence(&health, &json!({"state":"PAUSED"}))["ready"], false);
+        }
+    }
     #[test] fn historical_success_cannot_override_current_host_failure_or_stale_health() {
         let r=receiver();let n=verified();
         let ready=json!({"ready":true,"observation_age_ms":0});

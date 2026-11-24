@@ -550,6 +550,7 @@ pub(crate) enum HostOperation {
     Retry { call: HostCall },
     Diagnostic { call: HostCall, value: Value },
     Presence{value:Value,observed_at:std::time::Instant},
+    PresentationPresence { ready: bool, observed_at: std::time::Instant },
     Attach(HostBinding),
     Due {
         limit: usize,

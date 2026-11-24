@@ -45,6 +45,7 @@ impl State {
             for scope in scopes.values_mut().filter_map(Value::as_object_mut) {
                 scope.remove("published_batches");
                 scope.remove("due_batch");
+                scope.remove("presentation_id");
                 let awaiting_read = scope.remove("latest_unread_batch").is_some();
                 scope.insert("notification_read_pending".into(), json!(awaiting_read));
             }
@@ -78,6 +79,12 @@ impl State {
                 scope.as_object_mut().unwrap().remove("latest_unread_batch");
             }
         }
+    }
+    fn session_verified(&self, alias: &str, activation: &Value) -> bool {
+        self.0.lock().unwrap().scopes.get(alias)
+            .is_some_and(|scope| scope["session_receiving"] == "VERIFIED"
+                && scope["presentation_id"].is_string()
+                && scope["presentation_id"] == activation["operation_id"])
     }
     pub(super) fn consumed(&self) {self.1.notify_waiters();}
     pub(super) fn validation_failed(&self,code:&str) {self.0.lock().unwrap().validation_error=Some(code.into());}
@@ -123,13 +130,15 @@ impl State {
         self.scope(alias,value["state"].as_str().unwrap_or("NATIVE_INBOX_OBSERVED"),value["code"].as_str());
         if value["source_binding"].is_object(){
             let mut observed=self.0.lock().unwrap();let scope=observed.scopes.get_mut(alias).unwrap();
-            if scope["binding"]!=value["source_binding"] {
+            let presentation_id = &value["_presentation"]["activation"]["operation_id"];
+            if scope["binding"]!=value["source_binding"] || scope["presentation_id"] != *presentation_id {
                 scope["session_receiving"]=json!("UNCONFIRMED");
                 scope.as_object_mut().unwrap().remove("published_batches");
                 scope.as_object_mut().unwrap().remove("due_batch");
                 scope.as_object_mut().unwrap().remove("latest_unread_batch");
             }
             scope["binding"]=value["source_binding"].clone();
+            scope["presentation_id"]=presentation_id.clone();
         }
         if value["state"]=="NOTIFICATION_DUE" {
             self.0.lock().unwrap().scopes.get_mut(alias).unwrap()["due_batch"]=value["batch"].clone();
@@ -212,10 +221,11 @@ impl Projection {
         let activation=tools.presentation_selection(alias).await?;
         Ok(Self{scope:alias.into(),_legacy_owner:activation.is_none().then_some(owner),activation,retired:std::sync::atomic::AtomicBool::new(false)})
     }
-    pub(super) async fn poll(&self,tools:&Tools)->Result<Value> {
+    pub(super) async fn poll(&self, tools: &Tools, observed: &State) -> Result<Value> {
         if self.retired.load(std::sync::atomic::Ordering::Relaxed) {return Err(ParticipantError::local("PRESENTATION_ACTIVATION_SUPERSEDED","MCP"));}
         let result=match &self.activation {
-            Some(activation)=>tools.presentation_poll(&self.scope,activation).await,
+            Some(activation)=>tools.presentation_poll(&self.scope,activation,
+                observed.session_verified(&self.scope, activation)).await,
             None=>tools.call(AgentRequest::NotificationPoll{scope:self.scope.clone()}).await,
         };
         let mut value=result.map_err(|error|{if superseded(&error){self.retired.store(true,std::sync::atomic::Ordering::Relaxed);}error})?;
@@ -436,7 +446,7 @@ async fn watch_scope(client:Arc<Tools>,profile:AgentProfile,alias:String,scope:M
     let binding=crate::agent_delivery_status::binding(&context,&serde_json::to_value(&scope).unwrap());
     observed.0.lock().unwrap().scopes.insert(alias.clone(),json!({"state":"STARTING","binding":binding,"session_receiving":"UNCONFIRMED"}));
     let projection=Projection::open(&client,&profile,&alias,&scope).await?;
-    project_scope(&alias,output,observed,||projection.poll(&client)).await
+    project_scope(&alias,output,observed.clone(),||projection.poll(&client,&observed)).await
 }
 
 fn validate_source(context:&Value,scope:&MailScope)->Result<()> {
@@ -601,6 +611,27 @@ mod tests {
         assert!(activation_blocked("PRESENTATION_SOURCE_CHANGED"));
         assert!(activation_blocked("PRESENTATION_GENERATION_CONFLICT"));
         assert!(!activation_blocked("IPC_DISCONNECTED"));
+    }
+    #[test]
+    fn presence_proof_does_not_follow_a_new_activation_with_the_same_source() {
+        let state = State::default();
+        let first = json!({"operation_id":"first"});
+        let second = json!({"operation_id":"second"});
+        state.scope_observed("space", &json!({
+            "state":"NOTIFICATION_DUE","batch":"probe","source_binding":{"client_generation":1},
+            "_presentation":{"activation":first},
+        }));
+        state.written(&json!({"params":{"meta":{"batch":"probe"}}}));
+        state.batch_read("probe");
+        assert!(state.session_verified("space", &first));
+        assert!(!state.session_verified("space", &second));
+        state.scope_observed("space", &json!({
+            "state":"WAITING_NATIVE_INBOX","source_binding":{"client_generation":1},
+            "_presentation":{"activation":second},
+        }));
+        state.batch_read("probe");
+        assert!(!state.session_verified("space", &first));
+        assert!(!state.session_verified("space", &second));
     }
     #[test]
     fn running_projection_uses_current_authenticated_source_generation() {

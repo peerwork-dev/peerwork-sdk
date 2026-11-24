@@ -38,6 +38,20 @@ fn group(client:&ParticipantClient,mut bindings:Vec<WatchOptions>)->Result<Group
 }
 
 impl Runtime {
+    pub(super) async fn observe_presentation_presence(
+        &self,
+        client: &ParticipantClient,
+        options: &WatchOptions,
+        ready: bool,
+        observed_at: std::time::Instant,
+    ) {
+        // Reporting is advisory. An interrupted receiver retains the original
+        // notifications and its previous observation expires at the service.
+        let _ = client.host_operation(options,
+            crate::participant_inbox::HostOperation::PresentationPresence { ready, observed_at }
+        ).await;
+    }
+
     async fn presentation_source(&self, client:&ParticipantClient, options:&WatchOptions) -> Result<Group> {
         options.authorize(client.capability())?;
         // Rebind temporarily disables its watches. Classify that interval as
@@ -104,9 +118,11 @@ impl Runtime {
         let result=self.notifications.store.presentation_replace(&group.source,&group.members,&request.operation_id,
             request.expected_generation,&request.target,selection)?;
         if result["current_generation"].as_u64()!=Some(previous) {
+            let observed_at = std::time::Instant::now();
             for options in &group.bindings {
                 let channel=crate::communication_notifications::channel_key(&crate::communication_notifications::owner(client,options),options,session.generation);
                 self.notifications.forget_channel_observation(&channel)?;
+                self.observe_presentation_presence(client, options, false, observed_at).await;
             }
         }
         self.notifications.changed.notify_waiters();

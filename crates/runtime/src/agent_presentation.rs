@@ -6,7 +6,7 @@ use std::{collections::{BTreeMap, BTreeSet}, path::{Path, PathBuf}};
 use tokio::sync::Mutex;
 
 #[derive(Clone)]
-struct Selection { client:Arc<RuntimeClient>, options:WatchOptions, source:String }
+struct Selection { client:Arc<RuntimeClient>, options:WatchOptions, source:String, presence:bool }
 enum ChannelOwner {
     Waiting(Selection),
     Held { _guard: SecureStateStore },
@@ -139,7 +139,9 @@ impl Lifecycle {
         }
         let observed=client.call(json!({"method":"presentation_status","options":options})).await?;
         let source=observed["source"].as_str().ok_or_else(||error("PRESENTATION_RESPONSE_INVALID"))?.to_owned();
-        let selection=Selection{client,options,source:source.clone()};
+        let presence = caps["features"].as_array().is_some_and(|features|
+            features.iter().any(|feature| feature == crate::delivery_health::PRESENTATION_PRESENCE_FEATURE));
+        let selection=Selection{client,options,source:source.clone(),presence};
         let known=self.presentation.lock().await.groups.get(&source).cloned();
         let candidate=if let Some(known)=known {known} else {
             let members=observed["group"]["bindings"].as_array().into_iter().flatten()
@@ -190,7 +192,7 @@ impl Lifecycle {
         };
         complete(&decision).await.map(Some)
     }
-    async fn presentation_observe(&self, scope: &str, mut request: Value) -> Result<Value> {
+    async fn presentation_observe(&self, scope: &str, mut request: Value, verified: Option<bool>) -> Result<Value> {
         let (selected, decision) = {
             let state = self.presentation.lock().await;
             let selected = state.scopes.get(scope).cloned().ok_or_else(|| error("PRESENTATION_ACTIVATION_REQUIRED"))?;
@@ -198,6 +200,10 @@ impl Lifecycle {
             (selected, decision)
         };
         request["options"] = serde_json::to_value(selected.options).map_err(|_| error("PRESENTATION_RESPONSE_INVALID"))?;
+        if let Some(verified) = verified.filter(|_| selected.presence) {
+            request["session_receiving_verified"] = json!(verified);
+            request["wait_ms"] = json!(crate::delivery_health::PRESENTATION_WAIT_MS);
+        }
         let result = selected.client.call(request).await;
         if result.as_ref().is_err_and(|failure| superseded(&failure.code)) {
             // A deliberately superseded connection still has tools, but no
@@ -206,11 +212,11 @@ impl Lifecycle {
         }
         result
     }
-    pub(crate) async fn presentation_poll(&self,scope:&str,activation:&Value)->Result<Value> {
-        self.presentation_observe(scope,json!({"method":"notification_poll","activation":activation,"wait_ms":20000})).await
+    pub(crate) async fn presentation_poll(&self,scope:&str,activation:&Value,verified:bool)->Result<Value> {
+        self.presentation_observe(scope,json!({"method":"notification_poll","activation":activation,"wait_ms":20000}),Some(verified)).await
     }
     pub(crate) async fn presentation_allowed(&self,scope:&str,activation:&Value,batch:&str,revision:u64)->Result<bool> {
-        let value=self.presentation_observe(scope,json!({"method":"notification_validate","activation":activation,"batch":batch,"revision":revision})).await?;
+        let value=self.presentation_observe(scope,json!({"method":"notification_validate","activation":activation,"batch":batch,"revision":revision}),None).await?;
         Ok(value["allowed"]==true)
     }
 }

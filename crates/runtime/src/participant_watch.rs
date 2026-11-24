@@ -707,6 +707,18 @@ pub(crate) async fn run(
                             Op::Retry{call}=>{if !local_live.load(std::sync::atomic::Ordering::Acquire){return Err(error("LOCAL_CLIENT_REVOKED"));}Reply::Call(if live{store.host_retry(&identity,&namespace,&options,&call)?}else{None})},
                             Op::Diagnostic{call,value}=>{store.host_diagnostic(&identity,&namespace,&options,&call,&value)?;Reply::Saved},
                             Op::Presence{value,observed_at}=>{store.host_scope_check(&namespace,&options)?;let s=slots.get_mut(&options.key()).ok_or_else(||error("WATCH_NOT_FOUND"))?;s.host_observed(value,observed_at)?;Reply::Saved},
+                            Op::PresentationPresence { ready, observed_at } => {
+                                if options.host_destination.is_some() || !local_live.load(std::sync::atomic::Ordering::Acquire) {
+                                    return Err(error("HOST_EVIDENCE_SCOPE_MISMATCH"));
+                                }
+                                let slot = slots.get_mut(&options.key())
+                                    .filter(|s| s.enabled && s.binding.namespace == namespace && s.binding.options == options)
+                                    .ok_or_else(|| error("WATCH_NOT_FOUND"))?;
+                                if slot.presence.host_at.is_none_or(|latest| observed_at >= latest) {
+                                    slot.host_observed(json!({"mode":"LIVE","ready":ready && live,"execution_state":"UNKNOWN"}), observed_at)?;
+                                }
+                                Reply::Saved
+                            },
                             Op::Attach(host)=>{if !local_live.load(std::sync::atomic::Ordering::Acquire){return Err(error("LOCAL_CLIENT_REVOKED"));}if selected.is_none(){return Err(error("WATCH_NOT_FOUND"));}store.host_attach(&namespace,&options,&host)?;Reply::Saved},
                             Op::Due{limit}=>Reply::Due(if live{store.host_due(&namespace,&options,limit)?}else{Vec::new()}),
                             Op::Begin{item,frame}=>{if !local_live.load(std::sync::atomic::Ordering::Acquire){return Err(error("LOCAL_CLIENT_REVOKED"));}if !live{return Err(error("WATCH_NOT_CONNECTED"));}Reply::Call(store.host_begin(&identity,&namespace,&options,&item,frame)?)},
@@ -1110,10 +1122,14 @@ pub(crate) async fn run(
                     s.pulse_cancel=Some(stop.clone());
                     let access=access.clone(); let options=options.clone(); let work_key=work_key.clone();
                     let mut fence=json!({"mailbox_id":pins.mailbox_id,"receiver_id":pins.receiver_id,"epoch":pins.epoch});
-                    fence["ready"] = json!(s.receive_fault.is_none() && s.link_verified && !s.signals.is_empty());
+                    let presenting = options.host_destination.is_none() && s.presence.current_host_ready();
+                    fence["ready"] = json!(s.receive_fault.is_none() && s.link_verified
+                        && (!s.signals.is_empty() || presenting));
                     let ordered_ready = !store.host_has_unknown(&options.workspace_id, &options.mailbox_id).unwrap_or(true);
                     let presence_version = s.presence.version;
-                    let presence = options.host_destination.as_ref().map(|_|s.presence.clone());
+                    let presence = (options.host_destination.is_some() || s.presence.host_at.is_some())
+                        .then(|| s.presence.clone());
+                    let destination = pins.destination_digest.clone();
                     fence["event_format"]=json!(peerwork_core::communication::WORKSPACE_EVENT_FORMAT);
                     fence["execution_state"] = json!(if s.signals.is_empty() {
                         "OFFLINE"
@@ -1129,7 +1145,7 @@ pub(crate) async fn run(
                             presence.clone(),
                             match tokio::time::timeout(Duration::from_secs(5), pulse(
                                 &access, &options.workspace_id, fence, presence.as_ref(),
-                                options.host_destination.as_deref(), ordered_ready, &stop,
+                                Some(&destination), ordered_ready, &stop,
                             )
                             ).await {
                                 Ok(value)=>value,
