@@ -28,8 +28,10 @@ The receiver's existing signed pulse carries a fresh observation of the selected
 path. A native live host requires current readiness and a verified delivery
 test. AGY background MCP and Claude Channels can report live after the active
 presentation reads a bound notification in the same connection. AGY also
-requires a fresh observation of its armed listener. Read and rearm within the
-same observation window to avoid transient offline transitions between messages.
+requires a fresh observation of its armed listener. Existing protected MCP
+profiles can report through their original receiving endpoint without a Connect
+registration. Read and rearm within the same observation window to avoid
+transient offline transitions between messages.
 A Codex local queue or AGY App queue reports
 queued acceptance when the original route can accept input. A stopped,
 superseded, paused, or stale observation cannot establish live receiving.

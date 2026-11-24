@@ -80,11 +80,15 @@ impl State {
             }
         }
     }
-    fn session_verified(&self, alias: &str, activation: &Value) -> bool {
+    fn session_verified(&self, alias: &str, activation: Option<&Value>) -> bool {
         self.0.lock().unwrap().scopes.get(alias)
             .is_some_and(|scope| scope["session_receiving"] == "VERIFIED"
-                && scope["presentation_id"].is_string()
-                && scope["presentation_id"] == activation["operation_id"])
+                && scope["binding"].is_object()
+                && match activation {
+                    Some(activation) => scope["presentation_id"].is_string()
+                        && scope["presentation_id"] == activation["operation_id"],
+                    None => scope["presentation_id"].is_null(),
+                })
     }
     pub(super) fn consumed(&self) {self.1.notify_waiters();}
     pub(super) fn validation_failed(&self,code:&str) {self.0.lock().unwrap().validation_error=Some(code.into());}
@@ -223,10 +227,10 @@ impl Projection {
     }
     pub(super) async fn poll(&self, tools: &Tools, observed: &State) -> Result<Value> {
         if self.retired.load(std::sync::atomic::Ordering::Relaxed) {return Err(ParticipantError::local("PRESENTATION_ACTIVATION_SUPERSEDED","MCP"));}
+        let verified = observed.session_verified(&self.scope, self.activation.as_ref());
         let result=match &self.activation {
-            Some(activation)=>tools.presentation_poll(&self.scope,activation,
-                observed.session_verified(&self.scope, activation)).await,
-            None=>tools.call(AgentRequest::NotificationPoll{scope:self.scope.clone()}).await,
+            Some(activation)=>tools.presentation_poll(&self.scope,activation,verified).await,
+            None=>tools.unmanaged_presentation_poll(&self.scope,verified).await,
         };
         let mut value=result.map_err(|error|{if superseded(&error){self.retired.store(true,std::sync::atomic::Ordering::Relaxed);}error})?;
         if let Some(activation)=&self.activation {
@@ -623,15 +627,16 @@ mod tests {
         }));
         state.written(&json!({"params":{"meta":{"batch":"probe"}}}));
         state.batch_read("probe");
-        assert!(state.session_verified("space", &first));
-        assert!(!state.session_verified("space", &second));
+        assert!(state.session_verified("space", Some(&first)));
+        assert!(!state.session_verified("space", Some(&second)));
+        assert!(!state.session_verified("space", None));
         state.scope_observed("space", &json!({
             "state":"WAITING_NATIVE_INBOX","source_binding":{"client_generation":1},
             "_presentation":{"activation":second},
         }));
         state.batch_read("probe");
-        assert!(!state.session_verified("space", &first));
-        assert!(!state.session_verified("space", &second));
+        assert!(!state.session_verified("space", Some(&first)));
+        assert!(!state.session_verified("space", Some(&second)));
     }
     #[test]
     fn running_projection_uses_current_authenticated_source_generation() {

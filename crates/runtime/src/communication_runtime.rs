@@ -548,8 +548,10 @@ impl Runtime {
                     if options.host_destination.is_some(){return Err(local("CLAUDE_CHANNEL_SOURCE_ALREADY_BOUND_TO_ANOTHER_HOST"));}
                     let observed_at = std::time::Instant::now();
                     let admission=self.presentation_admit(client,&options,activation.as_ref()).await?;
-                    let report = session_receiving_verified.filter(|_| activation.is_some()
-                        && wait_ms > 0 && wait_ms <= crate::delivery_health::PRESENTATION_WAIT_MS);
+                    // Admission already checks the authenticated watch and allows
+                    // an unregistered projection only while its source is unmanaged.
+                    let report = session_receiving_verified.filter(|_| wait_ms > 0
+                        && wait_ms <= crate::delivery_health::PRESENTATION_WAIT_MS);
                     if let Some(verified) = report {
                         let ready = verified && self.notifications.store.status(
                             &crate::communication_notifications::owner(client, &options)

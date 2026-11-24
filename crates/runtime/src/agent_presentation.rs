@@ -2,7 +2,7 @@
 //! retries resume that decision; they never discover/adopt another launch token.
 use super::*;
 use crate::{communication_runtime::RuntimeClient, participant::WatchOptions, secure_state::{SecureStateError, SecureStateStore}};
-use std::{collections::{BTreeMap, BTreeSet}, path::{Path, PathBuf}};
+use std::{collections::BTreeMap, path::{Path, PathBuf}};
 use tokio::sync::Mutex;
 
 #[derive(Clone)]
@@ -23,7 +23,7 @@ type SharedDecision=Arc<Mutex<Decision>>;
 pub(super) struct State {
     scopes:BTreeMap<String,Selection>,
     groups:BTreeMap<String,SharedDecision>,
-    legacy:BTreeSet<String>,
+    legacy:BTreeMap<String,Option<Selection>>,
 }
 fn error(code:&str)->ParticipantError {ParticipantError::local(code,"PRESENTATION")}
 fn unwrap(value:Value)->Result<Value> {
@@ -109,7 +109,7 @@ impl Lifecycle {
         let kind=self.presentation_transport.get().ok_or_else(||error("PRESENTATION_HOST_OPT_IN_REQUIRED"))?.clone();
         let cached={
             let state=self.presentation.lock().await;
-            if state.legacy.contains(scope) {return Ok(None);}
+            if state.legacy.contains_key(scope) {return Ok(None);}
             state.scopes.get(scope).map(|selection|state.groups.get(&selection.source).cloned()
                 .ok_or_else(||error("PRESENTATION_ACTIVATION_REQUIRED"))).transpose()?
         };
@@ -135,7 +135,7 @@ impl Lifecycle {
             }
         }
         if !caps["features"].as_array().is_some_and(|features|features.iter().any(|feature|feature=="presentation-activation-v1")) {
-            self.presentation.lock().await.legacy.insert(scope.into());return Ok(None);
+            self.presentation.lock().await.legacy.insert(scope.into(),None);return Ok(None);
         }
         let observed=client.call(json!({"method":"presentation_status","options":options})).await?;
         let source=observed["source"].as_str().ok_or_else(||error("PRESENTATION_RESPONSE_INVALID"))?.to_owned();
@@ -155,7 +155,10 @@ impl Lifecycle {
             }else{None};
             let Some((admin,registration_id))=registered else {
                 if launch.is_some() {return Err(error("CLAUDE_CHANNEL_LAUNCH_MISMATCH"));}
-                if observed["state"]=="UNMANAGED" {self.presentation.lock().await.legacy.insert(scope.into());return Ok(None);}
+                if observed["state"]=="UNMANAGED" {
+                    self.presentation.lock().await.legacy.insert(scope.into(), presence.then_some(selection));
+                    return Ok(None);
+                }
                 return Err(error("PRESENTATION_ORIGINAL_INSTALLATION_REQUIRED"));
             };
             let source_binding=crate::agent_delivery_status::binding(&context,&serde_json::to_value(&selection.options).unwrap());
@@ -214,6 +217,15 @@ impl Lifecycle {
     }
     pub(crate) async fn presentation_poll(&self,scope:&str,activation:&Value,verified:bool)->Result<Value> {
         self.presentation_observe(scope,json!({"method":"notification_poll","activation":activation,"wait_ms":20000}),Some(verified)).await
+    }
+    pub(crate) async fn unmanaged_presentation_poll(&self, scope: &str, verified: bool) -> Result<Value> {
+        let selected = self.presentation.lock().await.legacy.get(scope).cloned().flatten();
+        let Some(selected) = selected else {
+            return self.call(AgentRequest::NotificationPoll { scope: scope.into() }).await;
+        };
+        selected.client.call(json!({"method":"notification_poll", "options":selected.options,
+            "wait_ms":crate::delivery_health::PRESENTATION_WAIT_MS,
+            "session_receiving_verified":verified})).await
     }
     pub(crate) async fn presentation_allowed(&self,scope:&str,activation:&Value,batch:&str,revision:u64)->Result<bool> {
         let value=self.presentation_observe(scope,json!({"method":"notification_validate","activation":activation,"batch":batch,"revision":revision}),None).await?;

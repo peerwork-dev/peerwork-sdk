@@ -856,6 +856,19 @@ async fn background_mcp_wait_keeps_tools_available_and_cancellation_preserves_in
     let setup=BackgroundFixture::start(root.path()).await;
     let selected=setup.profile.clone();
     let tools=crate::agent_tools::AgentTools::open(selected.clone()).await.unwrap();
+    async fn receiving(tools: &crate::agent_tools::AgentTools, expected: &str) {
+        tokio::time::timeout(Duration::from_secs(12), async {
+            loop {
+                let request = crate::agent_tools::AgentRequest::parse("reachability", json!({})).unwrap();
+                let result = tools.call(request).await.unwrap();
+                if result["members"][0]["receiving"]["state"] == expected { return; }
+                tokio::time::sleep(Duration::from_millis(150)).await;
+            }
+        }).await.unwrap_or_else(|_| panic!("unmanaged background receiver did not report {expected}"));
+    }
+    // Native inbox verification predates the frontend. It must not set a
+    // public live status until this unregistered MCP connection reads a notice.
+    receiving(&tools, "UNCONFIRMED").await;
     let (server,client)=tokio::io::duplex(65536);
     let (sr,sw)=tokio::io::split(server);let(cr,mut cw)=tokio::io::split(client);let mut cr=BufReader::new(cr);
     let frontend=tokio::spawn(crate::agent_mcp::serve(selected,BufReader::new(sr),sw));
@@ -899,12 +912,14 @@ async fn background_mcp_wait_keeps_tools_available_and_cancellation_preserves_in
     assert_eq!(context["result"]["structuredContent"]["host_channel"]["listener_armed"],true);
     assert_eq!(context["result"]["structuredContent"]["host_channel"]["scopes"]["main"]["session_receiving"],"VERIFIED");
     assert_eq!(context["result"]["structuredContent"]["host_channel"]["automatic_model_wake"],"NOT_ATTESTED");
+    receiving(&tools, "REALTIME").await;
     let active=tools.call(crate::agent_tools::AgentRequest::parse("inbox",json!({"view":"active","scope":"main","limit":2})).unwrap()).await.unwrap();
     assert_eq!(active["items"].as_array().unwrap().len(),1);
     assert_eq!(active["items"][0]["state"],"PENDING");
     send(&mut cw,call(10,"delivery",json!({"mode":"pause"}))).await;
     let paused=read(&mut cr).await;assert_eq!(paused["id"],10);
     assert_eq!(paused["result"]["structuredContent"]["state"],"PAUSED");
+    receiving(&tools, "UNCONFIRMED").await;
     drop(cw);drop(cr);tokio::time::timeout(Duration::from_secs(2),frontend).await.unwrap().unwrap().unwrap();
     drop(tools);setup.finish().await;
 }
