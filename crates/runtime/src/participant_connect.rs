@@ -1837,6 +1837,7 @@ pub fn cli(args: &[String]) -> Value {
         }
         if selected_adapter.is_some()&&!values.contains_key("--receive"){return Err(local("HOST_SELECTION_REQUIRES_RECEIVE"));}
         if values.contains_key("--confirm-original") && (values.keys().any(|key|!matches!(key.as_str(),"--local"|"--context"|"--confirm-original")) || !values.contains_key("--local") || !values.contains_key("--context")) {return Err(local("CONFIRM_ORIGINAL_REQUIRES_LOCAL_CONTEXT_ONLY"))}
+        let update_status = values.get("--update").is_some_and(|mode| mode == "status");
         let project = std::path::absolute(values.get("--project").cloned().unwrap_or_else(||".".into()))
             .map_err(|_|local("PROJECT_CONTEXT_INVALID"))?.components().collect::<PathBuf>();
         let mut installed_directory=None;
@@ -1851,7 +1852,9 @@ pub fn cli(args: &[String]) -> Value {
                 if selected.len()>1 {return Ok(json!({"state":"PENDING","discovery":{"state":"IDENTITY_SELECTION_REQUIRED","candidates":selected.iter().map(|c|c.summary.clone()).collect::<Vec<_>>()},
                     "blocker":{"stage":"LOCAL_IDENTITY","code":"IDENTITY_SELECTION_REQUIRED","next_actor":"LOCAL_RUNTIME_OWNER","next_action":"CHOOSE_ONE_PUBLIC_IDENTITY_HANDLE"}}));}
                 if let Some(choice)=selected.first() {
-                    discovery::remember_project(&project,choice)?;
+                    if !update_status {
+                        discovery::remember_project(&project, choice)?;
+                    }
                     installed_directory=Some(choice.directory.clone());
                     if !values.contains_key("--new"){values.insert("--participant".into(),choice.participant.clone());}
                 } else if values.contains_key("--participant") && !choices.is_empty() {return Err(local("LOCAL_SELECTION_REQUIRED"));}
@@ -1859,7 +1862,11 @@ pub fn cli(args: &[String]) -> Value {
         }
         let directory = match values.get("--local") {
             Some(path)=>std::path::absolute(path).map_err(|_|local("CONNECT_DIRECTORY_INVALID"))?,
-            None=>match installed_directory {Some(path)=>path,None=>discovery::directory(&project)?},
+            None=>match installed_directory {
+                Some(path) => path,
+                None if update_status => return Err(local("LOCAL_SELECTION_REQUIRED")),
+                None => discovery::directory(&project)?,
+            },
         };
         if values.contains_key("--confirm-original") {
             if !values.contains_key("--local") || !values.contains_key("--context") {return Err(local("CONFIRM_ORIGINAL_REQUIRES_LOCAL_CONTEXT_ONLY"))}
@@ -1868,7 +1875,11 @@ pub fn cli(args: &[String]) -> Value {
         if values.contains_key("--context") && directory.exists() {
             return Ok(Connect::inspect(&directory)?.context());
         }
-        let mut connect = Connect::open(&directory)?;
+        let mut connect = if update_status {
+            Connect::inspect(&directory)?
+        } else {
+            Connect::open(&directory)?
+        };
         if values.contains_key("--context") {
             return Ok(connect.context());
         }

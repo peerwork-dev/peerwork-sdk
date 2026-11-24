@@ -503,6 +503,20 @@ mod tests {
         }
     }
     #[test]
+    fn update_status_does_not_create_a_missing_registry() {
+        let root = crate::test_support::protected_test_dir();
+        let missing = root.path().join("missing");
+        let result = cli(&[
+            "--local".into(),
+            missing.to_str().unwrap().into(),
+            "--update".into(),
+            "status".into(),
+        ]);
+        assert_eq!(result["state"], "FAILED");
+        assert_eq!(result["error"]["effect_certainty"], "NOT_SUBMITTED");
+        assert!(!missing.exists());
+    }
+    #[test]
     fn compatible_mixed_versions_use_capabilities_not_version_equality() {
         let required = vec!["host-observation-upload-deadline-v1".into()];
         assert!(compatible(
@@ -733,6 +747,33 @@ mod process_tests {
                 .status();
             let _ = self.child.try_wait();
         }
+    }
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore = "requires the native CLI and a previous resident binary"]
+    async fn update_status_reads_the_running_version_while_apply_respects_the_registry_lock() {
+        let fixture = Fixture::new().await;
+        let registry = fixture.root.path().join("registry");
+        let writer = Connect::open(&registry).unwrap();
+        let original = bootstrap::owned_runtime(&writer, "peer").unwrap();
+        let before = observation(&original).await.unwrap();
+        let registry_before = std::fs::read(registry.join("connect.state")).unwrap();
+
+        let status = fixture.cli("status");
+        assert_eq!(status["state"], "UPDATE_INVENTORY", "{status}");
+        assert_eq!(status["runtime"]["state"], "RUNNING");
+        assert_eq!(status["runtime"]["loaded_version"], before["sdk_version"]);
+        assert_eq!(status["frontend_version"], env!("CARGO_PKG_VERSION"));
+        assert_ne!(status["runtime"]["loaded_version"], status["frontend_version"]);
+        assert!(status["operation"].is_null());
+
+        let apply = fixture.cli("apply");
+        assert_eq!(apply["state"], "FAILED");
+        assert_eq!(apply["error"]["code"], "CONNECT_STATE_ALREADY_OWNED_OR_UNSAFE");
+        assert_eq!(apply["error"]["details"]["local_state"]["cause"], "BUSY");
+        assert_eq!(apply["error"]["effect_certainty"], "NOT_SUBMITTED");
+        assert!(!registry.join("update-peer.state").exists());
+        assert_eq!(std::fs::read(registry.join("connect.state")).unwrap(), registry_before);
+        assert_eq!(observation(&original).await.unwrap()["sdk_version"], before["sdk_version"]);
     }
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[ignore = "requires the native CLI and a previous resident binary"]
