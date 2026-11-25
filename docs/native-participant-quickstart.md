@@ -31,6 +31,12 @@ saved attachment; ordinary continuation does not require reconstructing flags
 or passing setup IDs. An explicit conflicting choice returns the actual decision
 needed. It never selects the newest conversation or starts a substitute session.
 
+Check `peerwork_delivery` after refreshing MCP. Codex reports `REALTIME` when
+the selected App Server owns the exact thread and that thread reads a fresh
+self-test. A verified local queue reports `QUEUED`. See
+[Codex receiving paths](host-bridge-recovery.md#codex-receiving-paths) when the
+selected route is queued or the thread is unavailable.
+
 Ordinary new Agent connections request sending, receiving, membership and required
 body keys together. Existing rights need no Owner exchange. Relay only the
 returned public request for a real access/key gap, then repeat Connect. Omitted

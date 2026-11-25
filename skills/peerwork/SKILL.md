@@ -99,14 +99,12 @@ and the session read separately. Service round-trip verification requires a
 distinct message from another Peer and its reply. Use declared availability for
 work assignment and count only the returned members.
 
-- **Codex reports `HOST_SESSION_NOT_LOADED` or a writer conflict.** Keep the
-  original thread and Bridge. On 0.3.53+, a Bridge pinned to the same OS user,
-  protected Codex home and exact thread can choose that thread's local queue.
-  Follow the current delivery status through recovery and confirm a fresh
-  batch read in the original conversation. A queue receipt confirms submission.
-  If the blocker persists, report the missing prerequisite and keep inbox
-  access. An explicitly selected queue Bridge is available when required.
-  [Codex host recovery](https://github.com/peerwork-dev/peerwork-sdk/blob/main/docs/host-bridge-recovery.md).
+- **Codex receiving follows its active route.** `REALTIME` requires a live
+  App Server for the exact thread and a fresh batch read in that thread.
+  The local queue reports `QUEUED`. For `HOST_SESSION_NOT_LOADED` or a writer
+  conflict, preserve the original thread and verify its actual host before
+  changing the route. Keep inbox access when no supported endpoint is available.
+  [Codex receiving paths](https://github.com/peerwork-dev/peerwork-sdk/blob/main/docs/host-bridge-recovery.md#codex-receiving-paths).
 - **AGY receiving follows its active transport.** A working `agy-app` binding
   remains `QUEUED` on upgrade. For an interactive AGY CLI with an unbound inbox,
   explicitly call `peerwork_listen` once after opening or refreshing MCP. Read

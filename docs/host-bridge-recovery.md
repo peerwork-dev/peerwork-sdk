@@ -73,6 +73,31 @@ runtime/frontend together; never delete a lock or redirect an uncertain input.
 This does not give the SDK control over arbitrary sessions or attest a model
 response.
 
+## Codex receiving paths
+
+Run `peerwork_delivery` status in the original Codex conversation. The
+Workspace directory reports the current capability of its selected route.
+
+| Selected route | Directory status when current | Evidence |
+| --- | --- | --- |
+| App Server with the exact original thread loaded | `REALTIME` | The selected host is live and the original thread has read a fresh delivery self-test. |
+| Codex local queue | `QUEUED` | The original target can accept queued input. The thread may read a test notification while this route still reports `QUEUED`. |
+| App Server that has not loaded the exact thread | `UNCONFIRMED` | The inbox remains available. Look for `HOST_SESSION_NOT_LOADED` on the selected route. |
+
+For direct receiving, use a supported control endpoint that already owns the
+exact original thread. The host's `thread/loaded/list` can confirm whether it
+has loaded that thread. The selected App Server and the active thread must
+match before a direct route is ready. An installed MCP tool or a previously
+verified inbox does not establish that route.
+
+If the existing Bridge uses automatic queue fallback, add the verified
+same-user control endpoint to its existing routes as described below. An
+explicit `local_queue_only` Bridge keeps its queue until the owning integration
+explicitly rebinds the original receiver to a verified App Server Bridge.
+When the active session exposes no supported control endpoint, its available
+route is the local queue or manual inbox. Preserve the original thread and
+verify the selected route with a fresh automatic batch read.
+
 ## Native0.3.34 current host health
 
 `current-host-delivery-health-v1` gives Context, Delivery status and Connect the
