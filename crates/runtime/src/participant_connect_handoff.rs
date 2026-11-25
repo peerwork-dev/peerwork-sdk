@@ -208,8 +208,8 @@ async fn launch(
     let mut child = None;
     for _ in 0..200 {
         if child.is_none() && !socket_present()? {
-            // The child retains this lock across exec. A replacement client can
-            // wait for the same socket even if A died before Codex finished startup.
+            // Keep the launch reservation from fork until exec. The spawning
+            // client or its child still holds it if the client exits mid-launch.
             let lease = std::fs::OpenOptions::new()
                 .read(true)
                 .write(true)
@@ -224,6 +224,26 @@ async fn launch(
                 return Err(local("CODEX_HANDOFF_STATE_INVALID"));
             }
             if locked && !socket_present()? {
+                let owner = std::fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .create(true)
+                    .mode(0o600)
+                    .custom_flags(libc::O_NOFOLLOW)
+                    .open(directory.join("server-owner.lock"))
+                    .map_err(|_| local("CODEX_HANDOFF_STATE_INVALID"))?;
+                let owner_fd = owner.as_raw_fd();
+                let mut owner_lock: libc::flock = unsafe { std::mem::zeroed() };
+                owner_lock.l_type = libc::F_WRLCK as _;
+                owner_lock.l_whence = libc::SEEK_SET as _;
+                if unsafe { libc::fcntl(owner_fd, libc::F_GETLK, &mut owner_lock) } == -1 {
+                    return Err(local("CODEX_HANDOFF_STATE_INVALID"));
+                }
+                if owner_lock.l_type != libc::F_UNLCK as _ {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    continue;
+                }
+                owner_lock.l_type = libc::F_WRLCK as _;
                 match std::fs::symlink_metadata(&socket) {
                     Ok(metadata) if metadata.file_type().is_socket() => {
                         std::fs::remove_file(&socket)
@@ -247,7 +267,12 @@ async fn launch(
                 // This process owns its own login session and survives A's process group.
                 unsafe {
                     command_line.pre_exec(move || {
-                        if libc::setsid() == -1 || libc::fcntl(fd, libc::F_SETFD, 0) == -1 {
+                        // The process lock survives exec, but Codex's plugin
+                        // and tool children cannot hold it after Codex exits.
+                        if libc::setsid() == -1
+                            || libc::fcntl(owner_fd, libc::F_SETLK, &owner_lock) == -1
+                            || libc::fcntl(owner_fd, libc::F_SETFD, 0) == -1
+                        {
                             return Err(std::io::Error::last_os_error());
                         }
                         Ok(())
