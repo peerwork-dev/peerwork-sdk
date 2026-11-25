@@ -786,6 +786,7 @@ async fn codex_lost_ack_preserves_the_original_batch_and_dispatches_fresh_signed
 // verify the real service stream; cached content never substitutes for that.
 struct BackgroundFixture {
     cohort:Cohort,
+    observer:Option<ParticipantClient>,
     scope:Scope,
     mailbox:Value,
     profile:crate::agent_tools::AgentProfile,
@@ -795,6 +796,9 @@ struct BackgroundFixture {
 }
 impl BackgroundFixture {
     async fn start(directory:&std::path::Path)->Self {
+        Self::start_observed(directory, false).await
+    }
+    async fn start_observed(directory:&std::path::Path, observe:bool)->Self {
         use crate::communication_runtime as ipc;
         let cohort=Cohort::start(0).await;
         let ws=mutate(&cohort.client,"background-space","structure.workspace.create",&Scope::default(),json!({"name":"Background receiving"})).await["workspace_id"].as_str().unwrap().to_owned();
@@ -803,6 +807,19 @@ impl BackgroundFixture {
         let mailbox=mutate(&cohort.client,"background-grant","structure.communication.grant.set",&scope,json!({"actor_id":cohort.client.actor_id(),"membership_id":meta["membership"]["membership_id"],"expected_revision":null,"send":true,"receive":true})).await["mailbox"].clone();
         let key=install_synthetic_key(&cohort.config,&ws,&[42;32],None);
         mutate(&cohort.client,"background-key","structure.content-key.set",&scope,json!({"key_id":key,"expected_epoch":0,"expected_head_revision":null})).await;
+        let observer = if observe {
+            let state = directory.join("observer");
+            crate::secure_state::create_private_state_directory(&state).unwrap();
+            let peer = ParticipantClient::open(configuration(&state, &cohort.service.origin)).await.unwrap();
+            let latest = selected(&cohort.client, "structure.workspace.get", &scope, json!({})).await;
+            let mut join = Invoke::new("background-observer", "structure.member.set", scope.clone(),
+                json!({"actor_id":peer.actor_id(), "state":"ACTIVE", "expected_membership_id":null}));
+            join.expected_workspace_revision = latest["workspace_revision"].as_u64();
+            assert_eq!(cohort.client.invoke(join, Duration::from_secs(5)).await.unwrap().state, "ACCEPTED");
+            Some(peer)
+        } else {
+            None
+        };
         let original=&cohort.config;
         cohort.client.close().await.unwrap();
         let config=ipc::RuntimeConfig{format:"peerwork.participant-runtime.v1".into(),state_directory:directory.join("runtime"),hosts:vec![],
@@ -823,7 +840,19 @@ impl BackgroundFixture {
         let tools=crate::agent_tools::AgentTools::open(profile.clone()).await.unwrap();
         let probe=tools.notification_poll("main").await.unwrap();
         assert_eq!(tools.call(crate::agent_tools::AgentRequest::parse("inbox",json!({"batch":probe["batch"]})).unwrap()).await.unwrap()["state"],"SELF_TEST_OBSERVED");
-        Self{cohort,scope,mailbox,profile,client,stop,task}
+        Self{cohort,observer,scope,mailbox,profile,client,stop,task}
+    }
+    async fn receiving(&self, expected: &str) {
+        let peer = self.observer.as_ref().unwrap();
+        assert_ne!(peer.actor_id(), self.profile.expected_actor);
+        tokio::time::timeout(Duration::from_secs(12), async {
+            loop {
+                let page = selected(peer, "structure.members.read", &self.scope,
+                    json!({"view":"COLLABORATION", "limit":1, "actor_id":self.profile.expected_actor})).await;
+                if page["members"][0]["receiving"]["state"] == expected { return; }
+                tokio::time::sleep(Duration::from_millis(150)).await;
+            }
+        }).await.unwrap_or_else(|_| panic!("another member did not observe {expected}"));
     }
     async fn send(&self,text:&str){
         let operation = format!("native-background-{}", &peerwork_core::crypto::sha256_hex(text.as_bytes())[..16]);
@@ -845,7 +874,10 @@ impl BackgroundFixture {
             }
         }).await.expect("the selected receiver did not observe the injected outage");
     }
-    async fn finish(self){self.stop.cancel();self.task.await.unwrap().unwrap();}
+    async fn finish(self){
+        if let Some(observer) = self.observer { observer.close().await.unwrap(); }
+        self.stop.cancel();self.task.await.unwrap().unwrap();
+    }
 }
 /// Real signed product HTTP, native runtime and MCP; no model is used.
 #[tokio::test(flavor="multi_thread",worker_threads=2)]
@@ -932,7 +964,9 @@ async fn selected_real_agy_background_fixture() {
     let directory=std::path::PathBuf::from(std::env::var("PEERWORK_AGY_BACKGROUND_DIRECTORY").unwrap());
     assert!(directory.is_absolute()&&!directory.exists());
     crate::secure_state::create_private_state_directory(&directory).unwrap();
-    let setup=BackgroundFixture::start(&directory).await;
+    let directory_presence = std::env::var_os("PEERWORK_AGY_BACKGROUND_DIRECTORY_PRESENCE").is_some();
+    let setup=BackgroundFixture::start_observed(&directory, directory_presence).await;
+    if directory_presence { setup.receiving("UNCONFIRMED").await; }
     let selected=setup.profile.clone();
     let tools=crate::agent_tools::AgentTools::open(selected.clone()).await.unwrap();
     crate::communication_host::write_private(&directory.join("profile.json"),&serde_json::to_vec(&selected).unwrap()).unwrap();
@@ -966,9 +1000,11 @@ async fn selected_real_agy_background_fixture() {
     let hub=crate::communication_notifications::Hub::open(&directory.join("runtime")).unwrap();
     assert!(hub.store.status(&key).unwrap()["retained_batches"].as_u64().unwrap()>=if two_messages { 3 } else { 2 },"the host must actually read the new opaque batches");
     assert!(hub.store.current(&key).unwrap().is_none(),"host output alone is not notification observation");
+    if directory_presence { setup.receiving("REALTIME").await; }
     drop(tools);setup.finish().await;
     let result = json!({"state":"PASS","ingestion":"REAL_LOCAL_PRODUCT_HTTP_SYNTHETIC_DATA",
-        "application_consumption":"UNCHANGED","transient_receiver_fault_injected":transient_fault});
+        "application_consumption":"UNCHANGED","transient_receiver_fault_injected":transient_fault,
+        "directory_presence_observed_by_another_member":directory_presence});
     crate::communication_host::write_private(&directory.join("result.json"), &serde_json::to_vec(&result).unwrap()).unwrap();
 }
 
