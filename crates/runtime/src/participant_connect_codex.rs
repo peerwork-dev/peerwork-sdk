@@ -1095,10 +1095,20 @@ mod tests {
             let mut stop_successor = StopSuccessor(None);
             {
                 let mut registry = Connect::open(&local).unwrap();
-                registry.install("worker", &ws, install::Installation {
+                let installed = registry.install("worker", &ws, install::Installation {
                     host: "codex".into(), project: root.path().into(),
                     executable: executable.clone(),
                 }).unwrap();
+                if real_codex {
+                    use std::io::Write;
+                    let fixture_home = PathBuf::from(std::env::var_os("PEERWORK_TEST_CODEX_HOME")
+                        .expect("explicit temporary synthetic Codex home"));
+                    assert_eq!(std::env::var_os("CODEX_HOME").as_deref(), Some(fixture_home.as_os_str()));
+                    let mut config = std::fs::OpenOptions::new().append(true)
+                        .open(fixture_home.join("config.toml")).unwrap();
+                    writeln!(config, "\n[mcp_servers.{}.tools.peerwork_reply]\napproval_mode = \"approve\"",
+                        installed["server_name"].as_str().unwrap()).unwrap();
+                }
             }
             let request = json!({"request":{"codex_handoff_id":handoff_id}});
             let call = |args| {
@@ -1109,6 +1119,14 @@ mod tests {
                     frontend.call(crate::agent_tools::AgentRequest::parse("connect", args).unwrap()).await
                 }
             };
+            let deny_original = std::env::var_os("PEERWORK_CODEX_HANDOFF_DENY_A").is_some();
+            if deny_original {
+                use std::os::unix::fs::PermissionsExt;
+                let original_socket = root.path().join("codex-control.sock");
+                std::fs::set_permissions(&original_socket, std::fs::Permissions::from_mode(0)).unwrap();
+                let denied = tokio::net::UnixStream::connect(&original_socket).await.unwrap_err();
+                assert_eq!(denied.kind(), std::io::ErrorKind::PermissionDenied);
+            }
             let first = call(request.clone()).await;
             if real_codex {
                 stop_successor.0 = tokio::net::UnixStream::connect(&socket).await.ok()
@@ -1120,7 +1138,10 @@ mod tests {
                 let competing = call(json!({"request":{"codex_handoff_id":"competing"}})).await.unwrap_err();
                 assert_eq!(competing.code, "RESUME_ORIGINAL_CODEX_HANDOFF");
             }
-            drop(proxy_fixture);
+            let mut original = Some(proxy_fixture);
+            if deny_original {
+                drop(original.take());
+            }
             let mut proof_sent = false;
             let response = tokio::time::timeout(Duration::from_secs(25), async {
                 loop {
@@ -1132,6 +1153,7 @@ mod tests {
                     tokio::time::sleep(Duration::from_millis(100)).await;
                 }
             }).await.expect("handoff did not observe the successor's fresh probe");
+            drop(original.take());
             assert_eq!(response["runtime_restarted"], false);
             assert_eq!(receiver.call(json!({"method":"binding"})).await.unwrap(), after);
             let cli_args = vec!["connect".into(), "codex-handoff".into(), "--local".into(),
@@ -1152,10 +1174,10 @@ mod tests {
                         loop {
                             let page = sender.inbox(&watch, 0, 16).await.unwrap();
                             if page.items.iter().any(|item| {
-                                item["message"]["reply_to"] == message_id
-                                    && item["message"]["sender"] == options.expected_actor
-                                    && item["message"]["text"] == format!("PONG {nonce}")
-                                    && item["message"]["assurance"] == "AUTHOR_SIGNATURE_AND_AEAD"
+                                item["opened_message"]["reply_to"] == message_id
+                                    && item["opened_message"]["sender"] == options.expected_actor
+                                    && item["opened_message"]["text"] == format!("PONG {nonce}")
+                                    && item["opened_message"]["assurance"] == "AUTHOR_SIGNATURE_AND_AEAD"
                             }) { break; }
                             tokio::time::sleep(Duration::from_millis(100)).await;
                         }

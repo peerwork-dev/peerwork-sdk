@@ -590,4 +590,8 @@ the first confirmed inbox read. A pending result retains the selected
 session and can be checked by repeating the same call. If the new App Server
 stops, repeating the same operation attempts to resume its recorded thread.
 A superseded operation cannot reclaim receiving. Test the selected route with
-current delivery status before relying on it for automatic receiving.
+current delivery status before relying on it for automatic receiving. Codex
+applies its configured approval policy to B's tools. For unattended work,
+preapprove the specific tools that the local owner authorizes B to use. A
+successful inbox probe confirms receiving. Tool approval still governs actions
+such as replying.
