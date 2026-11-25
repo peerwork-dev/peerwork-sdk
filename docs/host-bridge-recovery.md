@@ -490,6 +490,15 @@ uses the pinned rollback binary. An uncertain startup is reobserved without
 starting a competing process. Inspect the running version and reload the
 original MCP through its host before verifying automatic delivery.
 
+If an older update is still `ROLLING_BACK` and the original runtime has
+already recovered on a compatible version, run the same `update apply`
+command with the new SDK and use the verified binary of the **running** version
+as `--rollback-executable`. When the selected original runtime, receiver and
+host bindings still match, `SHARED_RUNTIME_UPDATE_RECONCILED` closes the old
+transaction without restarting the runtime or executing the obsolete rollback
+binary. Repeat the same command to start the new update. If the original
+runtime cannot be authenticated, the old transaction is retained for recovery.
+
 ## Current receiving and saved setup
 
 `peerwork_context` includes `delivery_status`, a read-only view of the selected
