@@ -522,8 +522,12 @@ as `--rollback-executable`. When the original runtime, engine and client are
 authenticated, `SHARED_RUNTIME_UPDATE_RECONCILED` closes the old transaction
 without restarting the runtime or executing the obsolete rollback binary. An
 existing Bridge or receiving rebind is preserved. Repeat the same command to
-start the new update with the current bindings. If the original runtime cannot
-be authenticated, the old transaction is retained for recovery.
+start the new update with the current bindings and startup policy. Reconciliation
+preserves the current startup-policy revision and automatic-start setting. If
+its launcher still selects the obsolete rollback artifact, reconciliation pins
+the verified running version in its place. Other current launcher choices are
+preserved. If the original runtime cannot be authenticated, the old transaction
+is retained for recovery.
 
 ## Current receiving and saved setup
 
