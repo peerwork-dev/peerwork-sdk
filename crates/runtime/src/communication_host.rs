@@ -565,7 +565,14 @@ pub(crate) fn codex_prepare_handoff(
         Err("HOST_RPC_REJECTED") if pinned.is_none() => Value::Null,
         Err(code) => return Err(code),
     };
-    if pinned.is_none() && current["thread"]["path"].is_null() {
+    let materialized = |value: &Value| {
+        value["thread"]["path"].as_str().is_some_and(|path| {
+            Path::new(path).is_absolute() && std::fs::metadata(path).is_ok_and(|file| {
+                file.is_file() && file.len() > 0
+            })
+        })
+    };
+    if pinned.is_none() && !materialized(&current) {
         if current["thread"]["status"]["type"] != "active" {
             // A newly loaded thread must have a persisted rollout before
             // reporting a target that can be recovered after a server exit.
@@ -576,7 +583,7 @@ pub(crate) fn codex_prepare_handoff(
         }
         loop {
             match client.rpc("thread/read", read.clone()) {
-                Ok(observed) if observed["thread"]["path"].is_string() => {
+                Ok(observed) if materialized(&observed) => {
                     current = observed;
                     break;
                 }

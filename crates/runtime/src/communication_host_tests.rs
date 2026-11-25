@@ -339,6 +339,8 @@ impl CodexFixture {
         let stop = Arc::new(AtomicBool::new(false));
         let done = stop.clone();
         let thread = std::thread::spawn(move || {
+            let rollout = tempfile::NamedTempFile::new().unwrap();
+            std::fs::write(rollout.path(), b"synthetic rollout").unwrap();
             let mut active = false;
             while !done.load(Ordering::SeqCst) {
                 let stream = match listener.accept() {
@@ -390,7 +392,7 @@ impl CodexFixture {
                             for _ in 0..if emit.load(Ordering::SeqCst) { 300 } else { 0 } {
                                 if ws.send(Message::Text(json!({"method":"thread/status/changed","params":{"threadId":"existing-thread"}}).to_string().into())).is_err(){break;}
                             }
-                            json!({"thread":{"id":selected_thread,"sessionId":host_session.lock().unwrap().clone(),"path":"/fixture/rollout.jsonl","name":"Worker","status":{"type":override_status.lock().unwrap().as_deref().unwrap_or(if active||waiting.load(Ordering::SeqCst){"active"}else{"idle"}),"activeFlags":if waiting.load(Ordering::SeqCst){vec!["waitingOnApproval"]}else{Vec::<&str>::new()}}}})
+                            json!({"thread":{"id":selected_thread,"sessionId":host_session.lock().unwrap().clone(),"path":rollout.path(),"name":"Worker","status":{"type":override_status.lock().unwrap().as_deref().unwrap_or(if active||waiting.load(Ordering::SeqCst){"active"}else{"idle"}),"activeFlags":if waiting.load(Ordering::SeqCst){vec!["waitingOnApproval"]}else{Vec::<&str>::new()}}}})
                         }
                         "thread/turns/list" => {
                             if query_approval.swap(false, Ordering::SeqCst) {
