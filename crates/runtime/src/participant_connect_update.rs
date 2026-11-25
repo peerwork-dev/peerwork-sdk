@@ -681,8 +681,8 @@ mod process_tests {
                     &config.engines[0].state_directory, &identity, &origin).unwrap();
                 let request = crate::participant::Invoke::new("retained-result", "structure.workspace.create",
                     crate::participant::Scope::default(), json!({"name":"Original operation"}));
-                history.reserve("program", &request, &identity, 2, 1024 * 1024).unwrap();
-                history.finish("program", "retained-result", &identity,
+                history.reserve("program:bootstrap", &request, &identity, 2, 1024 * 1024).unwrap();
+                history.finish("program:bootstrap", "retained-result", &identity,
                     &json!({"state":"ACCEPTED","result":{"description":"retained result ".repeat(4096)}})).unwrap();
                 history.compact_history(&identity).unwrap();
             }
@@ -889,8 +889,8 @@ mod process_tests {
         let status = observation(&original).await.unwrap();
         assert_eq!(status["sdk_version"], "0.3.62");
         let rollback = Launcher::capture(obsolete.clone()).unwrap();
+        crate::runtime_startup::enroll(directory).unwrap();
         crate::runtime_startup::select_launcher(directory, rollback.clone()).unwrap();
-        crate::runtime_startup::enable(directory).unwrap();
         let saved = SharedUpdate { original, target: Launcher::capture(fixture.previous.clone()).unwrap(),
             rollback, previous_version: "0.3.60".into(), receivers: status["receivers"].clone(),
             hosts: Vec::new(), policy: crate::runtime_startup::read(directory).unwrap(), phase: SharedPhase::RollingBack };
@@ -910,6 +910,13 @@ mod process_tests {
         let retained = history();
         assert_eq!(retained.1, 2);
         assert!(retained.0.len() < 4096);
+        let read_result = || async {
+            let client = RuntimeClient::connect(fixture.registration.endpoint_path.clone(),
+                &fixture.registration.origin, &fixture.registration.actor_id).await.unwrap();
+            client.call(json!({"method":"operation", "operation_id":"retained-result"})).await.unwrap()
+        };
+        let retained_result = read_result().await;
+        assert_eq!(retained_result["outcome"]["result"]["description"], "retained result ".repeat(4096));
 
         let rejected = fixture.cli_shared(&obsolete);
         assert_eq!(rejected["error"]["code"], "UPDATE_ROLLBACK_RUNTIME_VERSION_MISMATCH", "{rejected}");
@@ -934,6 +941,7 @@ mod process_tests {
         assert_eq!(upgraded["state"], "SHARED_RUNTIME_UPDATE_COMPLETE", "{upgraded}");
         assert_eq!(upgraded["runtime_version"], env!("CARGO_PKG_VERSION"));
         assert_eq!(history(), retained);
+        assert_eq!(read_result().await, retained_result);
     }
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[ignore = "requires the native CLI and a previous resident binary"]
