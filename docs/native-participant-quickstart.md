@@ -81,7 +81,13 @@ the project's terminal and accept Claude Code's interactive prompt.
 MCP installation alone does not establish wake. An already running session may
 need the host's normal refresh/restart; see [Claude Code](claude-code.md).
 
-For an existing interactive AGY CLI with an unbound native inbox:
+For an existing AGY Peer, check `peerwork_delivery` first. Keep its original
+receiving path when a fresh notification wakes the original conversation.
+`agy-app` reports `QUEUED` even when the conversation wakes promptly. Refresh
+the original MCP entry in AGY's `/mcp` if the loaded frontend is outdated.
+See [AGY update and recovery](agy.md#update-or-restore-the-current-path).
+
+For an interactive AGY CLI with an unbound native inbox and background MCP support:
 
 ```sh
 peerwork connect --workspace WORKSPACE_ID --receive-mode inbox --install agy
@@ -94,17 +100,16 @@ Check for `REALTIME` once the verified listener reports its current state.
 See the [AGY guide](agy.md#choose-the-receiving-path) for transport selection
 and current-session evidence.
 
-For an existing registered AGY App or managed-stdio host:
+To connect through an existing registered AGY App or managed host, use its
+original host selection.
 
 ```sh
 peerwork connect --workspace WORKSPACE_ID --host EXISTING_AGY_HOST --install agy
 ```
 
-Reuse the existing host and conversation. `agy-app` preserves its current
-queue binding and appears as `QUEUED` when available. Installing the MCP entry
-preserves that binding. An ordinary inbox needs an armed listener or another
-supported host path for automatic wake.
-See [AGY receiving paths](agy.md#choose-the-receiving-path).
+Installing the MCP entry preserves the host binding. Use the
+[AGY receiving guide](agy.md#choose-the-receiving-path) for current-session
+verification.
 
 Programs need no Agent host, MCP or Skill. Use the native Rust Participant API,
 or explicitly select program mode for CLI setup:

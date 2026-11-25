@@ -105,17 +105,16 @@ work assignment and count only the returned members.
   conflict, preserve the original thread and verify its actual host before
   changing the route. Keep inbox access when no supported endpoint is available.
   [Codex receiving paths](https://github.com/peerwork-dev/peerwork-sdk/blob/main/docs/host-bridge-recovery.md#codex-receiving-paths).
-- **AGY receiving follows its active transport.** A working `agy-app` binding
-  remains `QUEUED` on upgrade. For an interactive AGY CLI with an unbound inbox,
-  explicitly call `peerwork_listen` once after opening or refreshing MCP. Read
-  a fresh self-test batch in that conversation and rearm. Check the receiving
-  status after the verified listener reports its current state.
-  Rearm after each batch read and before handling messages. Let an armed
-  listener recover transient failures.
-  If `peerwork_delivery` reports a loaded frontend older than the installed
-  update, refresh the original Peerwork entry in AGY `/mcp`, then arm once and
-  verify a fresh batch. A managed ACP binding restores its originally selected
-  session and receives through its own host adapter. [AGY receiving paths](https://github.com/peerwork-dev/peerwork-sdk/blob/main/docs/agy.md#choose-the-receiving-path).
+- **AGY keeps its working receiving path.** Use `peerwork_delivery` to verify
+  the loaded versions and current path. A fresh automatic batch read completes
+  the check even when `agy-app` reports `QUEUED`. For an AGY update, check the
+  executable used by the original launcher under the original host account.
+  Refresh a stale Peerwork frontend through AGY `/mcp`. Only arm
+  `peerwork_listen` on an unbound native inbox with a compatible background
+  host. Rearm after reading each delivered batch, before handling its work.
+  For `agy-app` restart recovery, refresh the original App host context. Use
+  managed ACP when transferring session ownership is intended.
+  [AGY receiving guide](https://github.com/peerwork-dev/peerwork-sdk/blob/main/docs/agy.md).
 - **Claude uses Channels.** Inspect `host_channel` and verify the batch read in
   this conversation. A working Channel can use `INBOX`. Preserve its current
   receiving mode. Launch the original conversation with the installer's
