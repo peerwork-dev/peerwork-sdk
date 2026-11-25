@@ -750,6 +750,37 @@ mod tests {
             json!({"key_id":key,"expected_epoch":0,"expected_head_revision":null}),
         )
         .await;
+        let independent_sender = if runtime_mode == "connect"
+            && std::env::var_os("PEERWORK_REAL_CODEX_HANDOFF").is_some()
+        {
+            use crate::participant::http_tests::structure;
+            let sender_root = root.path().join("handoff-sender");
+            crate::onboarding_files::directory(&sender_root, true).unwrap();
+            let sender_config = configuration(&sender_root, &service.origin);
+            let sender = ParticipantClient::open(sender_config.clone()).await.unwrap();
+            let mut add = crate::participant::Invoke::new(
+                "handoff-add-sender", "structure.member.set", scope.clone(),
+                json!({"actor_id":sender.actor_id(),"state":"ACTIVE","expected_membership_id":null}),
+            );
+            add.expected_workspace_revision = selected(
+                &owner, "structure.workspace.get", &scope, json!({}),
+            ).await["workspace_revision"].as_u64();
+            let joined = structure(&owner.invoke(add, Duration::from_secs(5)).await.unwrap());
+            let sender_box = mutate(&owner, "handoff-sender-mailbox", "structure.communication.grant.set",
+                &scope, json!({"actor_id":sender.actor_id(),"membership_id":joined["membership_id"],
+                    "expected_revision":null,"send":true,"receive":true}),
+            ).await["mailbox"].clone();
+            install_synthetic_key(&sender_config, &ws, &[71; 32], None);
+            let watch = WatchOptions {
+                workspace_id: ws.clone(),
+                mailbox_id: sender_box["mailbox_id"].as_str().unwrap().into(),
+                membership_id: sender_box["membership_id"].as_str().unwrap().into(),
+                consumer_id: "handoff-sender".into(),
+                host_destination: None,
+            };
+            sender.watch(watch.clone()).await.unwrap();
+            Some((sender, sender_box, watch))
+        } else { None };
         let sent = owner
             .invoke(
                 native_message(
@@ -1032,12 +1063,12 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .len(),
-            2,
-            "one original and one replacement claim only"
+            2 + usize::from(independent_sender.is_some()),
+            "one original claim, one replacement claim and one claim for the optional independent sender"
         );
         assert_eq!(
             service.counts().await["actions"]["structure.communication.grant.set"],
-            1
+            1 + u64::from(independent_sender.is_some())
         );
         assert_eq!(
             sha256_hex(&std::fs::read(&options.identity_path).unwrap()),
@@ -1108,6 +1139,31 @@ mod tests {
                 "--workspace".into(), ws.clone(), handoff_id.into()];
             let repeated = run(&executable, &cli_args, root.path()).await;
             assert_eq!(repeated["handoff"], response["handoff"]);
+            if let Some((sender, sender_box, watch)) = independent_sender {
+                for round in 1..=2 {
+                    let nonce = format!("HANDOFF-{round}");
+                    let sent = sender.invoke(native_message(
+                        &nonce, &scope, &mailbox, &sender_box, &"V".repeat(43),
+                        &format!("PING {nonce}"),
+                    ), Duration::from_secs(10)).await.unwrap();
+                    let message_id = crate::participant::http_tests::structure(&sent)["message_id"].clone();
+                    assert!(message_id.is_string());
+                    tokio::time::timeout(Duration::from_secs(35), async {
+                        loop {
+                            let page = sender.inbox(&watch, 0, 16).await.unwrap();
+                            if page.items.iter().any(|item| {
+                                item["message"]["reply_to"] == message_id
+                                    && item["message"]["sender"] == options.expected_actor
+                                    && item["message"]["text"] == format!("PONG {nonce}")
+                                    && item["message"]["assurance"] == "AUTHOR_SIGNATURE_AND_AEAD"
+                            }) { break; }
+                            tokio::time::sleep(Duration::from_millis(100)).await;
+                        }
+                    }).await.expect("independent sender did not verify B's correlated signed reply");
+                }
+                sender.close().await.unwrap();
+                eprintln!("CODEX_HANDOFF_SIGNED_ROUND_TRIPS 2");
+            }
         }
         ipc::call(&_stop.admin, json!({"method":"stop"}))
             .await

@@ -187,7 +187,6 @@ async fn launch(
         return Err(local("CODEX_HANDOFF_SOCKET_PATH_TOO_LONG"));
     }
     crate::onboarding_files::directory(directory, true)?;
-    let config = crate::communication_host::codex_installation().map_err(local)?;
     let socket_present = || match std::os::unix::net::UnixStream::connect(&socket) {
         Ok(_) => Ok(true),
         Err(error)
@@ -205,68 +204,69 @@ async fn launch(
             return Ok(selected.clone());
         }
     }
+    let config = crate::communication_host::codex_installation().map_err(local)?;
     let mut child = None;
-    if !socket_present()? {
-        // The child retains this lock across exec. A replacement client can
-        // wait for the same socket even if A died before Codex finished startup.
-        let lease = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(directory.join("launch.lock"))
-            .map_err(|_| local("CODEX_HANDOFF_STATE_INVALID"))?;
-        let fd = lease.as_raw_fd();
-        let locked = unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) } == 0;
-        if !locked && std::io::Error::last_os_error().kind() != std::io::ErrorKind::WouldBlock {
-            return Err(local("CODEX_HANDOFF_STATE_INVALID"));
-        }
-        if locked && !socket_present()? {
-            match std::fs::symlink_metadata(&socket) {
-                Ok(metadata) if metadata.file_type().is_socket() => {
-                    std::fs::remove_file(&socket)
-                        .map_err(|_| local("CODEX_HANDOFF_ENDPOINT_UNAVAILABLE"))?;
-                }
-                Ok(_) => return Err(local("CODEX_HANDOFF_STATE_INVALID")),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
-                Err(_) => return Err(local("CODEX_HANDOFF_ENDPOINT_UNAVAILABLE")),
+    for _ in 0..200 {
+        if child.is_none() && !socket_present()? {
+            // The child retains this lock across exec. A replacement client can
+            // wait for the same socket even if A died before Codex finished startup.
+            let lease = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .mode(0o600)
+                .custom_flags(libc::O_NOFOLLOW)
+                .open(directory.join("launch.lock"))
+                .map_err(|_| local("CODEX_HANDOFF_STATE_INVALID"))?;
+            let fd = lease.as_raw_fd();
+            let locked = unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) } == 0;
+            if !locked && std::io::Error::last_os_error().kind() != std::io::ErrorKind::WouldBlock {
+                return Err(local("CODEX_HANDOFF_STATE_INVALID"));
             }
-
-            // Codex is owned by the local installation rather than A's terminal group.
-            let binary = config["codex_executable"]
-                .as_str()
-                .ok_or_else(|| local("CODEX_EXECUTABLE_REQUIRED"))?;
-            let home = config["codex_home"]
-                .as_str()
-                .ok_or_else(|| local("CODEX_HOME_REQUIRED"))?;
-            let command = format!("mcp_servers.{name}.command={}", entry["command"]);
-            let args = format!("mcp_servers.{name}.args={}", entry["args"]);
-            let mut command_line = Command::new(binary);
-            // This process owns its own login session and survives A's process group.
-            unsafe {
-                command_line.pre_exec(move || {
-                    if libc::setsid() == -1 || libc::fcntl(fd, libc::F_SETFD, 0) == -1 {
-                        return Err(std::io::Error::last_os_error());
+            if locked && !socket_present()? {
+                match std::fs::symlink_metadata(&socket) {
+                    Ok(metadata) if metadata.file_type().is_socket() => {
+                        std::fs::remove_file(&socket)
+                            .map_err(|_| local("CODEX_HANDOFF_ENDPOINT_UNAVAILABLE"))?;
                     }
-                    Ok(())
-                });
+                    Ok(_) => return Err(local("CODEX_HANDOFF_STATE_INVALID")),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+                    Err(_) => return Err(local("CODEX_HANDOFF_ENDPOINT_UNAVAILABLE")),
+                }
+
+                // Codex is owned by the local installation rather than A's terminal group.
+                let binary = config["codex_executable"]
+                    .as_str()
+                    .ok_or_else(|| local("CODEX_EXECUTABLE_REQUIRED"))?;
+                let home = config["codex_home"]
+                    .as_str()
+                    .ok_or_else(|| local("CODEX_HOME_REQUIRED"))?;
+                let command = format!("mcp_servers.{name}.command={}", entry["command"]);
+                let args = format!("mcp_servers.{name}.args={}", entry["args"]);
+                let mut command_line = Command::new(binary);
+                // This process owns its own login session and survives A's process group.
+                unsafe {
+                    command_line.pre_exec(move || {
+                        if libc::setsid() == -1 || libc::fcntl(fd, libc::F_SETFD, 0) == -1 {
+                            return Err(std::io::Error::last_os_error());
+                        }
+                        Ok(())
+                    });
+                }
+                child = Some(
+                    command_line
+                        .env("CODEX_HOME", home)
+                        .current_dir(&project)
+                        .args(["-c", &command, "-c", &args, "app-server", "--listen"])
+                        .arg(format!("unix://{}", socket.display()))
+                        .stdin(Stdio::null())
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null())
+                        .spawn()
+                        .map_err(|_| local("CODEX_HANDOFF_LAUNCH_FAILED"))?,
+                );
             }
-            child = Some(
-                command_line
-                    .env("CODEX_HOME", home)
-                    .current_dir(&project)
-                    .args(["-c", &command, "-c", &args, "app-server", "--listen"])
-                    .arg(format!("unix://{}", socket.display()))
-                    .stdin(Stdio::null())
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .spawn()
-                    .map_err(|_| local("CODEX_HANDOFF_LAUNCH_FAILED"))?,
-            );
         }
-    }
-    for _ in 0..100 {
         if socket_present()? {
             let endpoint = selected.cloned().unwrap_or_else(|| {
                 json!({

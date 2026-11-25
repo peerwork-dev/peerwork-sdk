@@ -559,26 +559,35 @@ pub(crate) fn codex_prepare_handoff(
         return Err("HOST_BINDING_MISMATCH");
     }
     client.thread = thread.clone();
-    let current = match client.rpc("thread/read", json!({"threadId":thread,"includeTurns":false})) {
+    let read = json!({"threadId":thread,"includeTurns":false});
+    let mut current = match client.rpc("thread/read", read.clone()) {
         Ok(current) => current,
-        Err("HOST_RPC_REJECTED") if pinned.is_none() => {
-            // Codex materializes a new thread's rollout on its first input.
+        Err("HOST_RPC_REJECTED") if pinned.is_none() => Value::Null,
+        Err(code) => return Err(code),
+    };
+    if pinned.is_none() && current["thread"]["path"].is_null() {
+        if current["thread"]["status"]["type"] != "active" {
+            // A newly loaded thread must have a persisted rollout before
+            // reporting a target that can be recovered after a server exit.
             client.rpc("turn/start", json!({"threadId":thread,"input":[{
                 "type":"text",
                 "text":"This session was started to receive for the existing Peerwork identity. Wait for a Peerwork inbox notification. Follow the selected Space protocol for any subsequent work."
             }]}))?;
-            loop {
-                match client.rpc("thread/read", json!({"threadId":thread,"includeTurns":false})) {
-                    Ok(current) => break current,
-                    Err("HOST_RPC_REJECTED") if client.budget.remaining().is_ok() => {
-                        std::thread::sleep(Duration::from_millis(50));
-                    }
-                    Err(code) => return Err(code),
+        }
+        loop {
+            match client.rpc("thread/read", read.clone()) {
+                Ok(observed) if observed["thread"]["path"].is_string() => {
+                    current = observed;
+                    break;
                 }
+                Ok(_) | Err("HOST_RPC_REJECTED") if client.budget.remaining().is_ok() => {
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                Ok(_) => return Err("HOST_OPERATION_TIMEOUT"),
+                Err(code) => return Err(code),
             }
         }
-        Err(code) => return Err(code),
-    };
+    }
     let summary = codex_session_summary(&current["thread"], &thread)?
         .ok_or("HOST_SESSION_NOT_LOADED")?;
     if pinned.is_some() && config["expected_session_id"] != summary["session_id"] {
