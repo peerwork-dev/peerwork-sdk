@@ -239,7 +239,9 @@ async fn launch(
                 if unsafe { libc::fcntl(owner_fd, libc::F_GETLK, &mut owner_lock) } == -1 {
                     return Err(local("CODEX_HANDOFF_STATE_INVALID"));
                 }
-                if owner_lock.l_type != libc::F_UNLCK as _ {
+                if owner_lock.l_type != libc::F_UNLCK as libc::c_short {
+                    drop(owner);
+                    drop(lease);
                     tokio::time::sleep(Duration::from_millis(50)).await;
                     continue;
                 }
