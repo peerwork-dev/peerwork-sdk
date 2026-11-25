@@ -676,8 +676,9 @@ mod process_tests {
                 endpoint_path: runtime.join("client-bootstrap.json"),
             };
             if compact_history {
+                let origin = crate::transport::canonical_lifecycle_origin(&registration.origin, true).unwrap();
                 let mut history = crate::participant_store::Store::open(
-                    &config.engines[0].state_directory, &identity, &registration.origin).unwrap();
+                    &config.engines[0].state_directory, &identity, &origin).unwrap();
                 let request = crate::participant::Invoke::new("retained-result", "structure.workspace.create",
                     crate::participant::Scope::default(), json!({"name":"Original operation"}));
                 history.reserve("program", &request, &identity, 2, 1024 * 1024).unwrap();
