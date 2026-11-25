@@ -119,6 +119,22 @@ fn validate_committed(job: &Attachment, committed: &RuntimeConfig, outcome: &Val
 }
 
 impl Connect {
+    pub(super) fn codex_attachment_operation(&self, key: &str) -> Option<String> {
+        self.registry.codex_attachments.get(key).map(|job| job.request.operation_id.clone())
+    }
+
+    pub(super) fn codex_attachment_targets(&self, key: &str, adapter: &Value) -> bool {
+        self.registry.codex_attachments.get(key).is_some_and(|job| {
+            !job.aborted && job.request.adapter == *adapter
+        })
+    }
+
+    pub(super) fn matches_codex_attachment(&self, key: &str, adapter: &Value) -> bool {
+        self.registry.codex_attachments.get(key).is_some_and(|job| {
+            job.finished && !job.aborted && job.request.adapter == *adapter
+        })
+    }
+
     pub(super) fn saved_codex_workspaces(&self,participant:&str)->Vec<String> {
         self.registry.codex_attachments.values().filter(|job|!job.aborted && job.desired.participant==participant)
             .map(|job|job.desired.workspace_id.clone()).collect()
@@ -1027,6 +1043,72 @@ mod tests {
             sha256_hex(&std::fs::read(&options.identity_path).unwrap()),
             identity_before
         );
+        #[cfg(target_os = "linux")]
+        if runtime_mode == "connect" && std::env::var_os("PEERWORK_TEST_CODEX_HANDOFF").is_some() {
+            let handoff_id = "new-receiver";
+            let hash = sha256_hex(handoff_id.as_bytes());
+            let host_directory = local.join(format!("handoff-{}", &hash[..16]));
+            crate::onboarding_files::directory(&host_directory, true).unwrap();
+            let socket = host_directory.join("codex.sock");
+            let real_codex = std::env::var_os("PEERWORK_REAL_CODEX_HANDOFF").is_some();
+            let successor = (!real_codex).then(||
+                crate::communication_host::tests::CodexFixture::start_unix(&socket));
+            struct StopSuccessor(Option<libc::pid_t>);
+            impl Drop for StopSuccessor {
+                fn drop(&mut self) {
+                    if let Some(pid) = self.0 {
+                        unsafe { libc::kill(pid, libc::SIGTERM); }
+                    }
+                }
+            }
+            let mut stop_successor = StopSuccessor(None);
+            {
+                let mut registry = Connect::open(&local).unwrap();
+                registry.install("worker", &ws, install::Installation {
+                    host: "codex".into(), project: root.path().into(),
+                    executable: executable.clone(),
+                }).unwrap();
+            }
+            let request = json!({"request":{"codex_handoff_id":handoff_id}});
+            let call = |args| {
+                let frontend = crate::agent_lifecycle::Lifecycle::local(
+                    local.clone(), Some("worker".into()), Some(ws.clone()),
+                );
+                async move {
+                    frontend.call(crate::agent_tools::AgentRequest::parse("connect", args).unwrap()).await
+                }
+            };
+            let first = call(request.clone()).await;
+            if real_codex {
+                stop_successor.0 = tokio::net::UnixStream::connect(&socket).await.ok()
+                    .and_then(|stream| stream.peer_cred().ok()).and_then(|creds| creds.pid());
+            }
+            let first = first.unwrap();
+            assert!(first["handoff"]["can_exit"].is_boolean(), "{first}");
+            if first["handoff"]["can_exit"] == false {
+                let competing = call(json!({"request":{"codex_handoff_id":"competing"}})).await.unwrap_err();
+                assert_eq!(competing.code, "RESUME_ORIGINAL_CODEX_HANDOFF");
+            }
+            drop(proxy_fixture);
+            let mut proof_sent = false;
+            let response = tokio::time::timeout(Duration::from_secs(25), async {
+                loop {
+                    if let Some(successor) = &successor {
+                        observe_host_hint(&local, successor, &mut proof_sent).await;
+                    }
+                    let response = call(request.clone()).await.unwrap();
+                    if response["handoff"]["can_exit"] == true { break response; }
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+            }).await.expect("handoff did not observe the successor's fresh probe");
+            assert_eq!(response["runtime_restarted"], false);
+            assert_eq!(receiver.call(json!({"method":"binding"})).await.unwrap(), after);
+            let cli_args = vec!["connect".into(), "codex-handoff".into(), "--local".into(),
+                local.to_str().unwrap().into(), "--participant".into(), "worker".into(),
+                "--workspace".into(), ws.clone(), handoff_id.into()];
+            let repeated = run(&executable, &cli_args, root.path()).await;
+            assert_eq!(repeated["handoff"], response["handoff"]);
+        }
         ipc::call(&_stop.admin, json!({"method":"stop"}))
             .await
             .unwrap();

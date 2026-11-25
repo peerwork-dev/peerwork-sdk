@@ -165,6 +165,20 @@ impl Lifecycle {
                 let selected=self.identity.get_or_init(||identity.clone());
                 if selected!=&identity{return Err(ParticipantError::local("FRONTEND_IDENTITY_PIN_MISMATCH","CONNECT"));}
             }
+            if let AgentRequest::Connect {
+                request: crate::participant_connect::ConnectInput::Handoff(intent),
+            } = &request {
+                let (participant, workspace) = connect.handoff_scope(intent, handle_pin, workspace_pin)?;
+                if let Some(identity) = connect.participant_identity(&participant) {
+                    if self.identity.get_or_init(|| identity.clone()) != &identity {
+                        return Err(ParticipantError::local("FRONTEND_IDENTITY_PIN_MISMATCH", "CONNECT"));
+                    }
+                }
+                drop(connect);
+                return crate::participant_connect::Connect::open(directory)?
+                    .codex_handoff(&participant, &workspace, &intent.codex_handoff_id)
+                    .await;
+            }
             if let AgentRequest::Connect{request}=request {
                 let discover_identity=handle_pin.is_none() && matches!(&request,
                     crate::participant_connect::ConnectInput::Intent(intent) if intent.participant.is_none() && !intent.new_peer);

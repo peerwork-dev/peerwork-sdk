@@ -581,6 +581,26 @@ pub(super) fn presentation_registration(connect:&Connect,participant:&str,worksp
     if exact.len()==1 {return Ok(Some(exact[0].0.clone()));}
     Err(local("PRESENTATION_ORIGINAL_INSTALLATION_SELECTION_REQUIRED"))
 }
+pub(super) fn codex_handoff_installation(
+    connect: &Connect,
+    participant: &str,
+    workspace: &str,
+) -> Result<(PathBuf, String, Value)> {
+    let mut installations = connect.registry.installations.values().filter(|record| {
+        record.committed && record.spec.host == "codex"
+            && record.participant == participant && record.workspace_id == workspace
+    });
+    let record = installations.next().ok_or_else(|| local("CODEX_HANDOFF_INSTALLATION_REQUIRED"))?;
+    if installations.next().is_some() {
+        return Err(local("CODEX_HANDOFF_INSTALLATION_AMBIGUOUS"));
+    }
+    let identity = crate::onboarding_project::Directory::open(&record.spec.project)?.identity()?;
+    if record.project_identity.as_ref() != Some(&identity) {
+        return Err(local("CODEX_HANDOFF_PROJECT_CHANGED"));
+    }
+    Ok((record.spec.project.clone(), record.name.clone(), record.entry.clone()))
+}
+
 fn id(participant: &str, workspace: &str, spec: &Installation) -> String {
     sha256_hex(
         json!([participant, workspace, spec.host, spec.project])

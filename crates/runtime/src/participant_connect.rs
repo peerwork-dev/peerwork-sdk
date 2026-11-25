@@ -36,6 +36,8 @@ pub use bootstrap::RuntimeSelection;
 mod protocol_views;
 #[path = "participant_connect_codex.rs"]
 mod codex;
+#[path = "participant_connect_handoff.rs"]
+mod handoff;
 #[path = "participant_connect_discovery.rs"]
 mod discovery;
 #[path="participant_connect_source.rs"]
@@ -119,9 +121,16 @@ pub struct ConnectRequest {
 #[derive(Clone,Serialize,Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ResumeSetup {pub resume_setup_id:String}
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HandoffIntent {
+    pub codex_handoff_id: String,
+    pub participant: Option<String>,
+    pub workspace_id: Option<String>,
+}
 #[derive(Clone,Serialize,Deserialize)]
 #[serde(untagged)]
-pub enum ConnectInput {Resume(ResumeSetup),Intent(ConnectIntent),Configure(ConnectRequest)}
+pub enum ConnectInput {Handoff(HandoffIntent),Resume(ResumeSetup),Intent(ConnectIntent),Configure(ConnectRequest)}
 #[derive(Clone,Copy,Serialize,Deserialize,PartialEq,Eq)]
 #[serde(rename_all="SCREAMING_SNAKE_CASE")]
 pub enum ReceiveMode { Push, Inbox }
@@ -221,6 +230,8 @@ struct Registry {
     // Retain the persisted field name; Codex and OpenCode share this job engine.
     #[serde(default)]
     codex_attachments: BTreeMap<String, codex::Attachment>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    codex_handoffs: BTreeMap<String, handoff::Handoff>,
     participants: BTreeMap<String, Registration>,
     setups: BTreeMap<String, Setup>,
     active: Option<String>,
@@ -312,7 +323,7 @@ impl Connect {
             .map_err(|_| local("CONNECT_RECOVERY_REQUIRED"))?,
         };
         if registry.profile_sources.len()>8 || registry.profile_upgrades.len()>8 || registry.participants.len() > 8
-            || registry.setups.len() > 64 || registry.codex_attachments.len() > 64||registry.setups.values().any(|s|s.protocol_intents.len()>32)
+            || registry.setups.len() > 64 || registry.codex_attachments.len() > 64 || registry.codex_handoffs.len() > 64 || registry.setups.values().any(|s|s.protocol_intents.len()>32)
             || registry.approvals.len() > 64
             || registry.sources.len() > 8 || registry.trusted_projects.len() > 8 || registry.trusted_project_identities.len()>8 || registry.verified_bindings.len() > 8
         {
@@ -619,7 +630,7 @@ impl Connect {
         self.run_mode(request, false).await
     }
     pub fn resolve_input(&self,input:ConnectInput)->Result<(ConnectRequest,bool)>{
-        match input {ConnectInput::Intent(intent)=>self.resolve_intent(intent,true),ConnectInput::Configure(request)=>Ok((request,false)),ConnectInput::Resume(resume)=>{
+        match input {ConnectInput::Handoff(_) => Err(local("CODEX_HANDOFF_REQUIRES_LOCAL_CONNECT")),ConnectInput::Intent(intent)=>self.resolve_intent(intent,true),ConnectInput::Configure(request)=>Ok((request,false)),ConnectInput::Resume(resume)=>{
             if !identifier(&resume.resume_setup_id){return Err(local("CONNECT_ARGUMENT_INVALID"));}
             Ok((self.saved_codex_setup(&resume.resume_setup_id).or_else(||self.registry.setups.get(&resume.resume_setup_id).map(|s|s.desired.clone())).ok_or_else(||local("SETUP_NOT_FOUND"))?,true))
         }}
@@ -1587,6 +1598,7 @@ pub fn schema() -> Value {
         "type":"object","additionalProperties":false,
         "description":"Connect or continue the selected original Peer and Space. Omit known selections. Existing restrictions and pending operations are preserved; new ordinary participation includes sending, receiving, admission and required body keys.",
         "properties":{
+            "codex_handoff_id":{"type":"string","description":"Explicitly launch an independent Codex receiving session for the original Peer. Use a stable operation ID and repeat it to check readiness."},
             "workspace_id":{"type":"string","description":"Space to select, only when not already unambiguous."},
             "participant":{"type":"string","description":"Original public identity handle, only when ambiguous."},
             "new":{"type":"boolean","default":false,"description":"Explicit new Peer intent. Returns the native local-owner creation command; never replaces an existing identity."},
@@ -1613,6 +1625,9 @@ fn prepare_cli_intent(values:&mut BTreeMap<String,String>)->bool {
 }
 
 pub fn cli(args: &[String]) -> Value {
+    if args.first().is_some_and(|arg| arg == "codex-handoff") {
+        return handoff::cli(&args[1..]);
+    }
     crate::onboarding_files::take_diagnostic();
     fn parse(args: &[String]) -> Result<BTreeMap<String, String>> {
         let mut values = BTreeMap::new();

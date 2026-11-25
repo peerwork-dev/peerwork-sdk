@@ -990,3 +990,26 @@ fn codex_handshake_access_denial_is_not_a_transient_stream_failure(){
     assert!(matches!(Host::open(json!({"kind":"codex","endpoint":format!("ws://{address}"),"thread_id":"owned-thread"}),runtime.handle().clone()),Err("HOST_AUTHENTICATION_FAILED")));
     server.join().unwrap();
 }
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn codex_handoff_reuses_only_the_dedicated_servers_single_thread() {
+    let fixture = CodexFixture::start();
+    let runtime = tokio::runtime::Handle::current();
+    let config = json!({"kind":"codex","endpoint":fixture.endpoint});
+    let selected = tokio::task::spawn_blocking(move || {
+        codex_prepare_handoff(config, Path::new("/unused"), runtime)
+    }).await.unwrap().unwrap();
+    assert_eq!(selected["thread_id"], fixture.thread_id);
+    assert_eq!(selected["expected_session_id"], fixture.session);
+    assert!(!fixture.calls().iter().any(|call| call["method"] == "thread/start"));
+
+    *fixture.loaded_pages.lock().unwrap() =
+        vec![json!({"data":[fixture.thread_id, "unselected-thread"],"nextCursor":null})];
+    let runtime = tokio::runtime::Handle::current();
+    let config = json!({"kind":"codex","endpoint":fixture.endpoint});
+    let result = tokio::task::spawn_blocking(move || {
+        codex_prepare_handoff(config, Path::new("/unused"), runtime)
+    }).await.unwrap();
+    assert_eq!(result, Err("CODEX_HANDOFF_MULTIPLE_THREADS"));
+}

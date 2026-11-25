@@ -55,6 +55,7 @@ impl HostConfig {
                 "codex_home",
                 "codex_uid",
                 "control_socket",
+                "expected_socket_uid",
                 "codex_routes",
             ],
             Some("agy-app") => &[
@@ -83,6 +84,13 @@ impl HostConfig {
             || self.adapter.to_string().len() > 8192
         {
             return Err(error("HOST_CONFIG_INVALID"));
+        }
+        if let Some(uid) = self.adapter.get("expected_socket_uid") {
+            if !self.adapter["endpoint"].as_str().is_some_and(|value| value.starts_with("unix://"))
+                || uid.as_u64().is_none_or(|value| value > u32::MAX as u64)
+            {
+                return Err(error("HOST_CONFIG_INVALID"));
+            }
         }
         for target in &self.subscriptions {
             if !identifier(&target.client) {

@@ -527,6 +527,68 @@ pub(crate) fn codex_sessions(mut config: Value, executor: tokio::runtime::Handle
         "truncated_by":if complete{None}else{Some(truncated_by)},"selection":"EXPLICIT_LOCAL_USER_REQUIRED"}))
 }
 
+/// This endpoint belongs exclusively to an explicit handoff operation. After
+/// an interrupted call, reuse its sole loaded thread.
+#[cfg(target_os = "linux")]
+pub(crate) fn codex_prepare_handoff(
+    mut config: Value, project: &Path, executor: tokio::runtime::Handle,
+) -> R<Value> {
+    let mut client = Codex::channel_budget(&config, executor, Budget::new(Duration::from_secs(40)))?;
+    let _prepare = client.budget.scope("SESSION_PREPARE");
+    let loaded = client.rpc("thread/loaded/list", json!({"limit":2}))?;
+    let ids = loaded["data"].as_array().ok_or("HOST_RESPONSE_INVALID")?;
+    if !loaded["nextCursor"].is_null() || ids.len() > 1 {
+        return Err("CODEX_HANDOFF_MULTIPLE_THREADS");
+    }
+    let pinned = config["thread_id"].as_str();
+    let thread = match (ids.first(), pinned) {
+        (Some(id), _) => id.as_str().filter(|id| !id.is_empty()).ok_or("HOST_RESPONSE_INVALID")?.to_owned(),
+        (None, Some(thread)) => {
+            let resumed = client.rpc("thread/resume", json!({"threadId":thread,"excludeTurns":true}))?;
+            if resumed["thread"]["id"] != thread {
+                return Err("HOST_BINDING_MISMATCH");
+            }
+            thread.to_owned()
+        }
+        (None, None) => {
+            let created = client.rpc("thread/start", json!({"cwd":project}))?;
+            text(&created["thread"], "id")?.to_owned()
+        }
+    };
+    if pinned.is_some_and(|expected| expected != thread) {
+        return Err("HOST_BINDING_MISMATCH");
+    }
+    client.thread = thread.clone();
+    let current = match client.rpc("thread/read", json!({"threadId":thread,"includeTurns":false})) {
+        Ok(current) => current,
+        Err("HOST_RPC_REJECTED") if pinned.is_none() => {
+            // Codex materializes a new thread's rollout on its first input.
+            client.rpc("turn/start", json!({"threadId":thread,"input":[{
+                "type":"text",
+                "text":"This session was started to receive for the existing Peerwork identity. Wait for a Peerwork inbox notification. Follow the selected Space protocol for any subsequent work."
+            }]}))?;
+            loop {
+                match client.rpc("thread/read", json!({"threadId":thread,"includeTurns":false})) {
+                    Ok(current) => break current,
+                    Err("HOST_RPC_REJECTED") if client.budget.remaining().is_ok() => {
+                        std::thread::sleep(Duration::from_millis(50));
+                    }
+                    Err(code) => return Err(code),
+                }
+            }
+        }
+        Err(code) => return Err(code),
+    };
+    let summary = codex_session_summary(&current["thread"], &thread)?
+        .ok_or("HOST_SESSION_NOT_LOADED")?;
+    if pinned.is_some() && config["expected_session_id"] != summary["session_id"] {
+        return Err("HOST_BINDING_MISMATCH");
+    }
+    config["thread_id"] = summary["thread_id"].clone();
+    config["expected_session_id"] = summary["session_id"].clone();
+    Ok(config)
+}
+
 pub(crate) fn codex_installation() -> R<Value> {
     let mut config=json!({"endpoint":"codex-proxy://local","codex_executable":codex_proxy::executable(None)?});
     codex_proxy::pin_installation(&mut config)?;

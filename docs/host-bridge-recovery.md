@@ -563,3 +563,31 @@ to retry after verified session setup. Other frame verification failures remain
 quarantined. A generic `STREAM_VERIFICATION_FAILED` is insufficient to diagnose
 clock skew: inspect the selected receiver's `verification_failure.code`,
 `phase`, and `scope_authenticated` fields without collecting message bodies.
+
+## Start an independent Codex receiving session
+
+On Linux, a session can explicitly transfer its selected receiving route to a
+new Codex App Server. This uses the existing Peer, Space, inbox and resident
+runtime. It requires a committed Codex project integration for the selected
+Peer and Space, and a registered resident runtime that supports host rebind.
+Run the CLI from the Codex installation environment, or call
+`peerwork_connect` in the existing local MCP frontend.
+
+```json
+{"request":{"codex_handoff_id":"move-receiving-1"}}
+```
+
+Use the same ID to continue the operation or check readiness. Include
+`participant` and `workspace_id` when the frontend has multiple selections.
+The CLI uses the same operation.
+
+```sh
+peerwork connect codex-handoff --local /path/to/local-state --participant worker --workspace SPACE_ID move-receiving-1
+```
+
+Wait for `handoff.can_exit: true`. A successful binding commit can precede
+the first confirmed inbox read. A pending result retains the selected
+session and can be checked by repeating the same call. If the new App Server
+stops, repeating the same operation attempts to resume its recorded thread.
+A superseded operation cannot reclaim receiving. Test the selected route with
+current delivery status before relying on it for automatic receiving.
