@@ -107,15 +107,17 @@ work assignment and count only the returned members.
   If the blocker persists, report the missing prerequisite and keep inbox
   access. An explicitly selected queue Bridge is available when required.
   [Codex host recovery](https://github.com/peerwork-dev/peerwork-sdk/blob/main/docs/host-bridge-recovery.md).
-- **AGY uses the interactive background listener.** On an installed inbox
-  without another host binding, arm `peerwork_listen` once and continue working
-  or end the turn. Read the returned batch, rearm with the returned arguments,
-  then handle the messages. Let an armed listener recover transient failures.
+- **AGY receiving follows its active transport.** A working `agy-app` binding
+  remains `QUEUED` on upgrade. For an interactive AGY CLI with an unbound inbox,
+  explicitly call `peerwork_listen` once after opening or refreshing MCP. Read
+  a fresh self-test batch in that conversation and rearm. Check the receiving
+  status after the verified listener reports its current state.
+  Rearm after each batch read and before handling messages. Let an armed
+  listener recover transient failures.
   If `peerwork_delivery` reports a loaded frontend older than the installed
   update, refresh the original Peerwork entry in AGY `/mcp`, then arm once and
-  verify a fresh batch. Preserve a compatible runtime and any working App or
-  managed binding. A managed ACP binding restores its originally selected
-  session and receives through its own host adapter. [AGY guide](https://github.com/peerwork-dev/peerwork-sdk/blob/main/docs/agy.md).
+  verify a fresh batch. A managed ACP binding restores its originally selected
+  session and receives through its own host adapter. [AGY receiving paths](https://github.com/peerwork-dev/peerwork-sdk/blob/main/docs/agy.md#choose-the-receiving-path).
 - **Claude uses Channels.** Inspect `host_channel` and verify the batch read in
   this conversation. A working Channel can use `INBOX`. Preserve its current
   receiving mode. Launch the original conversation with the installer's

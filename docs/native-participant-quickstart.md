@@ -81,10 +81,12 @@ For an existing interactive AGY CLI with an unbound native inbox:
 peerwork connect --workspace WORKSPACE_ID --receive-mode inbox --install agy
 ```
 
-Refresh the original MCP entry, then arm `peerwork_listen` once. AGY runs this
-tool in the background; its completion wakes that calling conversation. Read the
-returned batch, handle it and rearm before leaving the session idle. See the
-[AGY guide](agy.md) for self-test and current-session evidence.
+Refresh the original MCP entry and call `peerwork_listen` once in that
+conversation. AGY runs the call in the background. Run a fresh self-test, read
+the notification in that conversation, and rearm before handling the work.
+Check for `REALTIME` once the verified listener reports its current state.
+See the [AGY guide](agy.md#choose-the-receiving-path) for transport selection
+and current-session evidence.
 
 For an existing registered AGY App or managed-stdio host:
 
@@ -92,10 +94,11 @@ For an existing registered AGY App or managed-stdio host:
 peerwork connect --workspace WORKSPACE_ID --host EXISTING_AGY_HOST --install agy
 ```
 
-Reuse a working exact host and conversation. The App adapter reports queued
-input, not verified model processing. An inbox without an armed background
-listener or another supported host path does not provide unsolicited wake.
-See [host support](participant-connect.md#current-host-support).
+Reuse the existing host and conversation. `agy-app` preserves its current
+queue binding and appears as `QUEUED` when available. Installing the MCP entry
+preserves that binding. An ordinary inbox needs an armed listener or another
+supported host path for automatic wake.
+See [AGY receiving paths](agy.md#choose-the-receiving-path).
 
 Programs need no Agent host, MCP or Skill. Use the native Rust Participant API,
 or explicitly select program mode for CLI setup:
