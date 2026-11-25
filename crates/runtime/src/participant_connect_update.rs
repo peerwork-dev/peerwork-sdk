@@ -234,19 +234,20 @@ async fn reconcile_rollback(store: &SecureStateStore, mut update: SharedUpdate,
         return Err(local("UPDATE_ROLLBACK_RECONCILIATION_REQUIRES_COMPATIBLE_UPGRADE"));
     }
     let directory = &update.original.config.state_directory;
-    if update.policy.is_none() && crate::runtime_startup::read(directory)?.is_some() {
-        return Err(local("RUNTIME_STARTUP_POLICY_CHANGED"));
+    let policy = crate::runtime_startup::read(directory)?;
+    if policy.as_ref().and_then(|policy| policy.launcher.as_ref())
+        .is_some_and(|launcher| launcher.sha256 == update.rollback.sha256) {
+        // Retire a launcher that still selects the obsolete rollback binary.
+        // Compare against the current policy and preserve its user intent.
+        crate::runtime_startup::commit_maintenance_launcher(directory, &policy, current_artifact)?;
     }
-    // Keep the existing startup intent. If it had a launcher, pin the
-    // verified current-version artifact before closing the obsolete rollback.
-    crate::runtime_startup::commit_maintenance_launcher(directory, &update.policy, current_artifact)?;
     // Closing an abandoned rollback never restores its receiving snapshot.
-    // The next apply captures bindings from the authenticated current runtime.
+    // The next apply captures current bindings and startup policy.
     update.phase = SharedPhase::Reconciled;
     save_shared(store, &update)?;
     Ok(json!({"state":"SHARED_RUNTIME_UPDATE_RECONCILED","runtime_version":version,
         "abandoned_rollback_version":update.previous_version,"runtime_restarted":false,
-        "original_operations":"PRESERVED","current_receiving_bindings":"PRESERVED",
+        "original_operations":"PRESERVED","current_receiving_bindings":"PRESERVED","startup_intent":"PRESERVED",
         "next_action":"REPEAT_UPDATE_APPLY_WITH_CURRENT_RUNTIME_ARTIFACT",
         "model_wake":"NOT_ATTESTED"}))
 }
@@ -900,15 +901,30 @@ mod process_tests {
         let rollback = Launcher::capture(obsolete.clone()).unwrap();
         crate::runtime_startup::enroll(directory).unwrap();
         crate::runtime_startup::select_launcher(directory, rollback.clone()).unwrap();
+        let startup_path = directory.join("startup.state");
+        let mut current_policy = crate::runtime_startup::read(directory).unwrap().unwrap();
+        current_policy.revision = 10;
+        {
+            let file = SecureStateStore::open(&startup_path).unwrap();
+            file.write_exact(&serde_json::to_vec(&current_policy).unwrap()).unwrap();
+        }
+        let mut old_policy = current_policy.clone();
+        old_policy.revision = 4;
         let saved = SharedUpdate { original, target: Launcher::capture(fixture.previous.clone()).unwrap(),
             rollback, previous_version: "0.3.60".into(), receivers: status["receivers"].clone(),
-            hosts: fixture.config.hosts.clone(), policy: crate::runtime_startup::read(directory).unwrap(), phase: SharedPhase::RollingBack };
+            hosts: fixture.config.hosts.clone(), policy: Some(old_policy), phase: SharedPhase::RollingBack };
         let update_path = directory.join("shared-update.state");
         {
             let file = SecureStateStore::open(&update_path).unwrap();
             save_shared(&file, &saved).unwrap();
         }
         let saved_bytes = SecureStateStore::read_snapshot(&update_path, 2 * 1024 * 1024).unwrap();
+        if let Some(baseline) = std::env::var_os("PEERWORK_UPDATE_POLICY_BASELINE_BINARY") {
+            let result = fixture.cli_shared_using(&PathBuf::from(baseline), &fixture.previous);
+            assert_eq!(result["error"]["code"], "RUNTIME_STARTUP_POLICY_CHANGED", "{result}");
+            assert_eq!(SecureStateStore::read_snapshot(&update_path, 2 * 1024 * 1024).unwrap(), saved_bytes);
+            assert_eq!(crate::runtime_startup::read(directory).unwrap(), Some(current_policy.clone()));
+        }
         let launch_before = SecureStateStore::read_snapshot(&directory.join("bootstrap.state"), 65536).unwrap();
         let history = || {
             let db = rusqlite::Connection::open_with_flags(
@@ -942,6 +958,7 @@ mod process_tests {
         assert_eq!(reconciled["runtime_version"], "0.3.62");
         assert_eq!(reconciled["runtime_restarted"], false);
         assert_eq!(reconciled["current_receiving_bindings"], "PRESERVED");
+        assert_eq!(reconciled["startup_intent"], "PRESERVED");
         assert!(fixture.child.try_wait().unwrap().is_none());
         assert_eq!(SecureStateStore::read_snapshot(&directory.join("bootstrap.state"), 65536).unwrap(), launch_before);
         assert_eq!(history(), retained);
@@ -950,9 +967,22 @@ mod process_tests {
         assert!(reconciled_record.phase == SharedPhase::Reconciled);
         assert_eq!(reconciled_record.rollback, saved.rollback);
         assert_eq!(serde_json::to_value(&reconciled_record.hosts).unwrap(), serde_json::to_value(&saved.hosts).unwrap());
-        let mut expected = saved.policy.unwrap();
+        let mut expected = current_policy.clone();
         expected.launcher = Some(Launcher::capture(fixture.previous.clone()).unwrap());
         assert_eq!(crate::runtime_startup::read(directory).unwrap(), Some(expected));
+
+        // A newer selected launcher is outside the obsolete transaction.
+        // Preserve that choice exactly while closing an otherwise identical rollback.
+        crate::runtime_startup::select_launcher(directory, Launcher::capture(fixture.binary.clone()).unwrap()).unwrap();
+        let policy_before = SecureStateStore::read_snapshot(&startup_path, 65536).unwrap();
+        {
+            let file = SecureStateStore::open(&update_path).unwrap();
+            save_shared(&file, &saved).unwrap();
+        }
+        let reconciled = fixture.cli_shared(&fixture.previous);
+        assert_eq!(reconciled["state"], "SHARED_RUNTIME_UPDATE_RECONCILED", "{reconciled}");
+        assert_eq!(SecureStateStore::read_snapshot(&startup_path, 65536).unwrap(), policy_before);
+        assert!(fixture.child.try_wait().unwrap().is_none());
 
         let upgraded = fixture.cli_shared(&fixture.previous);
         assert_eq!(upgraded["state"], "SHARED_RUNTIME_UPDATE_COMPLETE", "{upgraded}");
