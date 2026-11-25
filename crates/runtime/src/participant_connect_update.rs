@@ -223,7 +223,6 @@ fn release_version(version: &str) -> Option<[u64; 3]> {
 async fn reconcile_rollback(store: &SecureStateStore, mut update: SharedUpdate,
     current_artifact: &Launcher) -> Result<Value> {
     let status = observation(&update.original).await?;
-    verify_shared_state(&update, &status)?;
     current_artifact.verify()?;
     let version = rollback_version(current_artifact).await?;
     if status["state"] != "LOCAL_READY" || status["sdk_version"] != version {
@@ -241,11 +240,14 @@ async fn reconcile_rollback(store: &SecureStateStore, mut update: SharedUpdate,
     // Keep the existing startup intent. If it had a launcher, pin the
     // verified current-version artifact before closing the obsolete rollback.
     crate::runtime_startup::commit_maintenance_launcher(directory, &update.policy, current_artifact)?;
+    // Closing an abandoned rollback never restores its receiving snapshot.
+    // The next apply captures bindings from the authenticated current runtime.
     update.phase = SharedPhase::Reconciled;
     save_shared(store, &update)?;
     Ok(json!({"state":"SHARED_RUNTIME_UPDATE_RECONCILED","runtime_version":version,
         "abandoned_rollback_version":update.previous_version,"runtime_restarted":false,
-        "original_operations":"PRESERVED","next_action":"REPEAT_UPDATE_APPLY_WITH_CURRENT_RUNTIME_ARTIFACT",
+        "original_operations":"PRESERVED","current_receiving_bindings":"PRESERVED",
+        "next_action":"REPEAT_UPDATE_APPLY_WITH_CURRENT_RUNTIME_ARTIFACT",
         "model_wake":"NOT_ATTESTED"}))
 }
 
@@ -278,17 +280,18 @@ impl Connect {
             SharedPhase::Complete | SharedPhase::RolledBack => saved.target == target,
             _ => true,
         }) {
-            if saved.original.registration != registration || saved.original.path() != *selection.config_path.as_ref().unwrap()
-                || serde_json::to_value(&saved.original.config).ok() != serde_json::to_value(&config).ok() {
+            if saved.original.registration != registration || saved.original.path() != *selection.config_path.as_ref().unwrap() {
                 return Err(local("UPDATE_RESUME_ORIGINAL_ARTIFACT_AND_SELECTION"));
             }
-            if saved.target != target || saved.rollback != rollback {
-                if saved.phase == SharedPhase::RollingBack {
-                    // Reconcile only from live evidence on the sealed original
-                    // binding. Neither artifact from the old transaction runs.
-                    self.original_client(&handle).await?;
-                    return reconcile_rollback(&store, saved, &rollback).await;
-                }
+            let same_artifacts = saved.target == target && saved.rollback == rollback;
+            if saved.phase == SharedPhase::RollingBack && !same_artifacts {
+                // A supported host rebind does not change ownership of the
+                // original runtime, engine state or selected client.
+                saved.original.same_engine(&config)?;
+                self.original_client(&handle).await?;
+                return reconcile_rollback(&store, saved, &rollback).await;
+            }
+            if !same_artifacts || serde_json::to_value(&saved.original.config).ok() != serde_json::to_value(&config).ok() {
                 return Err(local("UPDATE_RESUME_ORIGINAL_ARTIFACT_AND_SELECTION"));
             }
             saved
@@ -747,7 +750,10 @@ mod process_tests {
             })
         }
         fn cli_shared(&self, rollback: &Path) -> Value {
-            let result = Command::new(&self.binary)
+            self.cli_shared_using(&self.binary, rollback)
+        }
+        fn cli_shared_using(&self, binary: &Path, rollback: &Path) -> Value {
+            let result = Command::new(binary)
                 .args(["connect", "--local"]).arg(self.root.path().join("registry"))
                 .args(["--participant", "peer", "--update", "apply", "--runtime-config"])
                 .arg(self.config.state_directory.join("config.json"))
@@ -877,7 +883,7 @@ mod process_tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[ignore = "requires candidate, 0.3.62 live runtime, and the 0.3.60 rollback binary"]
     async fn shared_update_reconciles_stale_rollback_without_downgrading_compacted_history() {
-        let mut fixture = Fixture::start(false, true).await;
+        let mut fixture = Fixture::start(true, true).await;
         let obsolete = PathBuf::from(std::env::var_os("PEERWORK_UPDATE_OBSOLETE_BINARY").unwrap());
         let directory = &fixture.config.state_directory;
         let selection = bootstrap::RuntimeSelection {
@@ -888,12 +894,15 @@ mod process_tests {
         drop(connect);
         let status = observation(&original).await.unwrap();
         assert_eq!(status["sdk_version"], "0.3.62");
+        let current_hosts = host_inventory(&original, Some(&status)).unwrap();
+        assert_eq!(current_hosts.iter().map(|host| host.name.as_str()).collect::<Vec<_>>(), ["replacement", "added"]);
+        let host_overlay_before = SecureStateStore::read_snapshot(&directory.join("runtime-hosts.state"), 512 * 1024).unwrap();
         let rollback = Launcher::capture(obsolete.clone()).unwrap();
         crate::runtime_startup::enroll(directory).unwrap();
         crate::runtime_startup::select_launcher(directory, rollback.clone()).unwrap();
         let saved = SharedUpdate { original, target: Launcher::capture(fixture.previous.clone()).unwrap(),
             rollback, previous_version: "0.3.60".into(), receivers: status["receivers"].clone(),
-            hosts: Vec::new(), policy: crate::runtime_startup::read(directory).unwrap(), phase: SharedPhase::RollingBack };
+            hosts: fixture.config.hosts.clone(), policy: crate::runtime_startup::read(directory).unwrap(), phase: SharedPhase::RollingBack };
         let update_path = directory.join("shared-update.state");
         {
             let file = SecureStateStore::open(&update_path).unwrap();
@@ -918,6 +927,12 @@ mod process_tests {
         let retained_result = read_result().await;
         assert_eq!(retained_result["outcome"]["result"]["description"], "retained result ".repeat(4096));
 
+        if let Some(baseline) = std::env::var_os("PEERWORK_UPDATE_BASELINE_BINARY") {
+            let result = fixture.cli_shared_using(&PathBuf::from(baseline), &fixture.previous);
+            assert_eq!(result["error"]["code"], "UPDATE_ORIGINAL_RECEIVING_BINDINGS_CHANGED", "{result}");
+            assert_eq!(SecureStateStore::read_snapshot(&update_path, 2 * 1024 * 1024).unwrap(), saved_bytes);
+        }
+
         let rejected = fixture.cli_shared(&obsolete);
         assert_eq!(rejected["error"]["code"], "UPDATE_ROLLBACK_RUNTIME_VERSION_MISMATCH", "{rejected}");
         assert_eq!(SecureStateStore::read_snapshot(&update_path, 2 * 1024 * 1024).unwrap(), saved_bytes);
@@ -926,6 +941,7 @@ mod process_tests {
         assert_eq!(reconciled["state"], "SHARED_RUNTIME_UPDATE_RECONCILED", "{reconciled}");
         assert_eq!(reconciled["runtime_version"], "0.3.62");
         assert_eq!(reconciled["runtime_restarted"], false);
+        assert_eq!(reconciled["current_receiving_bindings"], "PRESERVED");
         assert!(fixture.child.try_wait().unwrap().is_none());
         assert_eq!(SecureStateStore::read_snapshot(&directory.join("bootstrap.state"), 65536).unwrap(), launch_before);
         assert_eq!(history(), retained);
@@ -933,6 +949,7 @@ mod process_tests {
             &SecureStateStore::read_snapshot(&update_path, 2 * 1024 * 1024).unwrap()).unwrap();
         assert!(reconciled_record.phase == SharedPhase::Reconciled);
         assert_eq!(reconciled_record.rollback, saved.rollback);
+        assert_eq!(serde_json::to_value(&reconciled_record.hosts).unwrap(), serde_json::to_value(&saved.hosts).unwrap());
         let mut expected = saved.policy.unwrap();
         expected.launcher = Some(Launcher::capture(fixture.previous.clone()).unwrap());
         assert_eq!(crate::runtime_startup::read(directory).unwrap(), Some(expected));
@@ -940,6 +957,8 @@ mod process_tests {
         let upgraded = fixture.cli_shared(&fixture.previous);
         assert_eq!(upgraded["state"], "SHARED_RUNTIME_UPDATE_COMPLETE", "{upgraded}");
         assert_eq!(upgraded["runtime_version"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(inventory_tests::names(&upgraded), ["replacement", "added"]);
+        assert_eq!(SecureStateStore::read_snapshot(&directory.join("runtime-hosts.state"), 512 * 1024).unwrap(), host_overlay_before);
         assert_eq!(history(), retained);
         assert_eq!(read_result().await, retained_result);
     }
