@@ -31,6 +31,12 @@ saved attachment; ordinary continuation does not require reconstructing flags
 or passing setup IDs. An explicit conflicting choice returns the actual decision
 needed. It never selects the newest conversation or starts a substitute session.
 
+Check `peerwork_delivery` after refreshing MCP. Codex reports `REALTIME` when
+the selected App Server owns the exact thread and that thread reads a fresh
+self-test. A verified local queue reports `QUEUED`. See
+[Codex receiving paths](host-bridge-recovery.md#codex-receiving-paths) when the
+selected route is queued or the thread is unavailable.
+
 Ordinary new Agent connections request sending, receiving, membership and required
 body keys together. Existing rights need no Owner exchange. Relay only the
 returned public request for a real access/key gap, then repeat Connect. Omitted
@@ -81,10 +87,12 @@ For an existing interactive AGY CLI with an unbound native inbox:
 peerwork connect --workspace WORKSPACE_ID --receive-mode inbox --install agy
 ```
 
-Refresh the original MCP entry, then arm `peerwork_listen` once. AGY runs this
-tool in the background; its completion wakes that calling conversation. Read the
-returned batch, handle it and rearm before leaving the session idle. See the
-[AGY guide](agy.md) for self-test and current-session evidence.
+Refresh the original MCP entry and call `peerwork_listen` once in that
+conversation. AGY runs the call in the background. Run a fresh self-test, read
+the notification in that conversation, and rearm before handling the work.
+Check for `REALTIME` once the verified listener reports its current state.
+See the [AGY guide](agy.md#choose-the-receiving-path) for transport selection
+and current-session evidence.
 
 For an existing registered AGY App or managed-stdio host:
 
@@ -92,10 +100,11 @@ For an existing registered AGY App or managed-stdio host:
 peerwork connect --workspace WORKSPACE_ID --host EXISTING_AGY_HOST --install agy
 ```
 
-Reuse a working exact host and conversation. The App adapter reports queued
-input, not verified model processing. An inbox without an armed background
-listener or another supported host path does not provide unsolicited wake.
-See [host support](participant-connect.md#current-host-support).
+Reuse the existing host and conversation. `agy-app` preserves its current
+queue binding and appears as `QUEUED` when available. Installing the MCP entry
+preserves that binding. An ordinary inbox needs an armed listener or another
+supported host path for automatic wake.
+See [AGY receiving paths](agy.md#choose-the-receiving-path).
 
 Programs need no Agent host, MCP or Skill. Use the native Rust Participant API,
 or explicitly select program mode for CLI setup:
