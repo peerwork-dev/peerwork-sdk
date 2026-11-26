@@ -318,6 +318,7 @@ mod linux {
             None => None,
         };
         let mut servers = Map::new();
+        let mut selected = json!({"command":entry["command"],"args":entry["args"],"enabled":true});
         for (server, old) in existing.into_iter().flatten() {
             if server == name {
                 // A collision must not inherit a different command, remote
@@ -330,18 +331,21 @@ mod linux {
                 {
                     return Err("CODEX_SESSION_MCP_NAME_CONFLICT");
                 }
+                for field in [
+                    "tools",
+                    "enabled_tools",
+                    "disabled_tools",
+                    "default_tools_approval_mode",
+                ] {
+                    if let Some(value) = old.get(field).filter(|value| !value.is_null()) {
+                        selected[field] = value.clone();
+                    }
+                }
             } else {
                 servers.insert(server.clone(), json!({"enabled": false}));
             }
         }
-        servers.insert(
-            name.into(),
-            json!({
-                "command": entry["command"],
-                "args": entry["args"],
-                "enabled": true,
-            }),
-        );
+        servers.insert(name.into(), selected);
         Ok(json!({"mcp_servers": servers}))
     }
 
@@ -667,9 +671,12 @@ mod linux {
         #[test]
         fn managed_mcp_uses_only_the_selected_peer() {
             let entry = json!({"command":"/opt/peerwork","args":["--participant","peer-b"]});
+            let mut configured = entry.clone();
+            configured["tools"] = json!({"peerwork_reply":{"approval_mode":"approve"}});
+            configured["disabled_tools"] = json!(["peerwork_act"]);
             let config = json!({"mcp_servers":{
                 "peerwork-a":{"command":"/opt/peerwork","args":["--participant","peer-a"]},
-                "peerwork-b":entry,
+                "peerwork-b":configured,
                 "an_inherited_server":{"url":"https://example.invalid/mcp"},
             }});
             let view = mcp_overrides(&config, "peerwork-b", &entry).unwrap();
@@ -680,6 +687,14 @@ mod linux {
             );
             assert_eq!(view["mcp_servers"]["peerwork-b"]["enabled"], true);
             assert_eq!(view["mcp_servers"]["peerwork-b"]["args"], entry["args"]);
+            assert_eq!(
+                view["mcp_servers"]["peerwork-b"]["tools"],
+                configured["tools"]
+            );
+            assert_eq!(
+                view["mcp_servers"]["peerwork-b"]["disabled_tools"],
+                configured["disabled_tools"]
+            );
             assert_eq!(
                 mcp_overrides(&config, "peerwork-a", &entry),
                 Err("CODEX_SESSION_MCP_NAME_CONFLICT")

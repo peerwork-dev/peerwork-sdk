@@ -326,7 +326,7 @@ async fn independent_managed_codex_and_opencode_sessions() {
                     &workspace,
                     install::Installation {
                         host: harness.into(),
-                        project: project.clone(),
+                        project,
                         executable: cli.clone(),
                     },
                 )
@@ -334,11 +334,16 @@ async fn independent_managed_codex_and_opencode_sessions() {
             if harness == "codex" {
                 use std::io::Write;
                 let name = installed["server_name"].as_str().unwrap();
+                let home = PathBuf::from(std::env::var_os("PEERWORK_TEST_CODEX_HOME").unwrap());
+                assert_eq!(
+                    std::env::var_os("CODEX_HOME").as_deref(),
+                    Some(home.as_os_str())
+                );
                 // The TEST operator authorizes exactly its synthetic reply.
                 // Managed launch must preserve this host tool approval policy.
                 let mut config = std::fs::OpenOptions::new()
                     .append(true)
-                    .open(project.join(".codex/config.toml"))
+                    .open(home.join("config.toml"))
                     .unwrap();
                 writeln!(
                     config,
