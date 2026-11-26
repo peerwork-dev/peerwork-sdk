@@ -3,7 +3,9 @@ use crate::{
     agent_lifecycle::Lifecycle,
     agent_tools::AgentRequest,
     communication_runtime as ipc,
-    participant::http_tests::{configuration, install_synthetic_key, mutate, selected, Service},
+    participant::http_tests::{
+        configuration, install_synthetic_key, mutate, selected, structure, wait_terminal, Service,
+    },
     participant::{ParticipantClient, ParticipantConfig},
 };
 use std::time::Duration;
@@ -171,9 +173,14 @@ async fn independent_managed_codex_and_opencode_sessions() {
                 json!({"actor_id":config.expected_actor,"state":"ACTIVE","expected_membership_id":null}),
             );
             join.expected_workspace_revision = current["workspace_revision"].as_u64();
+            let id = join.operation_id.clone();
             let accepted = author.invoke(join, Duration::from_secs(5)).await.unwrap();
-            assert_eq!(accepted.state, "ACCEPTED", "{accepted:?}");
-            accepted.outcome.unwrap()["result"]["structure"]["membership_id"].clone()
+            let outcome = if accepted.is_terminal() {
+                accepted
+            } else {
+                wait_terminal(&author, &id).await
+            };
+            structure(&outcome)["membership_id"].clone()
         };
         mutate(&author,&format!("mail-{}", config.expected_actor),"structure.communication.grant.set",&scope,
             json!({"actor_id":config.expected_actor,"membership_id":membership,"expected_revision":null,
