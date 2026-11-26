@@ -294,7 +294,7 @@ pub fn verify_http_response_for_prepared(
         },
         result_path,
     )?;
-    let terminal=structured&&verify_structure_terminal(result,prepared)?;
+    let terminal=structured&&verify_structure_terminal(result,&command,prepared)?;
     if structured && !terminal && command.get("action_id").and_then(WireValue::as_string).as_deref() == Some("structure.operation.get") {
         verify_structure_lookup(result, &command, prepared, receipt_key_id,proofs)?;
     }
@@ -304,7 +304,7 @@ pub fn verify_http_response_for_prepared(
 
 /// Terminal observations have a deliberately small schema. They cannot carry
 /// records/state while bypassing the normal selected-author checks.
-fn verify_structure_terminal(result:&WireValue,prepared:&VerifiedPreparedCommand)->Result<bool,VerifyWireReceiptError>{
+fn verify_structure_terminal(result:&WireValue,command:&WireValue,prepared:&VerifiedPreparedCommand)->Result<bool,VerifyWireReceiptError>{
     let invalid=||VerifyWireReceiptError::Mismatch;
     // A lookup can wrap the original operation's rejection; verify that full
     // nested receipt instead of treating the observation as a direct refusal.
@@ -324,6 +324,10 @@ fn verify_structure_terminal(result:&WireValue,prepared:&VerifiedPreparedCommand
     for key in ["code","recovery"]{let value=ascii_field(error,key).ok_or_else(invalid)?;if value.is_empty()||value.len()>100||!value.bytes().all(|b|b.is_ascii_uppercase()||b.is_ascii_digit()||b==b'_'){return Err(invalid());}}
     if error.get("http_status").is_some()&&number(error,"http_status").is_none_or(|v|!(400..=599).contains(&v)){return Err(invalid());}
     if let Some(details)=error.get("details") {
+        if !committed&&phase=="EXECUTION"&&ascii_field(error,"code").as_deref()==Some("STALE_REVISION") {
+            verify_action_conflict(details,command)?;
+            return Ok(true);
+        }
         if phase!="AUTHORIZATION"||committed{return Err(invalid());}
         let WireValue::Object(fields)=details else{return Err(invalid());};
         for(key,value)in fields {
@@ -348,6 +352,31 @@ fn verify_structure_terminal(result:&WireValue,prepared:&VerifiedPreparedCommand
     }
     if committed&&(phase!="RESULT_ACCESS"||ascii_field(error,"code").as_deref()!=Some("OUTCOME_RECORDED_ACCESS_DENIED")||ascii_field(error,"recovery").as_deref()!=Some("REQUEST_ACCESS_AND_READ_ORIGINAL_OUTCOME")){return Err(invalid());}
     Ok(true)
+}
+
+fn verify_action_conflict(details:&WireValue,command:&WireValue)->Result<(),VerifyWireReceiptError>{
+    let invalid=||VerifyWireReceiptError::Mismatch;
+    let body=command.get("body").ok_or_else(invalid)?;
+    if ascii_field(command,"action_id").as_deref()!=Some("structure.action")
+        ||body.get("revision_conflict_details")!=Some(&WireValue::Bool(true))
+        ||details.object_len()!=Some(4){return Err(invalid());}
+    let context=ascii_field(body,"execution_context_id").or_else(||ascii_field(command,"instance_id"));
+    if context.is_none()||ascii_field(details,"execution_context_id")!=context{return Err(invalid());}
+    let revision=|field| match details.get(field) {
+        Some(WireValue::Null)=>Ok(None),
+        _=>number(details,field).filter(|value|*value<=9_007_199_254_740_991).map(Some).ok_or_else(invalid),
+    };
+    let expected=revision("expected_revision")?;
+    let actual=revision("actual_revision")?;
+    let valid=match ascii_field(details,"conflict_scope").as_deref(){
+        Some("INSTANCE_CONTROL")=>expected.is_some()&&actual.is_some()&&expected!=actual&&expected==number(command,"expected_instance_revision"),
+        Some("EXECUTION_BINDING")=>actual.is_some()&&expected==number(body,"expected_binding_revision"),
+        Some("GRANT")=>expected.is_some()&&actual.is_some()&&expected!=actual,
+        Some("RECORD_HEAD")=>expected.is_some()||actual.is_some(),
+        Some("WORKFLOW_STATE"|"WORKFLOW_ASSIGNEES")=>expected.is_none()&&actual.is_none(),
+        _=>false,
+    };
+    if valid {Ok(())} else {Err(invalid())}
 }
 
 fn source_matches(source:&WireValue,author:&VerifiedStructureAuthorIntent)->bool {
@@ -1009,6 +1038,16 @@ fn verify_structure_lookup(result: &WireValue, command: &WireValue, prepared: &V
                 audience_utf16:prepared.audience_utf16(), receipt_key_id:receipt_key, actor_id:prepared.actor_id(),
                 command_id:&command_id, intent_digest:&intent_digest, workspace_id:workspace.as_deref(), protocol_digest:protocol.as_deref(),
             }, Path::STRUCTURED)?;
+            if let Some(error)=inner.get("error") {
+                if ascii_field(error,"phase").as_deref()==Some("EXECUTION")&&ascii_field(error,"code").as_deref()==Some("STALE_REVISION") {
+                    if let Some(details)=error.get("details") {
+                        let jws=ascii_field(inner,"author_intent").ok_or_else(invalid)?;
+                        let author=verify_structure_author_intent_with_proofs(&jws,prepared.audience_utf16(),proofs).map_err(|_|invalid())?;
+                        if author.actor_id()!=prepared.actor_id()||author.command_id()!=command_id||author.intent_digest()!=intent_digest{return Err(invalid());}
+                        verify_action_conflict(details,author.command())?;
+                    }
+                }
+            }
         }
         _ => return Err(invalid()),
     }

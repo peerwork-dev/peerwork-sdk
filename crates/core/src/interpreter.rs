@@ -83,7 +83,7 @@ pub(crate) fn validate_manifest(manifest: &WireValue) -> Result<(), EvalError> {
         shape(
             action,
             &["id", "reads", "writes", "revisionEffects", "variants"],
-            &["inputs"],
+            &["inputs", "concurrency"],
         )?;
         let id = units(field(action, "id")?)?;
         if id.is_empty() || id.len() > 120 || !ids.insert(id.to_vec()) {
@@ -97,6 +97,14 @@ pub(crate) fn validate_manifest(manifest: &WireValue) -> Result<(), EvalError> {
         let revision = field(action, "revisionEffects")?;
         shape(revision, &["control", "contentEntities"], &[])?;
         let control = boolean(field(revision, "control")?)?;
+        let record_scoped = match action.get("concurrency") {
+            None => false,
+            Some(value) if ascii(value)?.as_str() == "RECORD_HEADS" => true,
+            Some(_) => return Err(EvalError::InvalidPayload),
+        };
+        if record_scoped && (control || !reads.is_empty() || !writes.is_empty()) {
+            return Err(EvalError::InvalidPayload);
+        }
         let content = segments(field(revision, "contentEntities")?, 8)?;
         if !unique(&content) {
             return Err(EvalError::InvalidPayload);
@@ -110,6 +118,9 @@ pub(crate) fn validate_manifest(manifest: &WireValue) -> Result<(), EvalError> {
         }
         for variant in variants {
             shape(variant, &["when", "effects"], &[])?;
+            if record_scoped && reads_shared_state(variant) {
+                return Err(EvalError::InvalidPayload);
+            }
             let when = array(field(variant, "when")?)?;
             let effects = array(field(variant, "effects")?)?;
             if when.len() > 32 || effects.len() > 16 {
@@ -141,6 +152,14 @@ pub(crate) fn validate_manifest(manifest: &WireValue) -> Result<(), EvalError> {
             }
             for effect in effects {
                 validate_effect(effect, &reads, &writes, &record_slots, &entity_slots)?;
+                if record_scoped {
+                    match ascii(field(effect, "op")?)?.as_str() {
+                        "select_head" => (),
+                        "append" if effect.get("entity").and_then(|value| value.get("mode")).and_then(WireValue::as_string).as_deref()!=Some("revise")
+                            || effect.get("selectHead")==Some(&WireValue::Bool(true)) => (),
+                        _ => return Err(EvalError::InvalidPayload),
+                    }
+                }
             }
             if !control
                 && content.is_empty()
@@ -156,6 +175,24 @@ pub(crate) fn validate_manifest(manifest: &WireValue) -> Result<(), EvalError> {
         }
     }
     Ok(())
+}
+
+fn reads_shared_state(value: &WireValue) -> bool {
+    match value {
+        WireValue::Array(items) => items.iter().any(reads_shared_state),
+        WireValue::Object(fields) => {
+            let from = value.get("from").and_then(WireValue::as_string);
+            if from.as_deref() == Some("literal") {
+                return false;
+            }
+            let state_reference = (from.as_deref() == Some("ref")
+                || value.get("op").and_then(WireValue::as_string).as_deref() == Some("exact_ref_list"))
+                && value.get("source").and_then(WireValue::as_string).as_deref() == Some("state");
+            from.as_deref() == Some("state") || state_reference
+                || fields.iter().any(|(_, child)| reads_shared_state(child))
+        }
+        _ => false,
+    }
 }
 
 fn walk_manifest(value: &WireValue, depth: usize, nodes: &mut usize) -> Result<(), EvalError> {

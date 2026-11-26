@@ -45,6 +45,19 @@ business fixture. The shared Participant helper returns its native result envelo
 use `result.value` as the fixture for a subsequent simulate request. It creates
 no mutation intent and makes no HTTP request. No additional runtime is started.
 
+## Declare record-scoped concurrency
+
+Use `concurrency: RECORD_HEADS` on an action whose variants only append records
+or select record heads. Its declared shared state reads and writes must be empty,
+and `revisionEffects.control` must be false. An append that revises an entity
+must select its new head. Keep historical evidence as exact references. For
+mutable business conditions that the service must evaluate together, use a
+stateful action and its execution-context revision.
+
+The Workbench validates the declaration during package evaluation. Service
+qualification should submit two competing actions from the same read snapshot,
+using both independent and overlapping target records.
+
 ## Versions and real business conversion
 
 Protocol authoring, identity migration and business conversion remain separate.

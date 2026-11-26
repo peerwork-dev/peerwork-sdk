@@ -498,6 +498,23 @@ impl KernelClient {
         } else {
             let mut bytes=[0u8;32];OsRng.try_fill_bytes(&mut bytes).map_err(|_| invalid())?;base64url(&bytes)
         };
+        if action=="structure.action" {
+            let supported=self.discovery.protocol_features().contains(&peerwork_core::structure_execution::ACTION_REVISION_DIAGNOSTICS_FEATURE.encode_utf16().collect::<Vec<_>>());
+            if body.get("revision_conflict_details").is_some_and(|value|value!=&WireValue::Bool(true)){return Err(invalid());}
+            // Capability changes may affect new operations only. Keep the
+            // receipt format inside the original signed business intent.
+            let saved=self.journal.verified_pending(&command_id,identity.key_id(),self.discovery.audience_utf16())?;
+            if saved.is_none()&&request.get("expected_instance_revision").is_none_or(|value|matches!(value,WireValue::Null))
+                && !self.discovery.protocol_features().contains(&peerwork_core::structure_execution::ACTION_RECORD_CONCURRENCY_FEATURE.encode_utf16().collect::<Vec<_>>()){
+                return Err(KernelClientError::UnsupportedStructureProfile);
+            }
+            let selected=if let Some(saved)=saved {
+                let original=parse_wire_json_bounded(saved.proof.command_canonical_json().as_bytes(),40,180000).map_err(|_|JournalError::IncompatibleStore)?;
+                original.get("body").and_then(|value|value.get("revision_conflict_details"))==Some(&WireValue::Bool(true))
+            }else{supported};
+            if !selected&&body.get("revision_conflict_details").is_some(){return Err(KernelClientError::UnsupportedStructureProfile);}
+            if selected {set(&mut body,"revision_conflict_details",WireValue::Bool(true));}
+        }
         let mut command = WireValue::Object(Vec::new());
         for (key, value) in [
             ("v", WireValue::Number(1.0)), ("audience", WireValue::String(self.discovery.audience_utf16().to_vec())),

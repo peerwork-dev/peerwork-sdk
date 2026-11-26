@@ -89,6 +89,57 @@ impl Drop for Service {
         let _ = self.child.wait();
     }
 }
+
+#[tokio::test]
+#[ignore = "requires isolated PostgreSQL and the HTTP product fixture"]
+async fn revision_conflict_is_verified_and_recovered_by_original_id() {
+    let service=Service::start();
+    let directory=crate::test_support::protected_test_dir();
+    let identity=KernelIdentity::create(&directory.path().join("identity")).unwrap();
+    let journal=directory.path().join("journal.sqlite");
+    let config=||{
+        let mut config=crate::transport::TransportConfig::new(&service.origin);
+        config.allow_loopback_http=true;
+        config
+    };
+    let cancel=tokio_util::sync::CancellationToken::new();
+    let mut client=crate::kernel_client::KernelClient::open(config(),&journal,&[],&cancel).await.unwrap();
+    let authority=peerwork_core::crypto::sha256_hex(identity.actor_id().as_bytes());
+    let accepted=|outcome| match outcome {
+        crate::kernel_client::StructureIntentOutcome::Accepted(value)=>value,
+        other=>panic!("expected a verified receipt: {other:?}"),
+    };
+    let create=json!({"action":"structure.workspace.create","idempotency_key":"workspace","body":{"name":"Revision conflict"}});
+    let workspace=accepted(client.execute_structure_intent(&identity,&authority,create.to_string().as_bytes(),&cancel).await.unwrap()).workspace_id.unwrap();
+    let manifest=json!({"name":"revision-conflict","display_version":"1","semantics":"peerwork.kernel.v1","dependencies":[],
+        "initial_state":{"count":0},"record_schemas":{"note":{"type":"object","fields":{"text":"string"},"required":["text"],"max_bytes":128}},
+        "actions":[{"id":"advance","reads":[],"writes":[["count"]],"revisionEffects":{"control":true,"contentEntities":[]},
+            "variants":[{"when":[],"effects":[{"op":"set","path":["count"],"value":{"from":"literal","value":1}}]}]},
+         {"id":"append","reads":[],"writes":[],"concurrency":"RECORD_HEADS","revisionEffects":{"control":false,"contentEntities":[]},
+            "variants":[{"when":[],"effects":[{"op":"append","schema":"note","value":{"from":"literal","value":{"text":"note"}},"relations":[]}]}]}]});
+    let adopt=json!({"action":"structure.adopt","workspace_id":workspace,"idempotency_key":"adopt","body":{"manifest":manifest,"bootstrap_grant":{"actions":["advance","append"]}}});
+    let adopted=accepted(client.execute_structure_intent(&identity,&authority,adopt.to_string().as_bytes(),&cancel).await.unwrap());
+    let mut action=json!({"action":"structure.action","workspace_id":workspace,"instance_id":adopted.instance_id,"protocol_digest":adopted.protocol_digest,"idempotency_key":"first","expected_instance_revision":1,"body":{"action_id":"advance","structure":{}}});
+    assert_eq!(accepted(client.execute_structure_intent(&identity,&authority,action.to_string().as_bytes(),&cancel).await.unwrap()).outcome_state(),"ACCEPTED");
+    action["idempotency_key"]=json!("stale");
+    let refusal=accepted(client.execute_structure_intent(&identity,&authority,action.to_string().as_bytes(),&cancel).await.unwrap());
+    let details=crate::kernel_client::OperationRefusal::from_verified(&refusal).unwrap();
+    assert_eq!(details.server_code,"STALE_REVISION");
+    assert_eq!(details.effect_certainty,"NOT_APPLIED");
+    assert_eq!(details.details,Some(json!({"conflict_scope":"INSTANCE_CONTROL","execution_context_id":action["instance_id"],"expected_revision":1,"actual_revision":2})));
+    drop(client);
+    let mut reopened=crate::kernel_client::KernelClient::open(config(),&journal,&[],&cancel).await.unwrap();
+    let recovered=reopened.read_saved_structure_result(&identity,&authority,&refusal.command_id,&cancel).await.unwrap();
+    assert_eq!(recovered,refusal);
+    let repeated=accepted(reopened.execute_structure_intent(&identity,&authority,action.to_string().as_bytes(),&cancel).await.unwrap());
+    assert_eq!(repeated,refusal);
+    action["idempotency_key"]=json!("append");
+    action["body"]["action_id"]=json!("append");
+    action.as_object_mut().unwrap().remove("expected_instance_revision");
+    let appended=accepted(reopened.execute_structure_intent(&identity,&authority,action.to_string().as_bytes(),&cancel).await.unwrap());
+    assert_eq!(appended.outcome_state(),"ACCEPTED");
+    assert_eq!(appended.produced_record_ids.len(),1);
+}
 pub(crate) fn configuration(directory: &std::path::Path, origin: &str) -> ParticipantConfig {
     let path = directory.join("identity");
     let identity = KernelIdentity::create(&path).unwrap();

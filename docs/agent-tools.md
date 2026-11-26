@@ -37,6 +37,25 @@ not establish model processing or business completion.
 | Inspect or resume the original mutation | `peerwork_status`, `peerwork_recover` with its exact `recovery_arguments` |
 | Request/approve genuinely missing participation rights | `peerwork_connect`, `peerwork_connect_approve` when setup is available on the selected lifecycle |
 
+## Check revisions before writing
+
+For a stateful action, take `expected_revision` from the same execution context
+selected for `peerwork_act`. An existing task can retain an earlier context
+after the instance's default changes. Select the record or its execution context
+when reading its state. Preserve the exact task and seat references involved in
+the action.
+
+An action that declares `concurrency: RECORD_HEADS` can omit
+`expected_revision` on a service that advertises `action-record-concurrency-v1`.
+The service still checks current record heads for head-changing operations.
+Fixed historical references remain exact inputs. A supplied instance revision
+keeps the original strict version check.
+
+When supported, signed `STALE_REVISION` details identify the execution context,
+the failed check and available revision values. If the operation's outcome is
+unknown, recover it with the original ID. A verified rejection without effect
+allows a fresh read and a new intent when the requested change still applies.
+
 ## Discover management without assembling a client
 
 ```json

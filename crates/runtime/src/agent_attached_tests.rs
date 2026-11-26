@@ -100,7 +100,7 @@ async fn attached_business_action_uses_original_operation_namespace_and_capabili
     let tools = AgentTools::from_client(worker.clone(), selection.clone()).unwrap();
     let action = || AgentRequest::Act { execution_context_id: None,record_id: None,
         protocol: "tasks".into(), operation_id: "same-intent".into(), action: "task.report".into(),
-        structure: json!({"kind":"PROGRESS"}), plaintext_contents: None, expected_revision: 1, exact_input_refs: vec![], wait_ms: 0,
+        structure: json!({"kind":"PROGRESS"}), plaintext_contents: None, expected_revision: Some(1), exact_input_refs: vec![], wait_ms: 0,
     };
     // Existing admission reuses its exact original namespace offline. Fresh
     // execution selection is covered by the real HTTP protocol acceptance.

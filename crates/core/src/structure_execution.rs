@@ -3,6 +3,8 @@
 
 pub const PROFILE: &str = "backend-structure-v1";
 pub const PROTOCOL_UPGRADE_FEATURE: &str = "protocol-instance-upgrade-v1";
+pub const ACTION_REVISION_DIAGNOSTICS_FEATURE: &str = "action-revision-diagnostics-v1";
+pub const ACTION_RECORD_CONCURRENCY_FEATURE: &str = "action-record-concurrency-v1";
 
 /// Historical Owner checkpoint evidence is authenticated on reads, but is
 /// never a supported online mutation or a locally resumable transport intent.
