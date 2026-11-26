@@ -487,6 +487,22 @@ pub(crate) fn codex_session(mut config: Value, id: &str, executor: tokio::runtim
     Ok(json!({"sessions":[session],"next_cursor":null,"complete":true,"selection":"EXACT_THREAD_ID"}))
 }
 
+#[cfg(target_os = "linux")]
+pub(crate) fn codex_owned_thread_idle(config: Value, executor: tokio::runtime::Handle) -> R<bool> {
+    let thread = text(&config, "thread_id")?;
+    let session = text(&config, "expected_session_id")?;
+    let mut client = Codex::channel(&config, executor)?;
+    let loaded = client.rpc("thread/loaded/list", json!({"limit": 2}))?;
+    if loaded["data"] != json!([thread]) || !loaded["nextCursor"].is_null() {
+        return Err("CODEX_SESSION_HOST_NOT_OWNED");
+    }
+    let result = client.rpc("thread/read", json!({"threadId":thread,"includeTurns":false}))?;
+    let observed = codex_session_summary(&result["thread"], thread)?
+        .filter(|value| value["session_id"] == session)
+        .ok_or("CODEX_SESSION_HOST_NOT_OWNED")?;
+    Ok(observed["status"]["type"] == "idle")
+}
+
 pub(crate) fn codex_sessions(mut config: Value, executor: tokio::runtime::Handle) -> R<Value> {
     config["thread_id"] = json!("");
     let mut client = Codex::channel(&config, executor)?;

@@ -30,20 +30,26 @@ pub(crate) fn tool() -> Value {
 impl SessionRequest {
     fn id(&self) -> &str {
         match self {
-            Self::Start { operation_id, .. } |
-            Self::Status { operation_id } |
-            Self::Stop { operation_id } => operation_id,
+            Self::Start { operation_id, .. }
+            | Self::Status { operation_id }
+            | Self::Stop { operation_id } => operation_id,
         }
     }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-enum Harness { Codex, Opencode }
+enum Harness {
+    Codex,
+    Opencode,
+}
 
 impl Harness {
     fn name(self) -> &'static str {
-        match self { Self::Codex => "codex", Self::Opencode => "opencode" }
+        match self {
+            Self::Codex => "codex",
+            Self::Opencode => "opencode",
+        }
     }
 }
 
@@ -65,15 +71,24 @@ struct Policy {
 
 impl Policy {
     fn read(directory: &Directory) -> Result<Option<Self>> {
-        let Some(wire) = directory.read(POLICY, 16 * 1024, true)? else { return Ok(None); };
+        let Some(wire) = directory.read(POLICY, 16 * 1024, true)? else {
+            return Ok(None);
+        };
         let policy: Self = decode(&wire)?;
-        if policy.format != "peerwork.session-launch.v1" || !identifier(&policy.controller)
-            || !token(&policy.workspace_id) || policy.peers.is_empty() || policy.peers.len() > 7
+        if policy.format != "peerwork.session-launch.v1"
+            || !identifier(&policy.controller)
+            || !token(&policy.workspace_id)
+            || policy.peers.is_empty()
+            || policy.peers.len() > 7
             || policy.peers.iter().any(|(peer, slot)| {
-                !identifier(peer) || peer == &policy.controller || match slot.harness {
-                    Harness::Codex => slot.service_file.is_some(),
-                    Harness::Opencode => slot.service_file.as_ref().is_none_or(|p| !p.is_absolute()),
-                }
+                !identifier(peer)
+                    || peer == &policy.controller
+                    || match slot.harness {
+                        Harness::Codex => slot.service_file.is_some(),
+                        Harness::Opencode => {
+                            slot.service_file.as_ref().is_none_or(|p| !p.is_absolute())
+                        }
+                    }
             })
         {
             return Err(problem("SESSION_LAUNCH_POLICY_INVALID"));
@@ -97,6 +112,7 @@ struct Selection {
 #[serde(deny_unknown_fields)]
 struct Job {
     selection: Selection,
+    source: WatchOptions,
     ownership: String,
     predecessor: Option<Value>,
     adapter: Option<Value>,
@@ -108,20 +124,27 @@ struct Job {
 type Jobs = BTreeMap<String, Job>;
 
 fn decode<T: serde::de::DeserializeOwned>(wire: &[u8]) -> Result<T> {
-    peerwork_core::strict_json::parse_strict_json(wire).ok()
+    peerwork_core::strict_json::parse_strict_json(wire)
+        .ok()
         .and_then(|value| serde_json::from_value(value).ok())
         .ok_or_else(|| problem("SESSION_CONFIGURATION_INVALID"))
 }
 
 fn jobs(store: &Store) -> Result<Jobs> {
-    let Some(wire) = store.read_exact()? else { return Ok(Jobs::new()); };
-    if wire.len() > STATE_LIMIT { return Err(problem("SESSION_STATE_INVALID")); }
+    let Some(wire) = store.read_exact()? else {
+        return Ok(Jobs::new());
+    };
+    if wire.len() > STATE_LIMIT {
+        return Err(problem("SESSION_STATE_INVALID"));
+    }
     decode(&wire)
 }
 
 fn save(store: &Store, jobs: &Jobs) -> Result<()> {
     let wire = serde_json::to_vec(jobs).map_err(|_| problem("SESSION_STATE_INVALID"))?;
-    if wire.len() > STATE_LIMIT { return Err(problem("SESSION_HISTORY_LIMIT")); }
+    if wire.len() > STATE_LIMIT {
+        return Err(problem("SESSION_HISTORY_LIMIT"));
+    }
     store.write_exact(&wire)
 }
 
@@ -133,14 +156,39 @@ fn outcome(id: &str, job: &Job, state: &str, code: &str) -> Value {
         "model_response":"NOT_ATTESTED"})
 }
 
+fn on_original_source(job: &Job, watch: &WatchOptions) -> bool {
+    let mut original = job.source.clone();
+    original
+        .host_destination
+        .clone_from(&watch.host_destination);
+    original == *watch
+}
+
 impl Connect {
-    pub(crate) fn managed_sessions_available(&self, caller: Option<&str>, workspace: Option<&str>) -> bool {
-        cfg!(target_os = "linux") && Policy::read(&self.private_directory).ok().flatten()
-            .is_some_and(|policy| self.authorized_controller(&policy, caller, workspace).is_ok())
+    pub(crate) fn managed_sessions_available(
+        &self,
+        caller: Option<&str>,
+        workspace: Option<&str>,
+    ) -> bool {
+        cfg!(target_os = "linux")
+            && Policy::read(&self.private_directory)
+                .ok()
+                .flatten()
+                .is_some_and(|policy| {
+                    self.authorized_controller(&policy, caller, workspace)
+                        .is_ok()
+                })
     }
 
-    fn authorized_controller(&self, policy: &Policy, caller: Option<&str>, workspace: Option<&str>) -> Result<()> {
-        if caller != Some(policy.controller.as_str()) || workspace != Some(policy.workspace_id.as_str()) {
+    fn authorized_controller(
+        &self,
+        policy: &Policy,
+        caller: Option<&str>,
+        workspace: Option<&str>,
+    ) -> Result<()> {
+        if caller != Some(policy.controller.as_str())
+            || workspace != Some(policy.workspace_id.as_str())
+        {
             return Err(problem("SESSION_CONTROLLER_NOT_AUTHORIZED"));
         }
         if self.profile_for_scope(caller, workspace)?.is_none() {
@@ -150,151 +198,305 @@ impl Connect {
     }
 
     fn managed_setup(&self, peer: &str, space: &str) -> Result<&Setup> {
-        self.registry.active_by_scope.get(&format!("{peer}:{space}"))
+        self.registry
+            .active_by_scope
+            .get(&format!("{peer}:{space}"))
             .and_then(|id| self.registry.setups.get(id))
-            .filter(|setup| setup.channel_receive
-                && setup.profile.as_ref().is_some_and(|p| p.receive_endpoint_path.is_some()))
+            .filter(|setup| {
+                setup.channel_receive
+                    && setup
+                        .profile
+                        .as_ref()
+                        .is_some_and(|p| p.receive_endpoint_path.is_some())
+            })
             .ok_or_else(|| problem("SESSION_PEER_INBOX_REQUIRED"))
     }
 
     fn host_of(&self, setup: &Setup) -> Option<&Value> {
-        setup.effective_host.as_ref().and_then(|name| self.registry.hosts.get(name)).map(|host| &host.adapter)
+        setup
+            .effective_host
+            .as_ref()
+            .and_then(|name| self.registry.hosts.get(name))
+            .map(|host| &host.adapter)
     }
 }
 
 #[cfg(target_os = "linux")]
 impl Connect {
-    async fn managed_receiver(&self, selection: &Selection) -> Result<(RuntimeClient, WatchOptions)> {
-        let profile = self.managed_setup(&selection.peer, &selection.workspace)?.profile.as_ref().unwrap();
-        if profile.expected_actor != selection.actor || profile.expected_origin != selection.origin {
+    async fn managed_receiver(
+        &self,
+        selection: &Selection,
+    ) -> Result<(RuntimeClient, WatchOptions)> {
+        let profile = self
+            .managed_setup(&selection.peer, &selection.workspace)?
+            .profile
+            .as_ref()
+            .unwrap();
+        if profile.expected_actor != selection.actor || profile.expected_origin != selection.origin
+        {
             return Err(problem("SESSION_PEER_BINDING_CHANGED"));
         }
         let client = RuntimeClient::connect(
             profile.receive_endpoint_path.as_ref().unwrap().clone(),
-            &selection.origin, &selection.actor,
-        ).await?;
-        let mut bindings: Vec<WatchOptions> = serde_json::from_value(client.call(json!({"method":"bindings"})).await?)
-            .map_err(|_| problem("SESSION_PEER_BINDINGS_INVALID"))?;
-        bindings.retain(|watch| watch.workspace_id == selection.workspace
-            && profile.scopes.values().any(|scope| scope.mailbox_id == watch.mailbox_id
-                && scope.membership_id == watch.membership_id));
-        if bindings.len() != 1 { return Err(problem("SESSION_PEER_SCOPE_REQUIRED")); }
+            &selection.origin,
+            &selection.actor,
+        )
+        .await?;
+        let mut bindings: Vec<WatchOptions> =
+            serde_json::from_value(client.call(json!({"method":"bindings"})).await?)
+                .map_err(|_| problem("SESSION_PEER_BINDINGS_INVALID"))?;
+        bindings.retain(|watch| {
+            watch.workspace_id == selection.workspace
+                && profile.scopes.values().any(|scope| {
+                    scope.mailbox_id == watch.mailbox_id
+                        && scope.membership_id == watch.membership_id
+                })
+        });
+        if bindings.len() != 1 {
+            return Err(problem("SESSION_PEER_SCOPE_REQUIRED"));
+        }
         Ok((client, bindings.pop().unwrap()))
     }
 
     async fn managed_delivery(&self, job: &Job, mode: &str) -> Result<Value> {
         let (receiver, watch) = self.managed_receiver(&job.selection).await?;
         let setup = self.managed_setup(&job.selection.peer, &job.selection.workspace)?;
-        if watch.host_destination.is_none() || self.host_of(setup) != job.adapter.as_ref() {
+        if !on_original_source(job, &watch)
+            || watch.host_destination.is_none()
+            || self.host_of(setup) != job.adapter.as_ref()
+        {
             return Err(problem("SESSION_RECEIVING_TARGET_CHANGED"));
         }
-        receiver.call(json!({"method":"delivery","mode":mode,"options":watch})).await
+        if mode != "status"
+            && self
+                .completed_host_binding(
+                    &setup.desired,
+                    setup,
+                    &serde_json::to_value(&watch)
+                        .map_err(|_| problem("SESSION_PEER_BINDINGS_INVALID"))?,
+                )
+                .await?
+                .is_none()
+        {
+            return Err(problem("SESSION_RECEIVING_TARGET_CHANGED"));
+        }
+        receiver
+            .call(json!({"method":"delivery","mode":mode,"options":watch}))
+            .await
     }
 
     async fn managed_status(&self, id: &str, job: &Job) -> Result<Value> {
-        if job.stopped { return Ok(outcome(id, job, "STOPPED", "SESSION_STOPPED")); }
-        if job.stopping { return Ok(outcome(id, job, "STOPPING", "REPEAT_MANAGED_SESSION_STOP")); }
-        let Some(after) = job.probe_after else { return Ok(outcome(id, job, "STARTING", "REPEAT_MANAGED_SESSION_START")); };
+        if job.stopped {
+            return Ok(outcome(id, job, "STOPPED", "SESSION_STOPPED"));
+        }
+        if job.stopping {
+            return Ok(outcome(id, job, "STOPPING", "REPEAT_MANAGED_SESSION_STOP"));
+        }
+        let Some(after) = job.probe_after else {
+            return Ok(outcome(id, job, "STARTING", "REPEAT_MANAGED_SESSION_START"));
+        };
         let delivery = match self.managed_delivery(job, "status").await {
             Ok(value) => value,
             Err(error) => return Ok(outcome(id, job, "RECOVERING", &error.code)),
         };
-        let ready = delivery["observations"].as_array().is_some_and(|observed| observed.len() == 1 && {
-            let value = &observed[0];
-            value["current_delivery"]["state"] == "READY"
-                && value["receiver"]["receiver_link_verified"] == true
-                && value["notification"]["automatic_receiving"] == "VERIFIED"
-                && value["notification"]["last_verified_at"].as_u64().is_some_and(|at| at >= after)
+        let ready = delivery["observations"].as_array().is_some_and(|observed| {
+            observed.len() == 1 && {
+                let value = &observed[0];
+                value["current_delivery"]["state"] == "READY"
+                    && value["receiver"]["receiver_link_verified"] == true
+                    && value["notification"]["automatic_receiving"] == "VERIFIED"
+                    && value["notification"]["last_verified_at"]
+                        .as_u64()
+                        .is_some_and(|at| at >= after)
+            }
         });
-        let mut result = outcome(id, job, if ready {"READY"}else{"STARTING"},
-            if ready {"SESSION_RECEIVING_VERIFIED"} else {"SESSION_RECEIVING_UNVERIFIED"});
-        result["delivery"] = delivery["observations"].as_array().and_then(|rows|rows.first())
-            .map(|value| value["current_delivery"].clone()).unwrap_or(Value::Null);
+        let mut result = outcome(
+            id,
+            job,
+            if ready { "READY" } else { "STARTING" },
+            if ready {
+                "SESSION_RECEIVING_VERIFIED"
+            } else {
+                "SESSION_RECEIVING_UNVERIFIED"
+            },
+        );
+        result["delivery"] = delivery["observations"]
+            .as_array()
+            .and_then(|rows| rows.first())
+            .map(|value| value["current_delivery"].clone())
+            .unwrap_or(Value::Null);
         Ok(result)
     }
 
     async fn start_managed(
-        &mut self, policy: &Policy, store: &Store, records: &mut Jobs, id: &str, peer: &str,
+        &mut self,
+        policy: &Policy,
+        store: &Store,
+        records: &mut Jobs,
+        id: &str,
+        peer: &str,
     ) -> Result<Value> {
-        let slot = policy.peers.get(peer).filter(|_| identifier(peer))
-            .ok_or_else(|| problem("SESSION_PEER_NOT_AUTHORIZED"))?.clone();
-        let registration = self.registry.participants.get(peer).ok_or_else(|| problem("SESSION_PEER_NOT_ENROLLED"))?;
+        let slot = policy
+            .peers
+            .get(peer)
+            .filter(|_| identifier(peer))
+            .ok_or_else(|| problem("SESSION_PEER_NOT_AUTHORIZED"))?
+            .clone();
+        let registration = self
+            .registry
+            .participants
+            .get(peer)
+            .ok_or_else(|| problem("SESSION_PEER_NOT_ENROLLED"))?;
         let controller = &self.registry.participants[&policy.controller];
-        if registration.actor_id == controller.actor_id || registration.origin != controller.origin {
+        if registration.actor_id == controller.actor_id || registration.origin != controller.origin
+        {
             return Err(problem("SESSION_INDEPENDENT_PEER_REQUIRED"));
         }
         let workspace = &policy.workspace_id;
-        let (project, name, entry) = install::session_installation(self, peer, workspace, slot.harness.name())?;
+        let (project, name, entry) =
+            install::session_installation(self, peer, workspace, slot.harness.name())?;
         let project_identity = Directory::open(&project)?.identity()?;
-        let selection = Selection { peer:peer.into(), workspace:workspace.clone(), actor:registration.actor_id.clone(),
-            origin:registration.origin.clone(), slot, project:project_identity };
+        let selection = Selection {
+            peer: peer.into(),
+            workspace: workspace.clone(),
+            actor: registration.actor_id.clone(),
+            origin: registration.origin.clone(),
+            slot,
+            project: project_identity,
+        };
         let mut job = match records.get(id) {
             Some(job) if job.selection == selection => job.clone(),
             Some(_) => return Err(problem("SESSION_OPERATION_ID_CONFLICT")),
             None => {
-                if records.len() >= 1024 { return Err(problem("SESSION_HISTORY_LIMIT")); }
-                if records.values().any(|job| !job.stopped && job.selection.actor == selection.actor
-                    && job.selection.workspace == *workspace) {
+                if records.len() >= 1024 {
+                    return Err(problem("SESSION_HISTORY_LIMIT"));
+                }
+                if records.values().any(|job| {
+                    !job.stopped
+                        && job.selection.actor == selection.actor
+                        && job.selection.workspace == *workspace
+                }) {
                     return Err(problem("SESSION_PEER_ALREADY_MANAGED"));
                 }
                 let (_, watch) = self.managed_receiver(&selection).await?;
                 let previous = self.host_of(self.managed_setup(peer, workspace)?).cloned();
                 if watch.host_destination.is_some() || previous.is_some() {
-                    let owned_stopped = previous.as_ref().is_some_and(|adapter| records.values().any(|job|
-                        job.stopped && job.selection == selection && job.adapter.as_ref() == Some(adapter)));
-                    if !owned_stopped { return Err(problem("SESSION_PEER_HAS_EXISTING_HOST_USE_HANDOFF")); }
+                    let owned_stopped = previous.as_ref().is_some_and(|adapter| {
+                        records.values().any(|job| {
+                            job.stopped
+                                && job.selection == selection
+                                && job.adapter.as_ref() == Some(adapter)
+                        })
+                    });
+                    if !owned_stopped {
+                        return Err(problem("SESSION_PEER_HAS_EXISTING_HOST_USE_HANDOFF"));
+                    }
                 }
-                let job = Job {selection, ownership:crate::communication_host::random_token().map_err(problem)?,
-                    predecessor:previous, adapter:None, probe_after:None, stopping:false, stopped:false};
+                let job = Job {
+                    selection,
+                    source: watch,
+                    ownership: crate::communication_host::random_token().map_err(problem)?,
+                    predecessor: previous,
+                    adapter: None,
+                    probe_after: None,
+                    stopping: false,
+                    stopped: false,
+                };
                 records.insert(id.into(), job.clone());
                 save(store, records)?;
                 job
             }
         };
-        if job.stopping { return self.managed_status(id, &job).await; }
+        if job.stopping {
+            return self.managed_status(id, &job).await;
+        }
         if job.probe_after.is_some() {
             let current = self.managed_status(id, &job).await?;
-            if current["state"] == "READY" { return Ok(current); }
+            if current["state"] == "READY"
+                && (job.selection.slot.harness != Harness::Codex
+                    || crate::participant_session_codex::running(&self.session_directory(id))
+                        .map_err(problem)?)
+            {
+                return Ok(current);
+            }
         }
         let key = format!("{peer}:{workspace}");
+        let (_, original_watch) = self.managed_receiver(&job.selection).await?;
+        if !on_original_source(&job, &original_watch) {
+            return Err(problem("SESSION_PEER_BINDING_CHANGED"));
+        }
         let phase_host = self.host_of(self.managed_setup(peer, workspace)?);
         if phase_host != job.predecessor.as_ref() && phase_host != job.adapter.as_ref()
             || self.codex_attachment_pending(peer, workspace)
-                && job.adapter.as_ref().is_none_or(|adapter| !self.codex_attachment_targets(&key, adapter))
+                && job
+                    .adapter
+                    .as_ref()
+                    .is_none_or(|adapter| !self.codex_attachment_targets(&key, adapter))
         {
             return Err(problem("SESSION_RECEIVING_TARGET_CHANGED"));
         }
         let admin = self.runtime_admin(peer, None).await?;
         let status = crate::communication_runtime::call(&admin, json!({"method":"status"})).await?;
-        if !status["value"]["optional_features"].as_array().is_some_and(|features|
-            features.iter().any(|feature| feature == "resident-scope-rebind-v1")) {
+        if !status["value"]["optional_features"]
+            .as_array()
+            .is_some_and(|features| {
+                features
+                    .iter()
+                    .any(|feature| feature == "resident-scope-rebind-v1")
+            })
+        {
             return Err(problem("SESSION_RESIDENT_RUNTIME_REQUIRED"));
         }
         let directory = self.session_directory(id);
         let adapter = match job.selection.slot.harness {
             Harness::Codex => {
-                if job.adapter.is_some() && !crate::participant_session_codex::running(&directory).map_err(problem)? {
+                if job.adapter.is_some()
+                    && !crate::participant_session_codex::running(&directory).map_err(problem)?
+                {
                     job.probe_after = None;
                     records.insert(id.into(), job.clone());
                     save(store, records)?;
                 }
-                crate::participant_session_codex::launch(&directory, &project, &name, &entry, job.adapter.as_ref()).await
+                crate::participant_session_codex::launch(
+                    &directory,
+                    &project,
+                    &name,
+                    &entry,
+                    job.adapter.as_ref(),
+                )
+                .await
             }
             Harness::Opencode => {
                 use crate::participant_session_opencode as host;
                 let file = job.selection.slot.service_file.as_ref().unwrap();
-                host::verify_setup(file.clone(), project.clone(), name, entry).await.map_err(problem)?;
+                host::verify_setup(file.clone(), project.clone(), name, entry)
+                    .await
+                    .map_err(problem)?;
                 let session = match &job.adapter {
                     Some(adapter) => {
-                        let session = adapter["session_id"].as_str().ok_or_else(|| problem("SESSION_STATE_INVALID"))?;
-                        host::validate(file.clone(), project.clone(), job.ownership.clone(), session.into()).await.map_err(problem)?;
+                        let session = adapter["session_id"]
+                            .as_str()
+                            .ok_or_else(|| problem("SESSION_STATE_INVALID"))?;
+                        host::validate(
+                            file.clone(),
+                            project.clone(),
+                            job.ownership.clone(),
+                            session.into(),
+                        )
+                        .await
+                        .map_err(problem)?;
                         session.to_owned()
                     }
-                    None => host::launch(file.clone(), project.clone(), job.ownership.clone(), true).await.map_err(problem)?,
+                    None => {
+                        host::launch(file.clone(), project.clone(), job.ownership.clone(), true)
+                            .await
+                            .map_err(problem)?
+                    }
                 };
                 Ok(host::adapter(file, &project, &session))
             }
-        }.map_err(problem)?;
+        }
+        .map_err(problem)?;
         if job.adapter.as_ref().is_some_and(|saved| saved != &adapter) {
             return Err(problem("SESSION_LAUNCH_TARGET_CHANGED"));
         }
@@ -303,19 +505,46 @@ impl Connect {
             records.insert(id.into(), job.clone());
             save(store, records)?;
         }
-        let attached = self.host_of(self.managed_setup(peer, workspace)?) == Some(&adapter);
+        let setup = self.managed_setup(peer, workspace)?;
+        let attached = self.host_of(setup) == Some(&adapter)
+            && original_watch.host_destination.is_some()
+            && self
+                .completed_host_binding(
+                    &setup.desired,
+                    setup,
+                    &serde_json::to_value(&original_watch)
+                        .map_err(|_| problem("SESSION_PEER_BINDINGS_INVALID"))?,
+                )
+                .await?
+                .is_some();
         if !attached {
             let setup = self.managed_setup(peer, workspace)?;
             let desired = if self.codex_attachment_targets(&key, &adapter) {
-                self.codex_original_invocation(peer, workspace).ok_or_else(|| problem("SESSION_STATE_INVALID"))?
+                self.codex_original_invocation(peer, workspace)
+                    .ok_or_else(|| problem("SESSION_STATE_INVALID"))?
             } else {
                 setup.desired.clone()
             };
-            let target = adapter["thread_id"].as_str().or_else(|| adapter["session_id"].as_str())
-                .ok_or_else(|| problem("SESSION_STATE_INVALID"))?.to_owned();
-            let attached = self.attach_selected_host(desired, adapter.clone(), &target,
-                Some(RuntimeSelection { admin_endpoint:admin, config_path:None })).await?;
-            if self.host_of(self.managed_setup(peer, workspace)?) != Some(&adapter) {
+            let target = adapter["thread_id"]
+                .as_str()
+                .or_else(|| adapter["session_id"].as_str())
+                .ok_or_else(|| problem("SESSION_STATE_INVALID"))?
+                .to_owned();
+            let attached = self
+                .attach_selected_host(
+                    desired,
+                    adapter.clone(),
+                    &target,
+                    Some(RuntimeSelection {
+                        admin_endpoint: admin,
+                        config_path: None,
+                    }),
+                )
+                .await?;
+            let (_, watched) = self.managed_receiver(&job.selection).await?;
+            if self.host_of(self.managed_setup(peer, workspace)?) != Some(&adapter)
+                || watched.host_destination.is_none()
+            {
                 let mut result = outcome(id, &job, "STARTING", "SESSION_ATTACHMENT_PENDING");
                 result["blocker"] = attached["blocker"].clone();
                 return Ok(result);
@@ -331,13 +560,26 @@ impl Connect {
         self.managed_status(id, &job).await
     }
 
-    async fn stop_managed(&self, store: &Store, records: &mut Jobs, id: &str, mut job: Job) -> Result<Value> {
-        if job.stopped { return Ok(outcome(id, &job, "STOPPED", "SESSION_STOPPED")); }
+    async fn stop_managed(
+        &self,
+        store: &Store,
+        records: &mut Jobs,
+        id: &str,
+        mut job: Job,
+    ) -> Result<Value> {
+        if job.stopped {
+            return Ok(outcome(id, &job, "STOPPED", "SESSION_STOPPED"));
+        }
         let directory = self.session_directory(id);
         if job.adapter.is_none() {
             // Resume the original start to reconcile any partial host creation
             // before attempting a stop. No unproven host is interrupted.
-            return Ok(outcome(id, &job, "STARTING", "RECONCILE_SESSION_TARGET_BEFORE_STOP"));
+            return Ok(outcome(
+                id,
+                &job,
+                "STARTING",
+                "RECONCILE_SESSION_TARGET_BEFORE_STOP",
+            ));
         }
         if !job.stopping {
             job.stopping = true;
@@ -345,27 +587,56 @@ impl Connect {
             save(store, records)?;
         }
         let adapter = job.adapter.as_ref().unwrap();
-        let current = self.host_of(self.managed_setup(&job.selection.peer, &job.selection.workspace)?);
+        let current =
+            self.host_of(self.managed_setup(&job.selection.peer, &job.selection.workspace)?);
         if current == Some(adapter) {
             let pause = self.managed_delivery(&job, "pause").await?;
-            if pause["state"] != "PAUSED" || pause["destinations"].as_array().is_none_or(|rows|
-                rows.len() != 1 || rows[0]["already_inflight"].as_u64() != Some(0)) {
-                return Ok(outcome(id, &job, "STOPPING", "SESSION_DELIVERY_PAUSE_PENDING"));
+            if pause["state"] != "PAUSED"
+                || pause["destinations"].as_array().is_none_or(|rows| {
+                    rows.len() != 1 || rows[0]["already_inflight"].as_u64() != Some(0)
+                })
+            {
+                return Ok(outcome(
+                    id,
+                    &job,
+                    "STOPPING",
+                    "SESSION_DELIVERY_PAUSE_PENDING",
+                ));
             }
         } else if current != job.predecessor.as_ref() {
             return Err(problem("SESSION_RECEIVING_TARGET_CHANGED"));
         }
         let stopped = match job.selection.slot.harness {
-            Harness::Codex => crate::participant_session_codex::stop(&directory, Some(adapter)).await.map_err(problem)?,
+            Harness::Codex => crate::participant_session_codex::stop(&directory, Some(adapter))
+                .await
+                .map_err(problem)?,
             Harness::Opencode => {
                 use crate::participant_session_opencode as host;
                 let file = job.selection.slot.service_file.as_ref().unwrap();
-                let project = PathBuf::from(adapter["directory"].as_str().ok_or_else(|| problem("SESSION_STATE_INVALID"))?);
-                let id = adapter["session_id"].as_str().ok_or_else(|| problem("SESSION_STATE_INVALID"))?;
-                if host::idle(file.clone(), project.clone(), job.ownership.clone(), id.into()).await.map_err(problem)? {
-                    host::stop(file.clone(), project, job.ownership.clone(), id.into()).await.map_err(problem)?;
+                let project = PathBuf::from(
+                    adapter["directory"]
+                        .as_str()
+                        .ok_or_else(|| problem("SESSION_STATE_INVALID"))?,
+                );
+                let id = adapter["session_id"]
+                    .as_str()
+                    .ok_or_else(|| problem("SESSION_STATE_INVALID"))?;
+                if host::idle(
+                    file.clone(),
+                    project.clone(),
+                    job.ownership.clone(),
+                    id.into(),
+                )
+                .await
+                .map_err(problem)?
+                {
+                    host::stop(file.clone(), project, job.ownership.clone(), id.into())
+                        .await
+                        .map_err(problem)?;
                     true
-                } else { false }
+                } else {
+                    false
+                }
             }
         };
         if stopped {
@@ -373,44 +644,97 @@ impl Connect {
             records.insert(id.into(), job.clone());
             save(store, records)?;
         }
-        Ok(outcome(id, &job, if stopped {"STOPPED"} else {"STOPPING"},
-            if stopped {"SESSION_STOPPED"} else {"SESSION_WAITING_FOR_IDLE_OR_EXIT"}))
+        Ok(outcome(
+            id,
+            &job,
+            if stopped { "STOPPED" } else { "STOPPING" },
+            if stopped {
+                "SESSION_STOPPED"
+            } else {
+                "SESSION_WAITING_FOR_IDLE_OR_EXIT"
+            },
+        ))
     }
 
     fn session_directory(&self, id: &str) -> PathBuf {
-        self.directory.join(format!("s-{}", &sha256_hex(id.as_bytes())[..20]))
+        self.directory
+            .join(format!("s-{}", &sha256_hex(id.as_bytes())[..20]))
     }
 
-    pub(crate) async fn managed_session(&mut self, caller: Option<&str>, workspace: Option<&str>, request: SessionRequest) -> Result<Value> {
-        let policy = Policy::read(&self.private_directory)?.ok_or_else(|| problem("SESSION_LAUNCH_POLICY_REQUIRED"))?;
+    pub(crate) async fn managed_session(
+        &mut self,
+        caller: Option<&str>,
+        workspace: Option<&str>,
+        request: SessionRequest,
+    ) -> Result<Value> {
+        let policy = Policy::read(&self.private_directory)?
+            .ok_or_else(|| problem("SESSION_LAUNCH_POLICY_REQUIRED"))?;
         self.authorized_controller(&policy, caller, workspace)?;
         let id = request.id();
-        if !identifier(id) { return Err(problem("SESSION_OPERATION_ID_INVALID")); }
+        if !identifier(id) {
+            return Err(problem("SESSION_OPERATION_ID_INVALID"));
+        }
         let store = Store::anchored(self.private_directory.clone(), STATE, true)?;
         let mut records = jobs(&store)?;
         if let Some(job) = records.get(id) {
-            if job.selection.workspace != policy.workspace_id || !policy.peers.contains_key(&job.selection.peer) {
+            if job.selection.workspace != policy.workspace_id
+                || !policy.peers.contains_key(&job.selection.peer)
+            {
                 return Err(problem("SESSION_PEER_NOT_AUTHORIZED"));
             }
-            if !matches!(request, SessionRequest::Start {..}) {
+            if !matches!(request, SessionRequest::Start { .. }) {
                 let job = job.clone();
                 return match request {
-                    SessionRequest::Status {..} => self.managed_status(id, &job).await,
-                    SessionRequest::Stop {..} => self.stop_managed(&store, &mut records, id, job).await,
-                    SessionRequest::Start {..} => unreachable!(),
+                    SessionRequest::Status { .. } => self.managed_status(id, &job).await,
+                    SessionRequest::Stop { .. } => self
+                        .stop_managed(&store, &mut records, id, job)
+                        .await
+                        .map_err(|error| {
+                            recovery_problem(error, id, "REPEAT_MANAGED_SESSION_STOP")
+                        }),
+                    SessionRequest::Start { .. } => unreachable!(),
                 };
             }
         }
         match &request {
-            SessionRequest::Start {peer, ..} => self.start_managed(&policy, &store, &mut records, id, peer).await,
+            SessionRequest::Start { peer, .. } => {
+                let result = self
+                    .start_managed(&policy, &store, &mut records, id, peer)
+                    .await;
+                if records
+                    .get(id)
+                    .is_some_and(|job| &job.selection.peer == peer)
+                {
+                    result.map_err(|error| {
+                        if error.code == "SESSION_OPERATION_ID_CONFLICT" {
+                            error
+                        } else {
+                            recovery_problem(error, id, "REPEAT_MANAGED_SESSION_START")
+                        }
+                    })
+                } else {
+                    result
+                }
+            }
             _ => Err(problem("SESSION_OPERATION_NOT_FOUND")),
         }
     }
 }
 
+fn recovery_problem(mut error: ParticipantError, id: &str, next: &str) -> ParticipantError {
+    error.effect_certainty = "UNKNOWN".into();
+    error.recovery = next.into();
+    error.original(id)
+}
+
 #[cfg(not(target_os = "linux"))]
 impl Connect {
-    pub(crate) async fn managed_session(&mut self, _:Option<&str>, _:Option<&str>, _:SessionRequest) -> Result<Value> {
+    pub(crate) async fn managed_session(
+        &mut self,
+        _: Option<&str>,
+        _: Option<&str>,
+        _: SessionRequest,
+    ) -> Result<Value> {
         Err(problem("SESSION_LAUNCH_PLATFORM_UNSUPPORTED"))
     }
 }
@@ -423,20 +747,39 @@ pub fn cli(args: &[String]) -> Value {
         let [local, registry, mode, id_flag, id, rest @ ..] = args else {
             return Err(problem("SESSION_ARGUMENT_INVALID"));
         };
-        if local != "--local" || id_flag != "--id" { return Err(problem("SESSION_ARGUMENT_INVALID")); }
+        if local != "--local" || id_flag != "--id" {
+            return Err(problem("SESSION_ARGUMENT_INVALID"));
+        }
         let request = match (mode.as_str(), rest) {
-            ("start", [flag, peer]) if flag == "--peer" => SessionRequest::Start {operation_id:id.clone(), peer:peer.clone()},
-            ("status", []) => SessionRequest::Status {operation_id:id.clone()},
-            ("stop", []) => SessionRequest::Stop {operation_id:id.clone()},
+            ("start", [flag, peer]) if flag == "--peer" => SessionRequest::Start {
+                operation_id: id.clone(),
+                peer: peer.clone(),
+            },
+            ("status", []) => SessionRequest::Status {
+                operation_id: id.clone(),
+            },
+            ("stop", []) => SessionRequest::Stop {
+                operation_id: id.clone(),
+            },
             _ => return Err(problem("SESSION_ARGUMENT_INVALID")),
         };
-        let registry = std::path::absolute(registry).map_err(|_|problem("SESSION_ARGUMENT_INVALID"))?;
-        let executor = tokio::runtime::Builder::new_current_thread().enable_all().build()
-            .map_err(|_|problem("EXECUTOR_FAILED"))?;
+        let registry =
+            std::path::absolute(registry).map_err(|_| problem("SESSION_ARGUMENT_INVALID"))?;
+        let executor = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|_| problem("EXECUTOR_FAILED"))?;
         executor.block_on(async {
             let mut connect = Connect::open(&registry)?;
-            let policy = Policy::read(&connect.private_directory)?.ok_or_else(||problem("SESSION_LAUNCH_POLICY_REQUIRED"))?;
-            connect.managed_session(Some(&policy.controller), Some(&policy.workspace_id), request).await
+            let policy = Policy::read(&connect.private_directory)?
+                .ok_or_else(|| problem("SESSION_LAUNCH_POLICY_REQUIRED"))?;
+            connect
+                .managed_session(
+                    Some(&policy.controller),
+                    Some(&policy.workspace_id),
+                    request,
+                )
+                .await
         })
     })();
     result.unwrap_or_else(|error| json!({"ok":false,"state":"FAILED","error":error}))

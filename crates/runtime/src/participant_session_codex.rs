@@ -156,6 +156,25 @@ mod linux {
         fn socket_metadata(&self) -> Result<bool> {
             match fs::symlink_metadata(&self.socket) {
                 Ok(meta) if meta.file_type().is_socket() && meta.uid() == uid() => Ok(true),
+                Ok(meta) if meta.file_type().is_symlink() && meta.uid() == uid() => {
+                    // App Server may expose a public-name alias inside our
+                    // launch directory to its private, hashed socket path.
+                    let target = fs::read_link(&self.socket).map_err(|_| UNOWNED)?;
+                    if !target.is_absolute() {
+                        return Err(UNOWNED);
+                    }
+                    onboarding_files::check_directory(target.parent().ok_or(UNOWNED)?, true)
+                        .map_err(|_| UNOWNED)?;
+                    match fs::symlink_metadata(target) {
+                        Ok(target) if target.file_type().is_socket() && target.uid() == uid() => {
+                            Ok(true)
+                        }
+                        // The alias itself still exists and must be removed
+                        // under the spawn reservation before a relaunch.
+                        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(true),
+                        _ => Err(UNOWNED),
+                    }
+                }
                 Ok(_) => Err(UNOWNED),
                 Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
                 Err(_) => Err(UNAVAILABLE),
@@ -603,8 +622,6 @@ mod linux {
             .ok_or(UNCERTAIN)?
             .clone();
         let process = pidfd(original.pid)?;
-        let thread = target["thread_id"].as_str().ok_or(INVALID)?.to_owned();
-        let session = target["expected_session_id"].clone();
         let runtime = tokio::runtime::Handle::current();
         tokio::task::spawn_blocking(move || {
             let _reservation = _reservation;
@@ -613,13 +630,8 @@ mod linux {
                 Server::Absent => return Ok(true),
                 _ => return Err(UNOWNED),
             }
-            let observed = communication_host::codex_session(target, &thread, runtime)?;
-            let current = &observed["sessions"][0];
-            if current["thread_id"] != thread || current["session_id"] != session {
-                return Err(UNOWNED);
-            }
-            if current["status"]["type"] != "idle" {
-                return Err("CODEX_SESSION_BUSY");
+            if !communication_host::codex_owned_thread_idle(target, runtime)? {
+                return Ok(false);
             }
             match endpoint.observe(owner.as_ref(), false)? {
                 Server::Listening(current) if current == original => (),
