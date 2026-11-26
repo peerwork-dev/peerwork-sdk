@@ -320,17 +320,32 @@ async fn independent_managed_codex_and_opencode_sessions() {
             ("builder", "codex", codex.clone()),
             ("reviewer", "opencode", opencode.clone()),
         ] {
-            registry
+            let installed = registry
                 .install(
                     handle,
                     &workspace,
                     install::Installation {
                         host: harness.into(),
-                        project,
+                        project: project.clone(),
                         executable: cli.clone(),
                     },
                 )
                 .unwrap();
+            if harness == "codex" {
+                use std::io::Write;
+                let name = installed["server_name"].as_str().unwrap();
+                // The TEST operator authorizes exactly its synthetic reply.
+                // Managed launch must preserve this host tool approval policy.
+                let mut config = std::fs::OpenOptions::new()
+                    .append(true)
+                    .open(project.join(".codex/config.toml"))
+                    .unwrap();
+                writeln!(
+                    config,
+                    "\n[mcp_servers.{name}.tools.peerwork_reply]\napproval_mode = \"approve\""
+                )
+                .unwrap();
+            }
         }
         registry.private_directory.replace_private(POLICY,None,&serde_json::to_vec(&json!({
             "format":"peerwork.session-launch.v1","controller":"coordinator","workspace_id":workspace,
