@@ -31,6 +31,9 @@ pub(crate) struct Client {
     base:reqwest::Url, password:Option<String>, pid:u64,
 }
 impl Client {
+    pub(crate) fn authenticated(&self) -> bool {
+        self.password.as_ref().is_some_and(|value| !value.is_empty())
+    }
     pub(crate) fn open(file:&Path,http:reqwest::Client,executor:tokio::runtime::Handle,budget:Budget)->R<Self> {
         let raw=crate::secure_state::read_private_file_bounded(file,16384).map_err(|_|"OPENCODE_SERVICE_UNAVAILABLE")?;
         let value=peerwork_core::strict_json::parse_strict_json(&raw).map_err(|_|"OPENCODE_SERVICE_INVALID")?;

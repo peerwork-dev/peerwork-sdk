@@ -531,7 +531,16 @@ pub(crate) fn codex_sessions(mut config: Value, executor: tokio::runtime::Handle
 /// an interrupted call, reuse its sole loaded thread.
 #[cfg(target_os = "linux")]
 pub(crate) fn codex_prepare_handoff(
-    mut config: Value, project: &Path, executor: tokio::runtime::Handle,
+    config: Value, project: &Path, executor: tokio::runtime::Handle,
+) -> R<Value> {
+    codex_prepare_owned_session(config, project, executor, true, None, None)
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn codex_prepare_owned_session(
+    mut config: Value, project: &Path, executor: tokio::runtime::Handle, create_allowed: bool,
+    managed_mcp: Option<(&str, &Value)>,
+    before_create: Option<&mut dyn FnMut() -> R<()>>,
 ) -> R<Value> {
     let mut client = Codex::channel_budget(&config, executor, Budget::new(Duration::from_secs(40)))?;
     let _prepare = client.budget.scope("SESSION_PREPARE");
@@ -540,20 +549,36 @@ pub(crate) fn codex_prepare_handoff(
     if !loaded["nextCursor"].is_null() || ids.len() > 1 {
         return Err("CODEX_HANDOFF_MULTIPLE_THREADS");
     }
+    let thread_settings = if ids.is_empty() {
+        if let Some((name, entry)) = managed_mcp {
+            let observed = client.rpc("config/read", json!({"cwd":project,"includeLayers":false}))?;
+            Some(crate::participant_session_codex::mcp_overrides(&observed["config"], name, entry)?)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
     let pinned = config["thread_id"].as_str();
     let thread = match (ids.first(), pinned) {
         (Some(id), _) => id.as_str().filter(|id| !id.is_empty()).ok_or("HOST_RESPONSE_INVALID")?.to_owned(),
         (None, Some(thread)) => {
-            let resumed = client.rpc("thread/resume", json!({"threadId":thread,"excludeTurns":true}))?;
+            let mut request = json!({"threadId":thread,"excludeTurns":true});
+            if let Some(settings) = thread_settings { request["config"] = settings; }
+            let resumed = client.rpc("thread/resume", request)?;
             if resumed["thread"]["id"] != thread {
                 return Err("HOST_BINDING_MISMATCH");
             }
             thread.to_owned()
         }
-        (None, None) => {
-            let created = client.rpc("thread/start", json!({"cwd":project}))?;
+        (None, None) if create_allowed => {
+            let mut request = json!({"cwd":project});
+            if let Some(settings) = thread_settings { request["config"] = settings; }
+            if let Some(mark) = before_create { mark()?; }
+            let created = client.rpc("thread/start", request)?;
             text(&created["thread"], "id")?.to_owned()
         }
+        (None, None) => return Err("CODEX_SESSION_CREATE_UNCERTAIN"),
     };
     if pinned.is_some_and(|expected| expected != thread) {
         return Err("HOST_BINDING_MISMATCH");

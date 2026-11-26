@@ -37,6 +37,13 @@ not establish model processing or business completion.
 | Inspect or resume the original mutation | `peerwork_status`, `peerwork_recover` with its exact `recovery_arguments` |
 | Request/approve genuinely missing participation rights | `peerwork_connect`, `peerwork_connect_approve` when setup is available on the selected lifecycle |
 
+## Start a managed Peer session
+
+The owner-authorized local coordinator can call `peerwork_session` to start,
+observe, or stop a selected Codex or OpenCode V2 Peer. Wait for confirmed
+`READY` before assigning work and keep its original launch operation ID.
+See [managed local sessions](managed-sessions.md).
+
 ## Check revisions before writing
 
 For a stateful action, take `expected_revision` from the same execution context

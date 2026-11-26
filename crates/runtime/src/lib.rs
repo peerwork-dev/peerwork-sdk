@@ -20,6 +20,9 @@ pub mod event_replay;
 pub mod agent_frontend;
 mod claude_channel_launch;
 pub mod participant_connect;
+mod participant_session_codex;
+#[cfg(target_os = "linux")]
+mod participant_session_opencode;
 mod onboarding_files;
 mod onboarding_project;
 mod onboarding_state;

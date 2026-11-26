@@ -38,6 +38,8 @@ mod protocol_views;
 mod codex;
 #[path = "participant_connect_handoff.rs"]
 mod handoff;
+#[path = "participant_connect_managed_sessions.rs"]
+pub mod managed_sessions;
 #[path = "participant_connect_discovery.rs"]
 mod discovery;
 #[path="participant_connect_source.rs"]

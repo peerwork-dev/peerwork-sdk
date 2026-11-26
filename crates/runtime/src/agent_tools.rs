@@ -326,6 +326,9 @@ pub enum AgentRequest {
     Connect {
         request: crate::participant_connect::ConnectInput,
     },
+    Session {
+        request: crate::participant_connect::managed_sessions::SessionRequest,
+    },
     ConnectApprove {
         participant: String,
         approval_id: String,
@@ -959,6 +962,7 @@ impl AgentTools {
             AgentRequest::Connect { .. } | AgentRequest::ConnectApprove { .. } => {
                 Err(invalid("CONNECT_LOCAL_REGISTRY_REQUIRED"))
             }
+            AgentRequest::Session { .. } => Err(invalid("SESSION_LOCAL_REGISTRY_REQUIRED")),
             AgentRequest::Context => {
                 let capabilities = self.client.call(json!({"method":"capabilities"})).await?;
                 let bindings = self.receiving().call(json!({"method":"bindings"})).await;
