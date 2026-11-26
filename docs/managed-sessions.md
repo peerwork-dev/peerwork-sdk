@@ -71,6 +71,8 @@ use its explicit handoff workflow.
 
 Stop pauses notification dispatch on just the selected managed route and waits
 for a verified idle state. Repeat stop with the original ID while it is
-`STOPPING`. Other sessions and shared runtime services continue to run. The
-identity, inbox, and operation journal remain available. A stopped ID stays
-stopped. For new work use a new launch ID with an available enrolled Peer.
+`STOPPING`. The dedicated Codex App Server then shuts down. On shared OpenCode,
+stop retires the Peerwork route and leaves the conversation available in the
+host. Other sessions and shared runtime services continue to run. The identity,
+inbox, and operation journal remain available. A stopped ID stays stopped.
+For new work use a new launch ID with an available enrolled Peer.

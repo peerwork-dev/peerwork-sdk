@@ -469,9 +469,18 @@ impl Connect {
             Harness::Opencode => {
                 use crate::participant_session_opencode as host;
                 let file = job.selection.slot.service_file.as_ref().unwrap();
-                host::verify_setup(file.clone(), project.clone(), name, entry)
-                    .await
-                    .map_err(problem)?;
+                match host::verify_setup(file.clone(), project.clone(), name, entry).await {
+                    Ok(()) => (),
+                    Err("OPENCODE_MANAGED_MCP_NOT_READY") => {
+                        return Ok(outcome(
+                            id,
+                            &job,
+                            "STARTING",
+                            "OPENCODE_MANAGED_MCP_NOT_READY",
+                        ));
+                    }
+                    Err(code) => return Err(problem(code)),
+                }
                 let session = match &job.adapter {
                     Some(adapter) => {
                         let session = adapter["session_id"]
@@ -621,22 +630,11 @@ impl Connect {
                 let id = adapter["session_id"]
                     .as_str()
                     .ok_or_else(|| problem("SESSION_STATE_INVALID"))?;
-                if host::idle(
-                    file.clone(),
-                    project.clone(),
-                    job.ownership.clone(),
-                    id.into(),
-                )
-                .await
-                .map_err(problem)?
-                {
-                    host::stop(file.clone(), project, job.ownership.clone(), id.into())
-                        .await
-                        .map_err(problem)?;
-                    true
-                } else {
-                    false
-                }
+                // An idle read cannot fence input from other clients of the
+                // shared OpenCode service. Retire only Peerwork's route.
+                host::idle(file.clone(), project, job.ownership.clone(), id.into())
+                    .await
+                    .map_err(problem)?
             }
         };
         if stopped {

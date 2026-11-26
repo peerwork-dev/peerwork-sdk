@@ -1,7 +1,7 @@
 //! Managed independent conversations on the owner's registered OpenCode V2 service.
 use crate::communication_host::{opencode::Client, operation::Budget};
 use peerwork_core::crypto::sha256_hex;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
@@ -163,30 +163,6 @@ pub(crate) async fn idle(
     .await
 }
 
-pub(crate) async fn stop(
-    file: PathBuf,
-    directory: PathBuf,
-    marker: String,
-    session_id: String,
-) -> Result<()> {
-    with_client(file, directory, move |client, file, directory| {
-        Target::new(file, directory, &marker)?.verify_selected(client, directory, &session_id)?;
-        if !positively_idle(client, &session_id)? {
-            return Err("OPENCODE_SESSION_BUSY");
-        }
-        let response = client.request(
-            "POST",
-            &format!("/api/session/{session_id}/interrupt?resume=false"),
-            None,
-        )?;
-        if !response["interrupted"].is_boolean() || !positively_idle(client, &session_id)? {
-            return Err("OPENCODE_SESSION_STOP_UNCONFIRMED");
-        }
-        Ok(())
-    })
-    .await
-}
-
 fn project_resource(resource: &str, directory: &str) -> String {
     let mut url = reqwest::Url::parse("http://localhost/").expect("valid static URL");
     url.set_path(resource);
@@ -335,9 +311,7 @@ mod tests {
             verify_entries(&config, &connected, name, &expected).unwrap_err(),
             "OPENCODE_MANAGED_MCP_SELECTION_MISMATCH"
         );
-        assert!(
-            project_resource("/api/config", "/owner/a #")
-                .contains("location%5Bdirectory%5D=%2Fowner%2Fa+%23")
-        );
+        assert!(project_resource("/api/config", "/owner/a #")
+            .contains("location%5Bdirectory%5D=%2Fowner%2Fa+%23"));
     }
 }
