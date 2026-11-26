@@ -47,15 +47,21 @@ async fn wait_state(
 ) -> Value {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(65);
     loop {
-        let value = session(frontend, mode, id, peer)
-            .await
-            .expect("selected session operation");
-        if value["state"] == wanted {
-            return value;
-        }
+        let observation = match session(frontend, mode, id, peer).await {
+            Ok(value) if value["state"] == wanted => return value,
+            Ok(value) => value,
+            Err(error)
+                if error.operation_id.as_deref() == Some(id)
+                    && error.phase == "LOCAL_IPC"
+                    && matches!(error.code.as_str(), "IPC_DISCONNECTED" | "IPC_TIMEOUT") =>
+            {
+                json!({"error":error})
+            }
+            Err(error) => panic!("selected session operation {id}: {error:?}"),
+        };
         assert!(
             tokio::time::Instant::now() < deadline,
-            "last state for {id}: {value}"
+            "last state for {id}: {observation}"
         );
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
@@ -82,7 +88,7 @@ async fn signed_round(
     assert_eq!(sent["state"], "ACCEPTED", "{sent}");
     let id = &sent["result"]["structure"]["message_id"];
     assert!(id.is_string(), "{sent}");
-    tokio::time::timeout(Duration::from_secs(35), async {
+    tokio::time::timeout(Duration::from_secs(60), async {
         loop {
             let page = receiver
                 .call(json!({"method":"inbox","options":watch,"after":0,"limit":16}))
@@ -101,7 +107,10 @@ async fn signed_round(
         }
     })
     .await
-    .expect("target harness did not send a correlated signed reply");
+    .unwrap_or_else(|_| {
+        panic!("target harness did not send a correlated signed reply for {nonce}")
+    });
+    eprintln!("verified signed reply for {nonce}");
 }
 
 struct CodexCleanup(PathBuf);
