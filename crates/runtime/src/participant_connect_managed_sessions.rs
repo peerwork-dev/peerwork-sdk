@@ -417,15 +417,12 @@ impl Connect {
         if job.stopping {
             return self.managed_status(id, &job).await;
         }
-        if job.probe_after.is_some() {
-            let current = self.managed_status(id, &job).await?;
-            if current["state"] == "READY"
-                && (job.selection.slot.harness != Harness::Codex
-                    || crate::participant_session_codex::running(&self.session_directory(id))
-                        .map_err(problem)?)
-            {
-                return Ok(current);
-            }
+        if job.probe_after.is_some()
+            && (job.selection.slot.harness != Harness::Codex
+                || crate::participant_session_codex::running(&self.session_directory(id))
+                    .map_err(problem)?)
+        {
+            return self.managed_status(id, &job).await;
         }
         let key = format!("{peer}:{workspace}");
         let (_, original_watch) = self.managed_receiver(&job.selection).await?;

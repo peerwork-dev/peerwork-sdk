@@ -58,17 +58,36 @@ pub(super) fn inspect_original_store(path:&Path)->Result<(Registry,ProjectDirect
     let ordinary=crate::onboarding_files::check_directory(path,true).is_ok();
     let directory=ProjectDirectory::private(path)?;
     if !ordinary {require_original_association(&directory)?;}
-    let registry=match directory.read("connect.state",64*1024*1024+128,true)? {
+    let registry=match inspected_snapshot(&directory, false)? {
         Some(bytes)=>bounded_registry(SecureStateStore::snapshot_payload(&bytes,64*1024*1024).map_err(|_|local("CONNECT_RECOVERY_REQUIRED"))?)?,
         None=>{if directory.kind("initialized.json")?.is_some(){return Err(local("CONNECT_ORIGINAL_BINDING_RECOVERY_REQUIRED"))} Registry::default()},
     };
     if !ordinary {crate::onboarding_files::take_diagnostic();}
     Ok((registry,directory))
 }
+fn inspected_snapshot(directory: &ProjectDirectory, selected: bool) -> Result<Option<Vec<u8>>> {
+    let read = || if selected {
+        directory.read_selected("connect.state", 64 * 1024 * 1024 + 128)
+    } else {
+        directory.read("connect.state", 64 * 1024 * 1024 + 128, true)
+    };
+    // The authorized writer replaces the file atomically. Accept a fresh
+    // verified snapshot if it committed between our stat and read.
+    for _ in 0..3 {
+        match read() {
+            Err(error) if error.code == "ONBOARDING_PATH_UNSAFE" && error.local_diagnostic.as_ref().is_some_and(|d| {
+                d["component_kind"] == "FILE" && d["operation"] == "READ"
+                    && matches!(d["reason"].as_str(), Some("PATH_OR_CONTENT_CHANGED" | "PATH_CHANGED"))
+            }) => { crate::onboarding_files::take_diagnostic(); }
+            result => return result,
+        }
+    }
+    read()
+}
 /// The original association was validated when this handle was opened. Keep
 /// reading fresh atomic snapshots without reopening discovery/XDG directories.
 pub(super) fn inspect_opened_store(directory:&ProjectDirectory)->Result<Registry> {
-    match directory.read_selected("connect.state",64*1024*1024+128)? {
+    match inspected_snapshot(directory, true)? {
         Some(bytes)=>bounded_registry(SecureStateStore::snapshot_payload(&bytes,64*1024*1024).map_err(|_|local("CONNECT_RECOVERY_REQUIRED"))?),
         None=>Err(local("CONNECT_ORIGINAL_BINDING_RECOVERY_REQUIRED")),
     }
