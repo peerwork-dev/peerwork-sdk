@@ -47,6 +47,7 @@ let rejectNextRebindMailbox=null,corruptFrame=null,keyDelayWorkspace=null,delayM
 let keyDelayMs=0,earlyEofCount=0,timeoutAction=null;const timeoutReleases=new Set();
 let resourceRefusal=null;const signedResourceRefusals=new Map();
 let ignoreLeasePreference=false;
+let advertiseActionFeatures=true;
 const leaseReplies={preferred:0,compact:0,full:0};
 const counts={commands:0,discovery:0,context:0,journal_reads:0,dropped:0,native_streams:0,corrupted_frames:0,delayed_keys:0,delayed:0,delayed_completed:0,members_batches:0,grant_batches:0,claim_commands:[],actions:{},ack_batches:{RECEIVER_STORED:{requests:0,items:0,max:0},APPLICATION_CONSUMED:{requests:0,items:0,max:0}},command_request_bytes:0,command_response_bytes:0,sse_bytes:0};
 const commandIds=new Set();
@@ -65,6 +66,7 @@ const handle=async request=>{
  const path=new URL(request.url).pathname;
  if(path==='/__test/config'){
   const options=await request.json();
+  if(options.advertise_action_features!==undefined)advertiseActionFeatures=options.advertise_action_features===true;
   if(options.ignore_lease_preference!==undefined)ignoreLeasePreference=options.ignore_lease_preference===true;
   if(options.resource_refusal!==undefined){
    const value=options.resource_refusal;
@@ -161,6 +163,11 @@ const handle=async request=>{
  }
  const measured=queryObserver?await queryObserver.measure(()=>app.fetch(request)):null;
  const response=measured?measured.value:await app.fetch(request);
+ if(path.endsWith('/discovery')&&response.ok&&!advertiseActionFeatures){
+  const discovery=await response.json();
+  delete discovery.extensions?.action_features;
+  return Response.json(discovery);
+ }
  if(pulse&&response.ok)leaseReplies[response.headers.get('Preference-Applied')==='return=minimal'?'compact':'full']++;
  if(captureDisclosure&&command?.action_id==='structure.conversation.messages.read'&&response.ok){const value=await response.clone().json();lastDisclosure=value.result?.messages?.[0]??lastDisclosure;}
  if(wasDelayed)counts.delayed_completed++;

@@ -33,6 +33,11 @@ uncertain, use `peerwork_status` or `peerwork_recover` with the original ID and
 the returned `recovery_arguments`. For an unsubmitted local error, follow its
 specific recovery action before sending anything again.
 
+For a signed `STALE_REVISION` refusal, read the affected heads and the
+existing task's execution context. Use the current default binding for new
+work. Submit a new operation ID only after confirming that the original
+action had no effect and the intended action is still valid.
+
 Read a compact wake directly with `peerwork_inbox` using its batch reference.
 The read records notification observation internally. Follow a cursor only
 when more content is needed and stop at the terminal page. Unhandled items
