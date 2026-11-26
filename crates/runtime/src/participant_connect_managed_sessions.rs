@@ -226,7 +226,7 @@ impl Connect {
     async fn managed_receiver(
         &self,
         selection: &Selection,
-    ) -> Result<(RuntimeClient, WatchOptions)> {
+    ) -> Result<(RuntimeClient, Option<WatchOptions>)> {
         let profile = self
             .managed_setup(&selection.peer, &selection.workspace)?
             .profile
@@ -252,14 +252,15 @@ impl Connect {
                         && scope.membership_id == watch.membership_id
                 })
         });
-        if bindings.len() != 1 {
+        if bindings.len() > 1 {
             return Err(problem("SESSION_PEER_SCOPE_REQUIRED"));
         }
-        Ok((client, bindings.pop().unwrap()))
+        Ok((client, bindings.pop()))
     }
 
     async fn managed_delivery(&self, job: &Job, mode: &str) -> Result<Value> {
         let (receiver, watch) = self.managed_receiver(&job.selection).await?;
+        let watch = watch.ok_or_else(|| problem("SESSION_PEER_SCOPE_REQUIRED"))?;
         let setup = self.managed_setup(&job.selection.peer, &job.selection.workspace)?;
         if !on_original_source(job, &watch)
             || watch.host_destination.is_none()
@@ -384,6 +385,7 @@ impl Connect {
                     return Err(problem("SESSION_PEER_ALREADY_MANAGED"));
                 }
                 let (_, watch) = self.managed_receiver(&selection).await?;
+                let watch = watch.ok_or_else(|| problem("SESSION_PEER_SCOPE_REQUIRED"))?;
                 let previous = self.host_of(self.managed_setup(peer, workspace)?).cloned();
                 if watch.host_destination.is_some() || previous.is_some() {
                     let owned_stopped = previous.as_ref().is_some_and(|adapter| {
@@ -427,18 +429,27 @@ impl Connect {
         }
         let key = format!("{peer}:{workspace}");
         let (_, original_watch) = self.managed_receiver(&job.selection).await?;
-        if !on_original_source(&job, &original_watch) {
+        if original_watch
+            .as_ref()
+            .is_some_and(|watch| !on_original_source(&job, watch))
+        {
             return Err(problem("SESSION_PEER_BINDING_CHANGED"));
         }
+        let exact_attachment = job
+            .adapter
+            .as_ref()
+            .is_some_and(|adapter| self.codex_attachment_targets(&key, adapter));
+        let attachment_pending = self.codex_attachment_pending(peer, workspace);
         let phase_host = self.host_of(self.managed_setup(peer, workspace)?);
         if phase_host != job.predecessor.as_ref() && phase_host != job.adapter.as_ref()
-            || self.codex_attachment_pending(peer, workspace)
-                && job
-                    .adapter
-                    .as_ref()
-                    .is_none_or(|adapter| !self.codex_attachment_targets(&key, adapter))
+            || attachment_pending && !exact_attachment
         {
             return Err(problem("SESSION_RECEIVING_TARGET_CHANGED"));
+        }
+        // Resident rebind temporarily disables the watch. Only its exact
+        // persisted attachment may continue through that intermediate state.
+        if original_watch.is_none() && !(attachment_pending && exact_attachment) {
+            return Err(problem("SESSION_PEER_SCOPE_REQUIRED"));
         }
         let admin = self.runtime_admin(peer, None).await?;
         let status = crate::communication_runtime::call(&admin, json!({"method":"status"})).await?;
@@ -520,17 +531,18 @@ impl Connect {
             save(store, records)?;
         }
         let setup = self.managed_setup(peer, workspace)?;
-        let attached = self.host_of(setup) == Some(&adapter)
-            && original_watch.host_destination.is_some()
-            && self
+        let attached = match original_watch.filter(|watch| watch.host_destination.is_some()) {
+            Some(watch) if self.host_of(setup) == Some(&adapter) => self
                 .completed_host_binding(
                     &setup.desired,
                     setup,
-                    &serde_json::to_value(&original_watch)
+                    &serde_json::to_value(watch)
                         .map_err(|_| problem("SESSION_PEER_BINDINGS_INVALID"))?,
                 )
                 .await?
-                .is_some();
+                .is_some(),
+            _ => false,
+        };
         if !attached {
             let setup = self.managed_setup(peer, workspace)?;
             let desired = if self.codex_attachment_targets(&key, &adapter) {
@@ -556,8 +568,14 @@ impl Connect {
                 )
                 .await?;
             let (_, watched) = self.managed_receiver(&job.selection).await?;
+            if watched
+                .as_ref()
+                .is_some_and(|watch| !on_original_source(&job, watch))
+            {
+                return Err(problem("SESSION_PEER_BINDING_CHANGED"));
+            }
             if self.host_of(self.managed_setup(peer, workspace)?) != Some(&adapter)
-                || watched.host_destination.is_none()
+                || watched.is_none_or(|watch| watch.host_destination.is_none())
             {
                 let mut result = outcome(id, &job, "STARTING", "SESSION_ATTACHMENT_PENDING");
                 result["blocker"] = attached["blocker"].clone();
