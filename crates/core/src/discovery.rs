@@ -25,6 +25,7 @@ pub struct ParsedDiscovery {
     audience_utf16: Vec<u16>,
     receipt_public_key: String,
     protocol_features: Vec<Vec<u16>>,
+    action_features: Vec<Vec<u16>>,
     limits: Vec<(Vec<u16>, f64)>,
     manifest_language: Option<Vec<u16>>,
     execution_profiles: Option<Vec<Vec<u16>>>,
@@ -48,6 +49,9 @@ impl ParsedDiscovery {
         required
             .iter()
             .all(|feature| self.protocol_features.contains(feature))
+    }
+    pub fn supports_action_feature(&self, feature: &str) -> bool {
+        self.action_features.iter().any(|value| value.iter().copied().eq(feature.encode_utf16()))
     }
     /// Match the tracked client's persisted discovery upgrade rule. A changed
     /// context may only add capabilities and newly named limits.
@@ -187,6 +191,19 @@ pub fn parse_discovery_wire(
             protocol_features.push(units.to_vec());
         }
     }
+    // Negotiated action formats may be disabled during service rollback.
+    // Keep them outside the continuity pin for required protocol capabilities.
+    let mut action_features = Vec::new();
+    if let Some(extra) = value.get("extensions").and_then(|v| v.get("action_features")) {
+        let WireValue::Array(features) = extra else { return Err(DiscoveryError::Invalid); };
+        if features.len() > 16 { return Err(DiscoveryError::Invalid); }
+        for feature in features {
+            let units = feature.as_utf16().ok_or(DiscoveryError::Invalid)?;
+            if units.is_empty() || units.len() > 80 { return Err(DiscoveryError::Invalid); }
+            action_features.push(units.to_vec());
+        }
+        if !all_unique(&action_features) { return Err(DiscoveryError::Invalid); }
+    }
     let manifest_language = match value.get("manifest_language") {
         None => None,
         Some(language) => {
@@ -233,6 +250,7 @@ pub fn parse_discovery_wire(
         audience_utf16: audience.to_vec(),
         receipt_public_key,
         protocol_features,
+        action_features,
         limits,
         manifest_language,
         execution_profiles,
@@ -260,4 +278,27 @@ fn token(value: &str) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn optional_action_formats_can_be_rolled_back_without_weakening_protocol_pins() {
+        let parse = |features: &str, extensions: &str| {
+            let wire = format!(
+                r#"{{"semantics":"{SEMANTICS}","audience":"test","command_type":"{COMMAND_TYPE}","receipt_type":"{RECEIPT_TYPE}","receipt_public_key":"{}","limits":{{}},"protocol_features":{features},"extensions":{extensions}}}"#,
+                "A".repeat(43)
+            );
+            parse_discovery_wire(wire.as_bytes(), 4096).unwrap()
+        };
+        let previous = parse(r#"["original-feature"]"#, "{}");
+        let enabled = parse(r#"["original-feature"]"#, r#"{"action_features":["action-revision-diagnostics-v1"]}"#);
+        assert!(enabled.supports_action_feature("action-revision-diagnostics-v1"));
+        assert!(!previous.supports_action_feature("action-revision-diagnostics-v1"));
+        assert!(enabled.permits_update_from(&previous));
+        assert!(previous.permits_update_from(&enabled));
+        assert!(!parse("[]", "{}").permits_update_from(&enabled));
+    }
 }

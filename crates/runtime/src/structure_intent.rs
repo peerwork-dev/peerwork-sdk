@@ -499,13 +499,13 @@ impl KernelClient {
             let mut bytes=[0u8;32];OsRng.try_fill_bytes(&mut bytes).map_err(|_| invalid())?;base64url(&bytes)
         };
         if action=="structure.action" {
-            let supported=self.discovery.protocol_features().contains(&peerwork_core::structure_execution::ACTION_REVISION_DIAGNOSTICS_FEATURE.encode_utf16().collect::<Vec<_>>());
+            let supported=self.discovery.supports_action_feature(peerwork_core::structure_execution::ACTION_REVISION_DIAGNOSTICS_FEATURE);
             if body.get("revision_conflict_details").is_some_and(|value|value!=&WireValue::Bool(true)){return Err(invalid());}
             // Capability changes may affect new operations only. Keep the
             // receipt format inside the original signed business intent.
             let saved=self.journal.verified_pending(&command_id,identity.key_id(),self.discovery.audience_utf16())?;
             if saved.is_none()&&request.get("expected_instance_revision").is_none_or(|value|matches!(value,WireValue::Null))
-                && !self.discovery.protocol_features().contains(&peerwork_core::structure_execution::ACTION_RECORD_CONCURRENCY_FEATURE.encode_utf16().collect::<Vec<_>>()){
+                && !self.discovery.supports_action_feature(peerwork_core::structure_execution::ACTION_RECORD_CONCURRENCY_FEATURE){
                 return Err(KernelClientError::UnsupportedStructureProfile);
             }
             let selected=if let Some(saved)=saved {
