@@ -251,22 +251,53 @@ async fn independent_managed_codex_and_opencode_sessions() {
                 "workspace_id":workspace,"send":true,"receive":true,"require_body_keys":true,"receive_mode":"INBOX"}),
             )
             .unwrap();
-            let deadline = tokio::time::Instant::now() + Duration::from_secs(75);
-            loop {
-                let configured = registry.run_agent(request.clone()).await.unwrap();
-                if configured["state"] == "LOCAL_CONFIGURED" {
-                    break;
-                }
+            let mut configured = registry.run_agent(request.clone()).await.unwrap();
+            if configured["state"] != "LOCAL_CONFIGURED" {
                 assert_eq!(
                     configured["blocker"]["stage"], "RECEIVING_SELF_TEST",
                     "{configured}"
                 );
-                assert!(
-                    tokio::time::Instant::now() < deadline,
-                    "{handle}: {configured}"
-                );
-                tokio::time::sleep(Duration::from_millis(250)).await;
+                let profile = registry
+                    .profile_for_scope(Some(handle), Some(&workspace))
+                    .unwrap()
+                    .unwrap();
+                let receiver = RuntimeClient::connect(
+                    profile.receive_endpoint_path.unwrap(),
+                    &service.origin,
+                    &config.expected_actor,
+                )
+                .await
+                .unwrap();
+                let bindings = receiver.call(json!({"method":"bindings"})).await.unwrap();
+                let watch = &bindings[0];
+                assert_eq!(watch["workspace_id"], workspace);
+                let deadline = tokio::time::Instant::now() + Duration::from_secs(75);
+                loop {
+                    let inbox = receiver
+                        .call(json!({"method":"inbox","options":watch,"after":0,"limit":1}))
+                        .await
+                        .unwrap();
+                    if inbox["receiver_link_verified"] == true {
+                        break;
+                    }
+                    if tokio::time::Instant::now() >= deadline {
+                        let counts = service.counts().await;
+                        panic!(
+                            "{handle}: {} / {}; fixture actions: {}; streams: {}",
+                            inbox["state"],
+                            inbox["code"],
+                            counts["actions"],
+                            counts["native_streams"]
+                        );
+                    }
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                }
+                configured = registry.run_agent(request).await.unwrap();
             }
+            assert_eq!(
+                configured["state"], "LOCAL_CONFIGURED",
+                "{handle}: {configured}"
+            );
             eprintln!("verified native inbox for {handle}");
         }
         for (handle, harness, project) in [

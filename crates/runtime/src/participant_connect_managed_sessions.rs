@@ -299,10 +299,15 @@ impl Connect {
             Ok(value) => value,
             Err(error) => return Ok(outcome(id, job, "RECOVERING", &error.code)),
         };
+        let expected = job
+            .adapter
+            .as_ref()
+            .map(crate::communication_host::target_summary);
         let ready = delivery["observations"].as_array().is_some_and(|observed| {
             observed.len() == 1 && {
                 let value = &observed[0];
-                value["current_delivery"]["state"] == "READY"
+                expected.as_ref() == value.get("target")
+                    && value["current_delivery"]["state"] == "READY"
                     && value["receiver"]["receiver_link_verified"] == true
                     && value["notification"]["automatic_receiving"] == "VERIFIED"
                     && value["notification"]["last_verified_at"]
