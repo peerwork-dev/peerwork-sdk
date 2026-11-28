@@ -234,6 +234,44 @@ async fn resident_pulse_accepts_compact_and_full_signed_leases() {
 }
 
 #[tokio::test(flavor="multi_thread",worker_threads=2)]
+#[ignore="requires a real PostgreSQL fixture and 75 seconds of idle connection time"]
+async fn idle_receiving_uses_the_signed_grant_and_rechecks_keys_on_reconnect() {
+    let mut cohort=Cohort::start(1).await;
+    let member=&mut cohort.members[0];
+    watch_until(&mut member.watch,|snapshot|snapshot.presence["key_current"]==true).await;
+    let initial=cohort.service.counts().await;
+    tokio::time::sleep(Duration::from_secs(75)).await;
+    let idle=cohort.service.counts().await;
+    let reads=|v:&Value|v["actions"]["structure.mailbox.get"].as_u64().unwrap_or(0);
+    let pulses=|v:&Value|v["actions"]["structure.mailbox.pulse"].as_u64().unwrap_or(0);
+    println!("idle_75s {}",json!({
+        "stream_opens":idle["native_streams"].as_u64().unwrap()-initial["native_streams"].as_u64().unwrap(),
+        "discovery":idle["discovery"].as_u64().unwrap()-initial["discovery"].as_u64().unwrap(),
+        "time_context":idle["context"].as_u64().unwrap()-initial["context"].as_u64().unwrap(),
+        "mailbox_get":reads(&idle)-reads(&initial),
+        "pulses":pulses(&idle)-pulses(&initial),
+        "command_bodies_bytes":idle["command_response_bytes"].as_u64().unwrap()-initial["command_response_bytes"].as_u64().unwrap(),
+    }));
+    assert_eq!(idle["native_streams"],initial["native_streams"]);
+    assert_eq!(idle["context"],initial["context"]);
+    assert_eq!(reads(&idle),reads(&initial));
+    assert!(pulses(&idle)-pulses(&initial)>=11);
+    let first=cohort.members[0].watch.page(0,8).await.unwrap();
+    cohort.service.config(json!({"close_connections":true})).await;
+    let sent=cohort.send(0,"reconnect-after-idle-grant").await;
+    let watch=&mut cohort.members[0].watch;
+    let received=watch_until(watch,|snapshot|snapshot.receiver_link_verified&&snapshot.disconnects>first.disconnects
+        &&snapshot.items.iter().any(|item|item["envelope"]["message"]["message_id"]==sent["message_id"])).await;
+    assert!(received.verification_failure.is_none());
+    assert_eq!(received.items.iter().filter(|item|item["envelope"]["message"]["message_id"]==sent["message_id"]).count(),1);
+    let before_recheck=reads(&idle);
+    tokio::time::timeout(Duration::from_secs(10),async{
+        while reads(&cohort.service.counts().await)<=before_recheck{tokio::time::sleep(Duration::from_millis(25)).await;}
+    }).await.unwrap();
+    cohort.client.close().await.unwrap();
+}
+
+#[tokio::test(flavor="multi_thread",worker_threads=2)]
 #[ignore="requires explicit synthetic PostgreSQL and real product HTTP fixture"]
 async fn member_directory_projects_native_queue_live_unavailable_and_expired() {
     use crate::participant_inbox::{HostBinding, HostOperation};
