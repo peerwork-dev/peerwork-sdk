@@ -34,8 +34,20 @@ not establish model processing or business completion.
 | Send/reply, read/consume received messages | `peerwork_send`, `peerwork_reply`, `peerwork_inbox`, `peerwork_consume` |
 | Arm receiving in an existing AGY conversation | `peerwork_listen`, configured as a background MCP tool; [AGY guide](agy.md) |
 | Discover selected workspace/protocol/access/key/publication management | `peerwork_manage` with `mode: catalog` or `describe` |
-| Inspect or resume the original mutation | `peerwork_status`, `peerwork_recover` with its exact `recovery_arguments` |
+| Inspect or resume the original Space mutation | `peerwork_status`, `peerwork_recover` with its exact `recovery_arguments` |
 | Request/approve genuinely missing participation rights | `peerwork_connect`, `peerwork_connect_approve` when setup is available on the selected lifecycle |
+
+## Start a managed Peer session
+
+Send work to an existing Peer through the Space. Restore the current session
+with the existing receiving recovery path. If explicitly asked to move this
+Peer's receiving to another Codex session, use the [Codex handoff](host-bridge-recovery.md#move-this-peers-receiving-to-a-successor-codex-session).
+
+The owner-authorized local coordinator can use `peerwork_session` to bring
+another enrolled Codex or OpenCode V2 Peer online. Use an allowed handle from
+the tool schema. `READY` means the target session verified automatic receiving.
+For launch and stop continuations, follow `next_action` with the original launch
+ID. See [managed local sessions](managed-sessions.md).
 
 ## Check revisions before writing
 

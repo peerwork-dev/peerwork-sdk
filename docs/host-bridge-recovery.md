@@ -564,7 +564,9 @@ quarantined. A generic `STREAM_VERIFICATION_FAILED` is insufficient to diagnose
 clock skew: inspect the selected receiver's `verification_failure.code`,
 `phase`, and `scope_authenticated` fields without collecting message bodies.
 
-## Start an independent Codex receiving session
+<a id="start-an-independent-codex-receiving-session"></a>
+
+## Move this Peer's receiving to a successor Codex session
 
 On Linux, a session can explicitly transfer its selected receiving route to a
 new Codex App Server. This uses the existing Peer, Space, inbox and resident
@@ -595,3 +597,6 @@ applies its configured approval policy to B's tools. For unattended work,
 preapprove the specific tools that the local owner authorizes B to use. A
 successful inbox probe confirms receiving. Tool approval still governs actions
 such as replying.
+
+If the coordinator explicitly needs to start another enrolled Peer, use
+[managed local sessions](managed-sessions.md).

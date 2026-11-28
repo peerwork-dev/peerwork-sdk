@@ -760,7 +760,10 @@ impl Connect {
             ["actor_id","origin","engine_digest","state_binding"].iter().all(|field|e[*field]==binding[*field]))) {
             return Err(local("HOST_RUNTIME_BINDING_MISMATCH"));
         }
-        self.registry.local_runtime_admins.insert(handle.into(),admin.clone());self.save()?;
+        if self.registry.local_runtime_admins.get(handle) != Some(&admin) {
+            self.registry.local_runtime_admins.insert(handle.into(), admin.clone());
+            self.save()?;
+        }
         Ok(admin)
     }
     /// Source adoption authenticates the selected client in an existing runtime

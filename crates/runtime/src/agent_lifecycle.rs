@@ -100,6 +100,9 @@ impl Lifecycle {
         }
     }
     async fn call_inner(&self,request:AgentRequest)->Result<Value> {
+        if matches!(&request, AgentRequest::Session { .. }) && self.local.is_none() {
+            return Err(ParticipantError::local("SESSION_LOCAL_REGISTRY_REQUIRED", "SESSION_LIFECYCLE"));
+        }
         if let Some(profile)=&self.profile {
             if let Some((directory,connect,handle))=self.source_selection(profile)? {
                 self.verify_source(&connect,profile).await?;
@@ -164,6 +167,12 @@ impl Lifecycle {
             if let Some(identity)=identity_handle.as_deref().and_then(|handle|connect.participant_identity(handle)) {
                 let selected=self.identity.get_or_init(||identity.clone());
                 if selected!=&identity{return Err(ParticipantError::local("FRONTEND_IDENTITY_PIN_MISMATCH","CONNECT"));}
+            }
+            if let AgentRequest::Session { request } = &request {
+                let caller = connect.selected_handle(handle_pin)?;
+                drop(connect);
+                return crate::participant_connect::Connect::open(directory)?
+                    .managed_session(caller.as_deref(), workspace_pin, request.clone()).await;
             }
             if let AgentRequest::Connect {
                 request: crate::participant_connect::ConnectInput::Handoff(intent),
@@ -296,6 +305,10 @@ impl Lifecycle {
         }
         if let Some(directory)=&self.local {
             let connect=self.inspect(directory)?;
+            let caller=connect.selected_handle(self.handle.as_deref()).ok().flatten();
+            if let Some(tool)=connect.managed_session_tool(caller.as_deref(),self.workspace.as_deref()) {
+                tools.push(tool);
+            }
             let profile=match connect.profile_for_scope(self.handle.as_deref(),self.workspace.as_deref()) {
                 Ok(profile)=>profile,
                 Err(error) if ["MULTIPLE_IDENTITIES_SELECT_FRONTEND_PARTICIPANT","MULTIPLE_WORKSPACES_SELECT_FRONTEND_WORKSPACE"].contains(&error.code.as_str())=>None,

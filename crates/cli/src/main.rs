@@ -67,6 +67,15 @@ fn main() -> ExitCode {
         println!("{out}");
         return if matches!(out["state"].as_str(),Some("FAILED"|"REJECTED_NO_EFFECT"|"REJECTED")){ExitCode::FAILURE}else if matches!(out["state"].as_str(),Some("ADMITTED"|"RUNNING"|"PENDING"|"BLOCKED")){ExitCode::from(2)}else{ExitCode::SUCCESS};
     }
+    if args.first().map(String::as_str)==Some("session") {
+        let out = peerwork_runtime::participant_connect::managed_sessions::cli(&args[1..]);
+        println!("{out}");
+        return match out["state"].as_str() {
+            Some("FAILED") => ExitCode::FAILURE,
+            Some("STARTING" | "RECOVERING" | "STOPPING") => ExitCode::from(2),
+            _ => ExitCode::SUCCESS,
+        };
+    }
     if args.first().map(String::as_str)==Some("bridge") {
         let out=peerwork_runtime::communication_bridge::cli(&args[1..]);
         println!("{out}");return if out["state"]=="FAILED"{ExitCode::FAILURE}else{ExitCode::SUCCESS};

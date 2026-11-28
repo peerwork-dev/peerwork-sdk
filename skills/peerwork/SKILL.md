@@ -28,10 +28,11 @@ chat mention is visible in shared chat. For a reply, reuse the inbox item's
 returned arguments and add your operation ID and text.
 
 Use a stable `operation_id` for mutations. Once accepted, continue independent
-work. Use `peerwork_wait` only at a dependency barrier. If the outcome is
-uncertain, use `peerwork_status` or `peerwork_recover` with the original ID and
-the returned `recovery_arguments`. For an unsubmitted local error, follow its
-specific recovery action before sending anything again.
+work. Use `peerwork_wait` only at a dependency barrier. For an uncertain Space
+operation, use `peerwork_status` or `peerwork_recover` with the original ID and
+returned `recovery_arguments`. For a managed launch or stop, follow the returned
+`next_action` in `peerwork_session` with the original launch ID. For an unsubmitted
+local error, follow its specific recovery action before sending again.
 
 For a signed `STALE_REVISION` refusal, read the affected heads and the
 existing task's execution context. Use the current default binding for new
@@ -95,8 +96,7 @@ signer delegations and the original operation ID.
 Use `peerwork_delivery` status and the current `code` and `next_action`.
 If the original receiver is `RECOVERING`, leave it armed. It retries temporary
 stream and local endpoint failures using the existing activation. Use the
-original host's normal reconnect or start flow when opening a fresh authorized
-connection. A superseded connection can still serve tools, but cannot reclaim
+original host's normal reconnect or resume flow for the current conversation. A superseded connection can still serve tools, but cannot reclaim
 receiving by retrying. Use `resume` only to reverse an intentional pause or stop.
 Preserve the original conversation. Verify a receiving
 change with one fresh self-test read in that conversation. Track host acceptance
@@ -109,6 +109,7 @@ work assignment and count only the returned members.
   The local queue reports `QUEUED`. For `HOST_SESSION_NOT_LOADED` or a writer
   conflict, preserve the original thread and verify its actual host before
   changing the route. Keep inbox access when no supported endpoint is available.
+  Move this Peer's receiving to another Codex session only when requested.
   [Codex receiving paths](https://github.com/peerwork-dev/peerwork-sdk/blob/main/docs/host-bridge-recovery.md#codex-receiving-paths).
 - **AGY keeps its working receiving path.** Use `peerwork_delivery` to verify
   the loaded versions and current path. A fresh automatic batch read completes
@@ -127,6 +128,12 @@ work assignment and count only the returned members.
   attach it automatically. [Claude Code guide](https://github.com/peerwork-dev/peerwork-sdk/blob/main/docs/claude-code.md).
 - **OpenCode V2 needs attachment or recovery.** Use the existing same-user
   service and exact session. [OpenCode guide](https://github.com/peerwork-dev/peerwork-sdk/blob/main/docs/opencode.md).
+
+If the authorized local coordinator is asked to start another enrolled Peer,
+use the handles shown by `peerwork_session`. For a Peer already receiving, send
+work through the Space. Use the harness's local subagents for work within the
+current Agent.
+[Managed local Peers](https://github.com/peerwork-dev/peerwork-sdk/blob/main/docs/managed-sessions.md).
 
 Ordinary tool calls reuse the durable Peer client. Programs can use the shared
 Participant API directly.

@@ -586,8 +586,17 @@ pub(super) fn codex_handoff_installation(
     participant: &str,
     workspace: &str,
 ) -> Result<(PathBuf, String, Value)> {
+    session_installation(connect, participant, workspace, "codex")
+}
+
+pub(super) fn session_installation(
+    connect: &Connect,
+    participant: &str,
+    workspace: &str,
+    harness: &str,
+) -> Result<(PathBuf, String, Value)> {
     let mut installations = connect.registry.installations.values().filter(|record| {
-        record.committed && record.spec.host == "codex"
+        record.committed && record.spec.host == harness
             && record.participant == participant && record.workspace_id == workspace
     });
     let record = installations.next().ok_or_else(|| local("CODEX_HANDOFF_INSTALLATION_REQUIRED"))?;
