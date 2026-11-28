@@ -40,6 +40,7 @@ mod participant_result;
 mod participant_store;
 mod participant_inbox;
 mod participant_watch;
+mod participant_compact_receiving;
 mod participant_outcome;
 pub mod runtime_contract;
 pub mod kernel_client;

@@ -279,6 +279,72 @@ async fn idle_receiving_uses_the_signed_grant_and_rechecks_keys_on_reconnect() {
 }
 
 #[tokio::test(flavor="multi_thread",worker_threads=2)]
+#[ignore="requires real PostgreSQL, HTTP and optional compact receiving socket"]
+async fn matched_receiving_lease_bytes_and_delivery_latency() {
+    let compact=std::env::var("PEERWORK_TEST_COMPACT_RECEIVING").as_deref()==Ok("1");
+    let scopes=std::env::var("PEERWORK_TEST_SCOPE_COUNT").ok().map(|n|n.parse::<usize>().unwrap()).unwrap_or(1);
+    assert!(matches!(scopes,1|4|8));
+    let mut cohort=Cohort::start(scopes).await;
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    let before=cohort.service.counts().await;
+    tokio::time::sleep(Duration::from_secs(24)).await;
+    let after=cohort.service.counts().await;
+    let delta=|section:&str,key:&str|after[section][key].as_u64().unwrap_or(0)
+        -before[section][key].as_u64().unwrap_or(0);
+    let request=delta("compact_wire","request_bytes");
+    let response=delta("compact_wire","response_bytes");
+    let http=delta("pulse_wire","request_bytes")+delta("pulse_wire","response_bytes");
+    let count=delta("actions","structure.mailbox.pulse");
+    assert_eq!(after["native_streams"],before["native_streams"]);
+    if compact {
+        assert_eq!(after["compact_wire"]["opened"],before["compact_wire"]["opened"]);
+        assert!(request>=3*scopes as u64*36,"{before} -> {after}");
+        assert!(response>=3*scopes as u64*64,"{before} -> {after}");
+        assert_eq!(count,0,"steady renewals should use the socket");
+    } else {
+        assert_eq!(request+response,0);
+        assert!(count>=3*scopes as u64);
+        assert!(http>1000*count);
+    }
+    let mut delivery_ms=Vec::new();
+    for n in 0..16{
+        let slot=n%scopes;
+        let start=Instant::now();
+        let sent=cohort.send(slot,&format!("matched-delivery-{n}")).await;
+        let seen=watch_until(&mut cohort.members[slot].watch,|page|
+            page.items.iter().any(|item|item["envelope"]["message"]["message_id"]==sent["message_id"])).await;
+        assert!(seen.receiver_link_verified&&seen.verification_failure.is_none());
+        delivery_ms.push(u64::try_from(start.elapsed().as_millis()).unwrap());
+    }
+    delivery_ms.sort_unstable();
+    println!("matched_receiving {}",json!({"compact":compact,"scopes":scopes,"seconds":24,
+        "http_pulses":count,"http_pulse_bytes":http,"compact_request_bytes":request,
+        "compact_response_bytes":response,"verified_deliveries":delivery_ms.len(),"delivery_ms":delivery_ms}));
+    cohort.client.close().await.unwrap();
+}
+
+#[tokio::test(flavor="multi_thread",worker_threads=2)]
+#[ignore="requires real PostgreSQL and a staged compact receiving socket"]
+async fn compact_receiving_falls_back_and_resumes_after_socket_failure() {
+    assert_eq!(std::env::var("PEERWORK_TEST_COMPACT_RECEIVING").as_deref(),Ok("1"));
+    let mut cohort=Cohort::start(2).await;
+    let before=cohort.service.counts().await;
+    assert!(before["compact_wire"]["opened"].as_u64().unwrap()>0);
+    cohort.service.config(json!({"reject_socket":true,"close_connections":true})).await;
+    tokio::time::timeout(Duration::from_secs(15),async{
+        loop {
+            if cohort.service.counts().await["native_streams"].as_u64().unwrap()>0{break;}
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }).await.unwrap();
+    let sent=cohort.send(1,"signed-mail-after-socket-failure").await;
+    let delivered=watch_until(&mut cohort.members[1].watch,|page|page.receiver_link_verified
+        &&page.items.iter().any(|item|item["envelope"]["message"]["message_id"]==sent["message_id"])).await;
+    assert_eq!(delivered.items.iter().filter(|item|item["envelope"]["message"]["message_id"]==sent["message_id"]).count(),1);
+    cohort.client.close().await.unwrap();
+}
+
+#[tokio::test(flavor="multi_thread",worker_threads=2)]
 #[ignore="requires explicit synthetic PostgreSQL and real product HTTP fixture"]
 async fn member_directory_projects_native_queue_live_unavailable_and_expired() {
     use crate::participant_inbox::{HostBinding, HostOperation};

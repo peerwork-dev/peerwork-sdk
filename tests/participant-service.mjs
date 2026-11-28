@@ -15,7 +15,9 @@ import {observeFixtureQueries} from './fixture-query-metrics.mjs';
 const root=process.env.PEERWORK_STRUCTURE_REFERENCE_ROOT;
 if(!root||!process.env.PEERWORK_POSTGRES_TEST_URL)throw Error('explicit product root and synthetic PostgreSQL required');
 const require=createRequire(join(root,'package.json'));
-const {serve}=await import(pathToFileURL(require.resolve('@hono/node-server')));
+// The upgrade adapter and the route must share the same module instance.
+const nodeServer=pathToFileURL(require.resolve('@hono/node-server'));
+const {serve}=await import(new URL('./index.mjs',nodeServer));
 const {postgresFixture}=await import(pathToFileURL(join(root,'dist-workspace/tests/fixtures/workspace-postgres-fixture.js')));
 const {createPostgresControlApp}=await import(pathToFileURL(join(root,'dist-workspace/src/workspace-postgres-http.js')));
 const {signTypedJws}=await import(pathToFileURL(join(root,'dist-workspace/src/workspace-jws.js')));
@@ -41,13 +43,38 @@ async function startResidentWorker(){
 let captureDisclosure=false,lastDisclosure=null;
 let reportQuotaBlocked=false;const reportQuotaLimits=new Map();
 let clockOffset=0;const ticker=setInterval(()=>{f.clock.now=Date.now()+clockOffset;},10);
-const app=createPostgresControlApp(f.kernel,{source:()=> '127.0.0.1'});
+const compactReceiving=process.env.PEERWORK_TEST_COMPACT_RECEIVING==='1';
+const sockets=compactReceiving?new (require('ws').WebSocketServer)({noServer:true,maxPayload:1024,perMessageDeflate:false}):null;
+const socketCounters={opened:0,request_bytes:0,response_bytes:0};
+const socketOrigins=new Map();
+sockets?.on('connection',ws=>{
+ const socket=ws._socket,baseline=[socket.bytesRead,socket.bytesWritten];
+ socketCounters.opened++;
+ socketOrigins.set(socket,baseline);
+ ws.once('close',()=>{
+  const [request,response]=socketOrigins.get(socket);
+  socketCounters.request_bytes+=socket.bytesRead-request;
+  socketCounters.response_bytes+=socket.bytesWritten-response;
+  socketOrigins.delete(socket);
+ });
+});
+function socketTraffic(){
+ const traffic={...socketCounters};
+ for(const [socket,[request,response]] of socketOrigins){
+  traffic.request_bytes+=socket.bytesRead-request;
+  traffic.response_bytes+=socket.bytesWritten-response;
+ }
+ return traffic;
+}
+const pulseTraffic={request_bytes:0,response_bytes:0};
+const app=createPostgresControlApp(f.kernel,{source:()=> '127.0.0.1',compactReceiving});
 let offline=false,dropAction=null,delayName=null,delayAction=null,release=null,streamDurationOnce=0;
 let rejectNextRebindMailbox=null,corruptFrame=null,keyDelayWorkspace=null,delayMailbox=null;
 let keyDelayMs=0,earlyEofCount=0,timeoutAction=null;const timeoutReleases=new Set();
 let resourceRefusal=null;const signedResourceRefusals=new Map();
 let ignoreLeasePreference=false;
 let advertiseActionFeatures=true;
+let rejectSocket=false;
 const leaseReplies={preferred:0,compact:0,full:0};
 const counts={commands:0,discovery:0,context:0,journal_reads:0,dropped:0,native_streams:0,corrupted_frames:0,delayed_keys:0,delayed:0,delayed_completed:0,members_batches:0,grant_batches:0,claim_commands:[],actions:{},ack_batches:{RECEIVER_STORED:{requests:0,items:0,max:0},APPLICATION_CONSUMED:{requests:0,items:0,max:0}},command_request_bytes:0,command_response_bytes:0,sse_bytes:0};
 const commandIds=new Set();
@@ -61,7 +88,7 @@ const linkRttMs=Number(process.env.PEERWORK_FIXTURE_LINK_RTT_MS??0);
 if(!Number.isSafeInteger(linkRttMs)||linkRttMs<0||linkRttMs>1000)throw Error('invalid explicit fixture RTT');
 const minimumUplink=process.env.PEERWORK_FIXTURE_MIN_UPLINK==='1';
 if(!['0','1'].includes(process.env.PEERWORK_FIXTURE_MIN_UPLINK??'0'))throw Error('invalid minimum uplink flag');
-const handle=async request=>{
+const handle=async (request,env)=>{
  const requestStarted=performance.now();
  const path=new URL(request.url).pathname;
  if(path==='/__test/config'){
@@ -94,11 +121,12 @@ const handle=async request=>{
   if(options.delay_action!==undefined)delayAction=options.delay_action;
   if(options.delay_mailbox!==undefined)delayMailbox=options.delay_mailbox;
   if(options.stream_duration_once_ms!==undefined)streamDurationOnce=options.stream_duration_once_ms;
-  if(options.close_connections)setTimeout(()=>server.closeAllConnections(),10);
+  if(options.reject_socket!==undefined)rejectSocket=options.reject_socket===true;
+  if(options.close_connections)setTimeout(()=>{server.closeAllConnections();for(const socket of sockets?.clients??[])socket.terminate();},10);
   if(options.release){release?.();release=null;delayName=null;timeoutAction=null;for(const fn of timeoutReleases)fn();timeoutReleases.clear();}
   return Response.json({ok:true});
  }
- if(path==='/__test/counts')return Response.json({...counts,lease_replies:leaseReplies,...(captureDisclosure?{last_disclosure:lastDisclosure}:{}),unique_commands:commandIds.size,resident_worker_running:residentWorker!==null&&residentWorker.exitCode===null,
+ if(path==='/__test/counts')return Response.json({...counts,lease_replies:leaseReplies,compact_wire:socketTraffic(),pulse_wire:pulseTraffic,...(captureDisclosure?{last_disclosure:lastDisclosure}:{}),unique_commands:commandIds.size,resident_worker_running:residentWorker!==null&&residentWorker.exitCode===null,
   workspaces:Number((await f.store.pool.query(`SELECT count(*) n FROM "${f.schema}".workspaces`)).rows[0].n),
   key_epochs:Number((await f.store.pool.query(`SELECT count(*) n FROM "${f.schema}".structure_content_key_epochs`)).rows[0].n),
   events:Number((await f.store.pool.query(`SELECT count(*) n FROM "${f.schema}".events`)).rows[0].n),
@@ -106,11 +134,18 @@ const handle=async request=>{
  if(path.endsWith('/discovery'))counts.discovery++;
  if(path.endsWith('/context'))counts.context++;
  if(path.endsWith('/journal'))counts.journal_reads++;
+ if(rejectSocket&&path.endsWith('/communication/socket'))return new Response(null,{status:503});
  if(offline)return new Response('synthetic disconnected link',{status:503});
  let command=null,wasDelayed=false;
  if(path==='/api/workspace/v1/commands'&&request.method==='POST'){
   const wire=await request.clone().text();counts.command_request_bytes+=Buffer.byteLength(wire);const envelope=JSON.parse(wire);
   command=JSON.parse(Buffer.from(envelope.jws.split('.')[1],'base64url').toString('utf8'));
+  if(command.action_id==='structure.mailbox.pulse'&&env?.outgoing){
+   const {incoming,outgoing}=env,socket=incoming.socket,baseline=socket.bytesWritten;
+   pulseTraffic.request_bytes+=Buffer.byteLength(wire)+Buffer.byteLength(incoming.method+' '+incoming.url+' HTTP/'+incoming.httpVersion+'\r\n\r\n');
+   for(let i=0;i<incoming.rawHeaders.length;i+=2)pulseTraffic.request_bytes+=Buffer.byteLength(incoming.rawHeaders[i]+': '+incoming.rawHeaders[i+1]+'\r\n');
+   outgoing.once('finish',()=>{pulseTraffic.response_bytes+=socket.bytesWritten-baseline;});
+  }
   counts.commands++;commandIds.add(command.command_id);
   if(command.workspace_id===keyDelayWorkspace&&command.action_id==='structure.mailbox.get'&&keyDelayMs){counts.delayed_keys++;await pause(keyDelayMs);}
   counts.actions[command.action_id]=(counts.actions[command.action_id]??0)+1;
@@ -161,8 +196,8 @@ const handle=async request=>{
    request=new Request(request,{headers});
   }
  }
- const measured=queryObserver?await queryObserver.measure(()=>app.fetch(request)):null;
- const response=measured?measured.value:await app.fetch(request);
+ const measured=queryObserver?await queryObserver.measure(()=>app.fetch(request,env)):null;
+ const response=measured?measured.value:await app.fetch(request,env);
  if(path.endsWith('/discovery')&&response.ok&&!advertiseActionFeatures){
   const discovery=await response.json();
   delete discovery.extensions?.action_features;
@@ -222,15 +257,16 @@ const handle=async request=>{
  }
  return response;
 };
-const server=serve({hostname:'127.0.0.1',port:0,fetch:async request=>{
- if(new URL(request.url).pathname.startsWith('/__test/'))return handle(request);
+const server=serve({hostname:'127.0.0.1',port:0,...sockets?{websocket:{server:sockets}}:{},fetch:async (request,env)=>{
+ if(new URL(request.url).pathname.startsWith('/__test/'))return handle(request,env);
  if(linkRttMs)await(minimumUplink?minimumFixtureDelay(linkRttMs/2):pause(linkRttMs/2));
- return delayFixtureResponse(await handle(request),linkRttMs/2);
+ return delayFixtureResponse(await handle(request,env),linkRttMs/2);
 }});
 await once(server,'listening');
 process.stdout.write(JSON.stringify({origin:`http://127.0.0.1:${server.address().port}`,simulated_link_rtt_ms:linkRttMs,simulated_minimum_uplink_ms:minimumUplink?linkRttMs/2:0})+'\n');
 process.once('SIGTERM',async()=>{
  clearInterval(ticker);release?.();for(const fn of timeoutReleases)fn();timeoutReleases.clear();server.closeAllConnections();
+ if(sockets){for(const socket of sockets.clients)socket.terminate();sockets.close();}
  if(residentWorker){
   residentWorker.kill('SIGTERM');
   const timer=setTimeout(()=>residentWorker.kill('SIGKILL'),3000);timer.unref();

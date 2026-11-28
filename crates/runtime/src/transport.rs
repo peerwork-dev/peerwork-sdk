@@ -200,6 +200,28 @@ impl AuthorizationWindow{
     pub(crate) fn expires_at_ms(&self)->u64{self.expires}
 }
 impl HttpTransport {
+    pub(crate) async fn mailbox_socket(&self, token: &str) -> Result<reqwest::Upgraded, TransportError> {
+        if token.len()>8192||!token.is_ascii(){return Err(TransportError::InvalidTrust);}
+        let url=self.endpoint("/api/workspace/v1/structure/communication/socket")?;
+        let nonce=tungstenite::handshake::client::generate_key();
+        let accept=tungstenite::handshake::derive_accept_key(nonce.as_bytes());
+        let response=self.measured_send(self.mailbox_stream_client.get(url)
+            .version(reqwest::Version::HTTP_11).bearer_auth(token)
+            .header("Connection","Upgrade").header("Upgrade","websocket")
+            .header("Sec-WebSocket-Version","13").header("Sec-WebSocket-Key",nonce).send())
+            .await.map_err(map_network_error)?;
+        let header=|name:&str|response.headers().get(name).and_then(|v|v.to_str().ok());
+        if response.status()!=reqwest::StatusCode::SWITCHING_PROTOCOLS
+            || !header("connection").is_some_and(|v|v.split(',').any(|part|part.trim().eq_ignore_ascii_case("upgrade")))
+            || !header("upgrade").is_some_and(|v|v.eq_ignore_ascii_case("websocket"))
+            || header("sec-websocket-accept")!=Some(accept.as_str())
+            || header("sec-websocket-extensions").is_some()
+        {
+            return Err(TransportError::Network);
+        }
+        response.upgrade().await.map_err(map_network_error)
+    }
+
     pub(crate) async fn delivery_stream(&self, token:&str, cancel:&CancellationToken)->Result<reqwest::Response,TransportError>{
         if token.len()>8192 || !token.is_ascii(){return Err(TransportError::InvalidTrust);}
         let url=self.endpoint("/api/workspace/v1/structure/delivery/stream")?;

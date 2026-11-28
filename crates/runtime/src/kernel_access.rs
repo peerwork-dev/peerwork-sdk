@@ -644,7 +644,7 @@ impl KernelAccess {
         client.fresh_structure_context(cancel).await?;
         let discovery=client.discovery();
         if !discovery.protocol_features().contains(&peerwork_core::communication::FEATURE.encode_utf16().collect::<Vec<_>>()){return Err(KernelClientError::UnsupportedStructureProfile.into());}
-        Ok(crate::participant_watch::MailSession{transport:client.transport().clone(),audience:discovery.audience_utf16().to_vec(),service_key:discovery.receipt_public_key().into(),conversation_format:discovery.protocol_features().contains(&peerwork_core::communication::CONVERSATION_FEATURE.encode_utf16().collect::<Vec<_>>())})
+        Ok(crate::participant_watch::MailSession{transport:client.transport().clone(),audience:discovery.audience_utf16().to_vec(),service_key:discovery.receipt_public_key().into(),conversation_format:discovery.protocol_features().contains(&peerwork_core::communication::CONVERSATION_FEATURE.encode_utf16().collect::<Vec<_>>()),compact_receiving:discovery.supports_action_feature(crate::participant_compact_receiving::FEATURE)})
     }
     pub(crate) fn open_cached_mail(&self,entry:&mut serde_json::Value,audience:&[u16]){
         use crate::kernel_intents::{ContentKeyError,StructureContentKeys};

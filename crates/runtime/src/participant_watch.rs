@@ -6,6 +6,7 @@ use crate::{
     kernel_identity::KernelIdentity,
     participant::{Capability, Invoke, ParticipantError, Result, Scope},
     participant_inbox::InboxStore,
+    participant_compact_receiving::{self,CompactChannel},
     transport::HttpTransport,
     KernelCancellationToken,
 };
@@ -161,6 +162,7 @@ pub(crate) struct MailSession {
     pub audience: Vec<u16>,
     pub service_key: String,
     pub conversation_format: bool,
+    pub compact_receiving: bool,
 }
 impl MailSession {
     fn clock(&self) -> Result<crate::transport::AuthorizationWindow> {
@@ -569,6 +571,7 @@ enum Work {
 enum Frame {
     Fault { generation: u64, keys: Vec<String>, diagnostic: Value, reply: oneshot::Sender<()> },
     Bootstrap(u64, Vec<MailboxPins>, oneshot::Sender<Result<()>>),
+    Compact(u64,CompactChannel),
     Data {
         generation: u64,
         stream_id: String,
@@ -621,6 +624,8 @@ pub(crate) async fn run(
     let mut stream_running = false;
     let mut stream_generation = 0u64;
     let mut active_generation = None;
+    let mut compact_channel:Option<CompactChannel>=None;
+    let mut compact_retry_at=Instant::now();
     let mut stream_failures = 0u8;
     let mut stream_retry = Instant::now();
     let mut tick = tokio::time::interval(Duration::from_millis(50));
@@ -842,6 +847,10 @@ pub(crate) async fn run(
                         }
                         let _=reply.send(());continue;
                     },
+                    Frame::Compact(generation,channel)=>{
+                        if active_generation==Some(generation){compact_channel=Some(channel);}
+                        continue;
+                    },
                     Frame::Bootstrap(generation,scopes,reply)=>{
                         if active_generation!=Some(generation){let _=reply.send(Err(error("WATCH_STREAM_REPLACED")));continue;}
                         let bootstrap=(||->Result<()>{for p in scopes{
@@ -1017,6 +1026,7 @@ pub(crate) async fn run(
                                 }
                             },
                             Work::Stream(value)=>{stream_running=false;active_generation=None;stream_cancel=None;stream_scopes.clear();
+                                if compact_channel.take().is_some()&&value.is_err(){compact_retry_at=Instant::now()+Duration::from_secs(60);}
                                 let code=value.as_ref().err().map(|e|e.code.clone());
                                 let fatal=value.as_ref().err().is_some_and(|e|!e.retryable);
                                 if value.is_err(){stream_failures=stream_failures.saturating_add(1);}else{stream_failures=0;}
@@ -1159,18 +1169,29 @@ pub(crate) async fn run(
                     } else {
                         "UNKNOWN"
                     });
+                    let compact=compact_channel.as_ref().and_then(|channel|channel.slot(pins).map(|slot|(channel.clone(),slot)));
+                    let clock=current.clone();
                     let handle=jobs.spawn_local(async move {
                         let started = Instant::now();
+                        let result=async {
+                            if let Some((channel,slot))=compact {
+                                if let Ok(clock)=clock.clock() {
+                                    if let Some(presence)=&presence {
+                                        fence["presence"]=presence.wire(&destination,ordered_ready);
+                                    }
+                                    if let Some(lease)=channel.renew(slot,clock.server_time_ms(),&fence,&stop).await {
+                                        return Ok(lease);
+                                    }
+                                }
+                            }
+                            pulse(&access,&options.workspace_id,fence,presence.as_ref(),Some(&destination),ordered_ready,&stop).await
+                        };
                         Work::Pulse(
                             work_key,
                             started,
                             presence_version,
                             presence.clone(),
-                            match tokio::time::timeout(Duration::from_secs(5), pulse(
-                                &access, &options.workspace_id, fence, presence.as_ref(),
-                                Some(&destination), ordered_ready, &stop,
-                            )
-                            ).await {
+                            match tokio::time::timeout(Duration::from_secs(5),result).await {
                                 Ok(value)=>value,
                                 Err(_)=>Err(Failure::code("PULSE_TIMEOUT")),
                             },
@@ -1365,6 +1386,7 @@ pub(crate) async fn run(
         let scope_key = json!(scope_key).to_string();
         if stream_running && stream_scopes != scope_key {
             active_generation = None;
+            compact_channel = None;
             if let Some(c) = &stream_cancel {
                 c.cancel();
             }
@@ -1382,13 +1404,14 @@ pub(crate) async fn run(
             let stop = cancel.child_token();
             stream_cancel = Some(stop.clone());
             let access = access.clone();
-            let session = current.clone();
-            let actor = identity.actor_id().to_owned();
+            let mut session = current.clone();
+            session.compact_receiving &= Instant::now()>=compact_retry_at;
+            let identity = identity.clone();
             let frames = frames_tx.clone();
             let h = jobs.spawn_local(async move {
                 Work::Stream(
                     stream(
-                        &access, &session, &actor, selected, frames, generation, &stop,
+                        &access, &session, &identity, selected, frames, generation, &stop,
                     )
                     .await,
                 )
@@ -1485,12 +1508,13 @@ fn stream_remaining_ms(expires:u64,floor:u64)->u64 {
 async fn stream(
     access: &KernelAccess,
     session: &MailSession,
-    actor: &str,
+    identity: &KernelIdentity,
     mut pins: Vec<MailboxPins>,
     frames: mpsc::Sender<Frame>,
     generation: u64,
     cancel: &KernelCancellationToken,
 ) -> std::result::Result<(), Failure> {
+    let actor=identity.actor_id();
     let scopes=pins.iter().map(|p|{let mut value=json!({"workspace_id":p.workspace_id,"mailbox_id":p.mailbox_id,"receiver_id":p.receiver_id,"epoch":p.epoch,"after_sequence":p.after_sequence,"after_control_sequence":p.after_control_sequence});if session.conversation_format{value["conversation_format"]=json!(peerwork_core::communication::CONVERSATION_FORMAT);}value}).collect::<Vec<_>>();
     let result = call(
         access,
@@ -1536,7 +1560,19 @@ async fn stream(
     let (tx, rx) = oneshot::channel();
     tokio::select! {_=cancel.cancelled()=>return Ok(()),sent=frames.send(Frame::Bootstrap(generation,pins.clone(),tx))=>sent.map_err(|_|Failure::code("INBOX_DRIVER_STOPPED"))?};
     tokio::select! {_=cancel.cancelled()=>return Ok(()),stored=rx=>stored.map_err(|_|Failure::code("INBOX_DRIVER_STOPPED"))?.map_err(|e|Failure::code(&e.code))?};
-    let mut response = tokio::select! {
+    let connection=cancel.child_token();
+    let _close=connection.clone().drop_guard();
+    let mut compact=if session.compact_receiving {
+        participant_compact_receiving::connect(&session.transport,token,stream_id,identity,pins.clone(),connection,deadline).await
+    } else {None};
+    if let Some((channel,_))=&compact {
+        tokio::select!{
+            _=cancel.cancelled()=>return Ok(()),
+            sent=frames.send(Frame::Compact(generation,channel.clone()))=>sent.map_err(|_|Failure::code("INBOX_DRIVER_STOPPED"))?,
+        };
+    }
+    let mut response = if compact.is_none() {
+        Some(tokio::select! {
         biased;
         _ = cancel.cancelled() => return Ok(()),
         _ = tokio::time::sleep_until(deadline) => return Ok(()),
@@ -1546,10 +1582,15 @@ async fn stream(
                 _ => Failure::code("STREAM_UNAVAILABLE"),
             })?
         }
-    };
+        })
+    }else{None};
     let mut buffer = SseBuffer::default();
     loop {
-        let chunk = tokio::select! {_=cancel.cancelled()=>return Ok(()),_=tokio::time::sleep_until(deadline)=>return Ok(()),chunk=response.chunk()=>chunk.map_err(|_|Failure::code("STREAM_DISCONNECTED"))?};
+        let next=async {
+            if let Some((_,rx))=&mut compact {Ok(rx.recv().await)}
+            else {response.as_mut().unwrap().chunk().await.map(|value|value.map(|bytes|bytes.to_vec())).map_err(|_|Failure::code("STREAM_DISCONNECTED"))}
+        };
+        let chunk = tokio::select! {_=cancel.cancelled()=>return Ok(()),_=tokio::time::sleep_until(deadline)=>return Ok(()),chunk=next=>chunk?};
         let Some(chunk) = chunk else {
             return Err(Failure::code(if buffer.bytes.is_empty(){"STREAM_DISCONNECTED"}else{"STREAM_TRUNCATED"}));
         };
