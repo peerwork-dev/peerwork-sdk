@@ -265,6 +265,7 @@ struct Slot {
     pulse_busy: bool,
     lifecycle: u64,
     pulse_retry_at: Instant,
+    last_pulse_tag: Option<[u8;16]>,
     pulse_failures: u8,
     pulse_cancel: Option<KernelCancellationToken>,
     presence: crate::participant_presence::Presence,
@@ -557,7 +558,7 @@ enum Work {
     Session(std::result::Result<MailSession, Failure>),
     Inspect(String, std::result::Result<Value, Failure>),
     Claim(String, std::result::Result<Value, Failure>),
-    Pulse(String, Instant, u64, Option<crate::participant_presence::Presence>, std::result::Result<Value, Failure>),
+    Pulse(String, Instant, u64, Option<crate::participant_presence::Presence>, [u8;16], std::result::Result<Value, Failure>),
     Keys(String, Vec<String>, std::result::Result<Value, Failure>),
     Ack(
         String,
@@ -955,10 +956,11 @@ pub(crate) async fn run(
                                 }
                                 s.fail(e)
                             }}},
-                            Work::Pulse(key,started,version,presence,value)=>if let Some(s)=slots.get_mut(&key){s.pulse_busy=false;s.pulse_cancel=None;match value{Ok(value)=>{
+                            Work::Pulse(key,started,version,presence,tag,value)=>if let Some(s)=slots.get_mut(&key){s.pulse_busy=false;s.pulse_cancel=None;match value{Ok(value)=>{
                                 let m=&value["mailbox"];let ttl=m["lease_until"].as_u64().unwrap_or(0).saturating_sub(m["server_time"].as_u64().unwrap_or(u64::MAX));
                                 let remaining=Duration::from_millis(ttl.min(15000)).saturating_sub(started.elapsed());
                                 if !remaining.is_zero() {
+                                    s.last_pulse_tag=Some(tag);
                                     let now=Instant::now();
                                     let hint=&m["key_head"];
                                     let workspace=&s.binding.options.workspace_id;
@@ -976,7 +978,7 @@ pub(crate) async fn run(
                                     }
                                 }
                                 if remaining.is_zero(){s.fail(Failure::code("MAILBOX_LEASE_EXPIRED"));}else{s.lease_until=Some(Instant::now()+remaining);if let Some(uploaded)=presence{s.presence.uploaded(&uploaded);}s.next_control=s.presence.next_pulse(Instant::now()+if version==s.presence.version{Duration::from_secs(6)}else{Duration::ZERO});s.pulse_failures=0;s.pulse_retry_at=Instant::now();}
-                            },Err(mut e)=>{s.lease_until=None;s.pulse_failures=s.pulse_failures.saturating_add(1);s.pulse_retry_at=Instant::now()+if e.capacity(){receiver_retry_delay(s.pulse_failures,true)}else{Duration::from_millis((250u64<<s.pulse_failures.min(4)).min(4000))};
+                            },Err(mut e)=>{s.lease_until=None;s.last_pulse_tag=None;s.pulse_failures=s.pulse_failures.saturating_add(1);s.pulse_retry_at=Instant::now()+if e.capacity(){receiver_retry_delay(s.pulse_failures,true)}else{Duration::from_millis((250u64<<s.pulse_failures.min(4)).min(4000))};
                                 if e.code=="MAILBOX_LEASE_EXPIRED"{e.retryable=true;}
                                 if e.retryable{s.link_verified=false;s.state("RECONNECTING",Some(e.code));}else{s.fail(e);}
                             }}},
@@ -1169,17 +1171,19 @@ pub(crate) async fn run(
                     } else {
                         "UNKNOWN"
                     });
-                    let compact=compact_channel.as_ref().and_then(|channel|channel.slot(pins).map(|slot|(channel.clone(),slot)));
+                    if let Some(presence)=&presence {
+                        fence["presence"]=presence.wire(&destination,ordered_ready);
+                    }
+                    let tag=participant_compact_receiving::observation_tag(&fence);
+                    let compact=compact_channel.as_ref().filter(|_|s.last_pulse_tag==Some(tag))
+                        .and_then(|channel|channel.slot(pins).map(|slot|(channel.clone(),slot)));
                     let clock=current.clone();
                     let handle=jobs.spawn_local(async move {
                         let started = Instant::now();
                         let result=async {
                             if let Some((channel,slot))=compact {
                                 if let Ok(clock)=clock.clock() {
-                                    if let Some(presence)=&presence {
-                                        fence["presence"]=presence.wire(&destination,ordered_ready);
-                                    }
-                                    if let Some(lease)=channel.renew(slot,clock.server_time_ms(),&fence,&stop).await {
+                                    if let Some(lease)=channel.renew(slot,clock.server_time_ms(),&fence,tag,&stop).await {
                                         return Ok(lease);
                                     }
                                 }
@@ -1191,6 +1195,7 @@ pub(crate) async fn run(
                             started,
                             presence_version,
                             presence.clone(),
+                            tag,
                             match tokio::time::timeout(Duration::from_secs(5),result).await {
                                 Ok(value)=>value,
                                 Err(_)=>Err(Failure::code("PULSE_TIMEOUT")),
@@ -1448,6 +1453,7 @@ fn slot(binding: Binding) -> Slot {
         pulse_busy: false,
         lifecycle: 1,
         pulse_retry_at: Instant::now(),
+        last_pulse_tag:None,
         pulse_failures: 0,
         pulse_cancel: None,
         presence: Default::default(),
@@ -1588,10 +1594,15 @@ async fn stream(
     loop {
         let next=async {
             if let Some((_,rx))=&mut compact {Ok(rx.recv().await)}
-            else {response.as_mut().unwrap().chunk().await.map(|value|value.map(|bytes|bytes.to_vec())).map_err(|_|Failure::code("STREAM_DISCONNECTED"))}
+            else {response.as_mut().unwrap().chunk().await.map_err(|_|Failure::code("STREAM_DISCONNECTED"))}
         };
         let chunk = tokio::select! {_=cancel.cancelled()=>return Ok(()),_=tokio::time::sleep_until(deadline)=>return Ok(()),chunk=next=>chunk?};
         let Some(chunk) = chunk else {
+            // The server and client can reach the signed deadline in adjacent
+            // scheduling ticks. A clean close at that boundary rotates normally.
+            if buffer.bytes.is_empty()&&deadline.saturating_duration_since(tokio::time::Instant::now())<=Duration::from_secs(1){
+                return Ok(());
+            }
             return Err(Failure::code(if buffer.bytes.is_empty(){"STREAM_DISCONNECTED"}else{"STREAM_TRUNCATED"}));
         };
         for fragment in chunk.chunks(8192) {

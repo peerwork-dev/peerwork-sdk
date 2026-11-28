@@ -53,9 +53,12 @@ impl Service {
             bootstrap,
         }
     }
+    fn control_origin(&self)->&str {
+        self.bootstrap["control_origin"].as_str().unwrap_or(&self.origin)
+    }
     pub(crate) async fn config(&self, value: Value) {
         reqwest::Client::new()
-            .post(format!("{}/__test/config", self.origin))
+            .post(format!("{}/__test/config", self.control_origin()))
             .body(value.to_string())
             .send()
             .await
@@ -64,7 +67,7 @@ impl Service {
             .unwrap();
     }
     pub(crate) async fn counts(&self) -> Value {
-        let text = reqwest::get(format!("{}/__test/counts", self.origin))
+        let text = reqwest::get(format!("{}/__test/counts", self.control_origin()))
             .await
             .unwrap()
             .text()

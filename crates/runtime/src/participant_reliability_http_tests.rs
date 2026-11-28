@@ -22,6 +22,9 @@ impl Cohort {
         let temp=crate::test_support::protected_test_dir();
         let mut config=configuration(temp.path(),&service.origin);
         config.transport.request_timeout_ms=30000;
+        if let Some(root)=service.bootstrap["tls_root"].as_str(){
+            config.transport.additional_root_pem_files.push(PathBuf::from(root));
+        }
         let client=ParticipantClient::open(config.clone()).await.unwrap();
         let mut members=Vec::new();
         for index in 0..count {
@@ -285,7 +288,9 @@ async fn matched_receiving_lease_bytes_and_delivery_latency() {
     let scopes=std::env::var("PEERWORK_TEST_SCOPE_COUNT").ok().map(|n|n.parse::<usize>().unwrap()).unwrap_or(1);
     assert!(matches!(scopes,1|4|8));
     let mut cohort=Cohort::start(scopes).await;
-    tokio::time::sleep(Duration::from_secs(3)).await;
+    // At eight scopes, adding the final mailbox rotates the union stream.
+    // Give all slots one full renewal interval to upload the changed readiness.
+    tokio::time::sleep(Duration::from_secs(if scopes==8{10}else{3})).await;
     let before=cohort.service.counts().await;
     tokio::time::sleep(Duration::from_secs(24)).await;
     let after=cohort.service.counts().await;
@@ -293,8 +298,13 @@ async fn matched_receiving_lease_bytes_and_delivery_latency() {
         -before[section][key].as_u64().unwrap_or(0);
     let request=delta("compact_wire","request_bytes");
     let response=delta("compact_wire","response_bytes");
+    let encrypted_request=delta("encrypted_wire","request_bytes");
+    let encrypted_response=delta("encrypted_wire","response_bytes");
     let http=delta("pulse_wire","request_bytes")+delta("pulse_wire","response_bytes");
     let count=delta("actions","structure.mailbox.pulse");
+    if cohort.service.bootstrap["tls_root"].is_string(){
+        assert!(encrypted_request+encrypted_response>request+response);
+    }
     assert_eq!(after["native_streams"],before["native_streams"]);
     if compact {
         assert_eq!(after["compact_wire"]["opened"],before["compact_wire"]["opened"]);
@@ -319,7 +329,8 @@ async fn matched_receiving_lease_bytes_and_delivery_latency() {
     delivery_ms.sort_unstable();
     println!("matched_receiving {}",json!({"compact":compact,"scopes":scopes,"seconds":24,
         "http_pulses":count,"http_pulse_bytes":http,"compact_request_bytes":request,
-        "compact_response_bytes":response,"verified_deliveries":delivery_ms.len(),"delivery_ms":delivery_ms}));
+        "compact_response_bytes":response,"encrypted_request_bytes":encrypted_request,
+        "encrypted_response_bytes":encrypted_response,"verified_deliveries":delivery_ms.len(),"delivery_ms":delivery_ms}));
     cohort.client.close().await.unwrap();
 }
 
@@ -341,6 +352,36 @@ async fn compact_receiving_falls_back_and_resumes_after_socket_failure() {
     let delivered=watch_until(&mut cohort.members[1].watch,|page|page.receiver_link_verified
         &&page.items.iter().any(|item|item["envelope"]["message"]["message_id"]==sent["message_id"])).await;
     assert_eq!(delivered.items.iter().filter(|item|item["envelope"]["message"]["message_id"]==sent["message_id"]).count(),1);
+    cohort.client.close().await.unwrap();
+}
+
+#[tokio::test(flavor="multi_thread",worker_threads=2)]
+#[ignore="requires real test sockets and a shortened signed grant"]
+async fn compact_receiving_rotates_the_signed_grant_without_losing_mailbox_custody(){
+    assert_eq!(std::env::var("PEERWORK_TEST_COMPACT_RECEIVING").as_deref(),Ok("1"));
+    assert!(std::env::var_os("PEERWORK_TEST_STREAM_GRANT_MS").is_some());
+    let mut cohort=Cohort::start(1).await;
+    let start=cohort.members[0].watch.page(0,8).await.unwrap();
+    let posted=cohort.send(0,"message-before-signed-rotation").await;
+    let stored=watch_until(&mut cohort.members[0].watch,|p|p.items.iter()
+        .any(|item|item["envelope"]["message"]["message_id"]==posted["message_id"])).await;
+    tokio::time::timeout(Duration::from_secs(18),async{
+        loop {
+            let page=cohort.members[0].watch.page(0,8).await.unwrap();
+            if page.receiver_link_verified&&page.stream_id!=start.stream_id{
+                assert!(page.checkpoint>=stored.checkpoint);
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }).await.unwrap();
+    let traffic=cohort.service.counts().await;
+    assert!(traffic["compact_wire"]["opened"].as_u64().unwrap()>=2);
+    assert_eq!(traffic["native_streams"],0);
+    let posted=cohort.send(0,"message-after-signed-rotation").await;
+    let delivered=watch_until(&mut cohort.members[0].watch,|p|p.items.iter()
+        .any(|item|item["envelope"]["message"]["message_id"]==posted["message_id"])).await;
+    assert!(delivered.receiver_link_verified&&delivered.verification_failure.is_none());
     cohort.client.close().await.unwrap();
 }
 

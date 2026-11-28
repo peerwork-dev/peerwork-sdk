@@ -1,5 +1,6 @@
 //! Browser observers and older services retain the signed HTTP/SSE path.
 use crate::{kernel_identity::KernelIdentity, transport::HttpTransport, KernelCancellationToken};
+use bytes::Bytes;
 use ed25519_dalek::Signer;
 use futures_util::{SinkExt, StreamExt};
 use peerwork_core::{communication::{MailboxPins,MAX_FRAME_BYTES},crypto::{base64url,sha256}};
@@ -28,6 +29,14 @@ pub(crate) struct CompactChannel {
     requests:mpsc::Sender<Request>,
 }
 
+pub(crate) fn observation_tag(body:&Value)->[u8;16]{
+    let p=&body["presence"];
+    let stable=if p.is_null(){Value::Null}else{json!([p["mode"],p["host_ready"],p["host_execution"],
+        p["key_state"],p["key_code"],p["key_id"],p["key_epoch"],p["ordered_ready"],p["destination_digest"]])};
+    let digest=sha256(json!([body["ready"],body["execution_state"],stable]).to_string().as_bytes());
+    digest[..16].try_into().unwrap()
+}
+
 impl CompactChannel {
     pub(crate) fn slot(&self,pin:&MailboxPins)->Option<u8>{
         self.scopes.iter().position(|scope|scope.workspace_id==pin.workspace_id&&scope.mailbox_id==pin.mailbox_id
@@ -35,18 +44,15 @@ impl CompactChannel {
             .and_then(|slot|u8::try_from(slot).ok())
     }
 
-    pub(crate) async fn renew(&self,slot:u8,issued:u64,body:&Value,cancel:&KernelCancellationToken)->Option<Value>{
+    pub(crate) async fn renew(&self,slot:u8,issued:u64,body:&Value,tag:[u8;16],cancel:&KernelCancellationToken)->Option<Value>{
         let p=&body["presence"];
-        let stable=if p.is_null(){Value::Null}else{json!([p["mode"],p["host_ready"],p["host_execution"],
-            p["key_state"],p["key_code"],p["key_id"],p["key_epoch"],p["ordered_ready"],p["destination_digest"]])};
-        let tag=sha256(json!([body["ready"],body["execution_state"],stable]).to_string().as_bytes());
         let age=|field:&str|p[field].as_u64().unwrap_or(60000).min(60000) as u16;
         let mut wire=Vec::with_capacity(30);
         wire.extend_from_slice(&[RENEW,slot]);
         wire.extend_from_slice(&issued.to_be_bytes());
         wire.extend_from_slice(&age("host_age_ms").to_be_bytes());
         wire.extend_from_slice(&age("key_age_ms").to_be_bytes());
-        wire.extend_from_slice(&tag[..16]);
+        wire.extend_from_slice(&tag);
         let (reply,rx)=oneshot::channel();
         self.requests.try_send(Request{wire,reply}).ok()?;
         tokio::select! {
@@ -72,7 +78,7 @@ fn decode_lease(wire:&[u8])->Option<Value>{
 }
 
 pub(crate) async fn connect(transport:&HttpTransport,token:&str,stream_id:&str,identity:&KernelIdentity,pins:Vec<MailboxPins>,
-    cancel:KernelCancellationToken,deadline:tokio::time::Instant)->Option<(CompactChannel,mpsc::Receiver<Vec<u8>>)>{
+    cancel:KernelCancellationToken,deadline:tokio::time::Instant)->Option<(CompactChannel,mpsc::Receiver<Bytes>)>{
     let establish=async{
         let socket=transport.mailbox_socket(token).await.ok()?;
         let config=WebSocketConfig::default().max_message_size(Some(MAX_FRAME_BYTES+64))
@@ -118,7 +124,7 @@ pub(crate) async fn connect(transport:&HttpTransport,token:&str,stream_id:&str,i
                 },
                 message=socket.next()=>match message{
                     Some(Ok(Message::Binary(data))) if data.first()==Some(&DELIVERY)=>{
-                        if delivery.try_send(data[1..].to_vec()).is_err(){break;}
+                        if delivery.try_send(data.slice(1..)).is_err(){break;}
                     },
                     Some(Ok(Message::Binary(data))) if data.first()==Some(&RECEIPT)&&data.len()>=10=>{
                         let slot=data[1];

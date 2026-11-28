@@ -1401,6 +1401,7 @@ name = "peerwork-runtime"
 version = "0.3.69"
 dependencies = [
  "aes-gcm 0.10.3",
+ "bytes",
  "ed25519-dalek",
  "futures-util",
  "http-body-util",
