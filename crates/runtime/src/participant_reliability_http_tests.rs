@@ -209,7 +209,9 @@ async fn resident_pulse_accepts_compact_and_full_signed_leases() {
     let member = &mut cohort.members[0];
     let first = cohort.service.counts().await["lease_replies"].clone();
     assert!(first["compact"].as_u64().unwrap() > 0, "{first}");
-    assert_eq!(first["preferred"], first["compact"]);
+    // The fixture counts requests before awaiting the response, so another
+    // compact reply may be in flight when the first stream verifies.
+    assert!(first["preferred"].as_u64().unwrap()>=first["compact"].as_u64().unwrap());
     assert_eq!(first["full"], 0);
 
     cohort.service.config(json!({"ignore_lease_preference": true})).await;
@@ -237,8 +239,13 @@ async fn resident_pulse_accepts_compact_and_full_signed_leases() {
 #[ignore="requires a real PostgreSQL fixture and 75 seconds of idle connection time"]
 async fn idle_receiving_uses_the_signed_grant_and_rechecks_keys_on_reconnect() {
     let mut cohort=Cohort::start(1).await;
-    let member=&mut cohort.members[0];
-    watch_until(&mut member.watch,|snapshot|snapshot.presence["key_current"]==true).await;
+    tokio::time::timeout(Duration::from_secs(15),async{
+        loop {
+            let page=cohort.members[0].watch.page(0,8).await.unwrap();
+            if page.presence["key_current"]==true&&page.presence["body_key"]["state"]=="READY"{break;}
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    }).await.unwrap();
     let initial=cohort.service.counts().await;
     tokio::time::sleep(Duration::from_secs(75)).await;
     let idle=cohort.service.counts().await;
@@ -389,11 +396,18 @@ async fn poison_is_durable_and_slow_ack_cannot_starve_lease_or_clear_quarantine(
 #[ignore="requires explicit synthetic PostgreSQL and real product HTTP fixture"]
 async fn slow_workspace_key_refresh_does_not_stall_other_workspace() {
     let mut c=Cohort::start(4).await;
+    let current=selected(&c.client,"structure.mailbox.get",&c.members[0].scope,
+        json!({"mailbox_id":c.members[0].mailbox["mailbox_id"]})).await;
+    let head=&current["content_key_head"];
+    let key=install_synthetic_key(&c.config,&c.members[0].options.workspace_id,&[43;32],head["key_id"].as_str());
     c.service.config(json!({"key_delay_workspace":c.members[0].options.workspace_id,"key_delay_ms":12000})).await;
+    mutate(&c.client,"rotate-slow-key","structure.content-key.set",&c.members[0].scope,
+        json!({"key_id":key,"expected_epoch":head["epoch"],"expected_head_revision":head["revision"]})).await;
     tokio::time::timeout(Duration::from_secs(25),async {
         loop {
-            let s=c.members[0].watch.next().await.unwrap();
+            let s=c.members[0].watch.page(0,8).await.unwrap();
             if s.presence["body_key"]["code"]=="KEY_SYNC_TIMEOUT"{break;}
+            tokio::time::sleep(Duration::from_millis(25)).await;
         }
     }).await.unwrap();
     for index in 1..c.members.len() {
@@ -403,7 +417,13 @@ async fn slow_workspace_key_refresh_does_not_stall_other_workspace() {
         assert!(healthy.verification_failure.is_none());
     }
     c.service.config(json!({"key_delay_workspace":null,"key_delay_ms":0})).await;
-    watch_until(&mut c.members[0].watch,|s|s.presence["body_key"]["state"]=="READY"&&s.presence["key_current"]==true).await;
+    tokio::time::timeout(Duration::from_secs(15),async{
+        loop {
+            let s=c.members[0].watch.page(0,8).await.unwrap();
+            if s.presence["body_key"]["state"]=="READY"&&s.presence["body_key"]["key_id"]==key&&s.presence["key_current"]==true{break;}
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    }).await.unwrap();
     c.client.close().await.unwrap();
 }
 #[tokio::test(flavor="multi_thread",worker_threads=2)]
