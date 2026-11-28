@@ -53,9 +53,13 @@ const socketCounters={opened:0,request_bytes:0,response_bytes:0};
 const socketOrigins=new Map();
 sockets?.on('connection',ws=>{
  const socket=ws._socket,baseline=[socket.bytesRead,socket.bytesWritten];
+ const duration=streamDurationOnce;
+ streamDurationOnce=0;
+ const closeTimer=duration?setTimeout(()=>ws.close(1000),duration):undefined;
  socketCounters.opened++;
  socketOrigins.set(socket,baseline);
  ws.once('close',()=>{
+  if(closeTimer)clearTimeout(closeTimer);
   const [request,response]=socketOrigins.get(socket);
   socketCounters.request_bytes+=socket.bytesRead-request;
   socketCounters.response_bytes+=socket.bytesWritten-response;
