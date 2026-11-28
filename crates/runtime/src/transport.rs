@@ -166,8 +166,11 @@ pub struct ExactHttpResponse {
 pub struct HttpTransport {
     origin: Url,
     client: Client,
+    mailbox_stream_client: Client,
+    header_timeout: Duration,
     metrics:Arc<TransportMetrics>,
     context_cache:Arc<std::sync::Mutex<Option<(String,peerwork_core::structure_context::VerifiedStructureContext,Instant,Instant)>>>,
+    pub(crate) context_refresh: Arc<tokio::sync::Mutex<()>>,
     migration_source_clock:std::sync::Arc<std::sync::Mutex<Option<(u64,Instant)>>>,
     #[cfg(test)]
     journal_get_probe: std::sync::Arc<std::sync::Mutex<Option<Vec<String>>>>,
@@ -207,7 +210,14 @@ impl HttpTransport {
     pub(crate) async fn mailbox_stream(&self,token:&str,cancel:&CancellationToken)->Result<reqwest::Response,TransportError>{
         if token.len()>8192||!token.is_ascii(){return Err(TransportError::InvalidTrust);}
         let url=self.endpoint("/api/workspace/v1/structure/communication/stream")?;
-        let response=tokio::select!{_=cancel.cancelled()=>return Err(TransportError::Cancelled),r=self.measured_send(self.client.get(url).bearer_auth(token).header("Accept","text/event-stream").timeout(Duration::from_secs(65)).send())=>r.map_err(map_network_error)?};
+        let send = self.measured_send(self.mailbox_stream_client.get(url)
+            .bearer_auth(token).header("Accept", "text/event-stream").send());
+        let response = tokio::select! {
+            _ = cancel.cancelled() => return Err(TransportError::Cancelled),
+            result = tokio::time::timeout(self.header_timeout, send) => {
+                result.map_err(|_| TransportError::Timeout)?.map_err(map_network_error)?
+            }
+        };
         if !response.status().is_success()||!response.headers().get("content-type").and_then(|v|v.to_str().ok()).is_some_and(|v|v.starts_with("text/event-stream")){return Err(TransportError::Network);}
         Ok(response)
     }
@@ -254,32 +264,44 @@ impl HttpTransport {
         if config.timeout.is_zero() {
             return Err(TransportError::InvalidOrigin);
         }
-        let mut builder = Client::builder()
-            .redirect(Policy::none())
-            .timeout(config.timeout)
-            .no_proxy();
         // This SDK-specific opt-in is shared by the language facades. Generic
         // HTTP_PROXY/HTTPS_PROXY/NO_PROXY remain ignored: changing the route
         // requires an explicit participant choice, including in a sandbox.
         let proxy = selected_proxy(config.proxy, std::env::var("PEERWORK_HTTP_PROXY"))?;
-        if let Some(proxy) = proxy {
+        let proxy = if let Some(proxy) = proxy {
             let url = Url::parse(&proxy).map_err(|_| TransportError::InvalidTrust)?;
             if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
                 return Err(TransportError::InvalidTrust);
             }
-            builder = builder.proxy(Proxy::all(proxy).map_err(|_| TransportError::InvalidTrust)?);
-        }
-        for cert in extra_roots { builder = builder.add_root_certificate(cert); }
+            Some(Proxy::all(proxy).map_err(|_| TransportError::InvalidTrust)?)
+        } else { None };
+        let mut roots = extra_roots;
         for pem in config.additional_root_pem {
-            let cert = Certificate::from_pem(&pem).map_err(|_| TransportError::InvalidTrust)?;
-            builder = builder.add_root_certificate(cert);
+            roots.push(Certificate::from_pem(&pem).map_err(|_| TransportError::InvalidTrust)?);
         }
-        let client = builder.build().map_err(|_| TransportError::Setup)?;
+        let builder = || {
+            let mut builder = Client::builder().redirect(Policy::none()).no_proxy();
+            if let Some(proxy) = &proxy {
+                builder = builder.proxy(proxy.clone());
+            }
+            for certificate in &roots {
+                builder = builder.add_root_certificate(certificate.clone());
+            }
+            builder
+        };
+        let client = builder().timeout(config.timeout).build().map_err(|_| TransportError::Setup)?;
+        // Reqwest's request timeout includes the entire body. The mailbox
+        // consumer enforces the authenticated grant deadline independently.
+        let mailbox_stream_client = builder().connect_timeout(config.timeout)
+            .build().map_err(|_| TransportError::Setup)?;
         Ok(Self {
             origin,
             client,
+            mailbox_stream_client,
+            header_timeout: config.timeout,
             metrics:Default::default(),
             context_cache:Default::default(),
+            context_refresh: Default::default(),
             migration_source_clock:Default::default(),
             #[cfg(test)]
             journal_get_probe: Default::default(),
@@ -528,7 +550,8 @@ impl HttpTransport {
             .header("X-Peerwork-Diagnostics", "authorization-v1");
         if prefer_minimal {
             // A server ignoring the preference returns the full signed result.
-            request = request.header("prefer", "return=minimal");
+            request = request.header("prefer", "return=minimal")
+                .header("X-Peerwork-Key-Head", "epoch-v1");
         }
         let send = self.measured_send(request.body(body).send());
         let response = tokio::select! {
@@ -1039,6 +1062,35 @@ mod tests {
         let mut config = TransportConfig::new(origin);
         config.allow_loopback_http = true;
         config
+    }
+
+    #[tokio::test]
+    async fn mailbox_stream_bounds_headers_and_keeps_the_body_open() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut config = local_config(format!("http://{}/", listener.local_addr().unwrap()));
+        config.timeout = Duration::from_millis(200);
+        let (body_ready, release_body) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0u8; 2048];
+            socket.read(&mut request).await.unwrap();
+            socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: 4\r\nConnection: close\r\n\r\n").await.unwrap();
+            release_body.await.unwrap();
+            socket.write_all(b"data").await.unwrap();
+            let (_slow_headers, _) = listener.accept().await.unwrap();
+            tokio::time::sleep(Duration::from_secs(30)).await;
+        });
+        let transport = HttpTransport::new(config).unwrap();
+        let cancel = CancellationToken::new();
+        let response = transport.mailbox_stream("token", &cancel).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        body_ready.send(()).unwrap();
+        assert_eq!(&response.bytes().await.unwrap()[..], b"data");
+        assert!(matches!(
+            transport.mailbox_stream("token", &cancel).await,
+            Err(TransportError::Timeout)
+        ));
+        server.abort();
     }
 
     #[tokio::test]

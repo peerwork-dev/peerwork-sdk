@@ -267,6 +267,7 @@ struct Slot {
     pulse_cancel: Option<KernelCancellationToken>,
     presence: crate::participant_presence::Presence,
     next_keys: Instant,
+    full_keys_at: Option<Instant>,
     report_retry: Instant,
     report_code: Option<String>,
     ack_code: Option<String>,
@@ -309,6 +310,7 @@ impl Slot {
         let mut data = self.presence.local()["body_key"].clone();
         data["state"] = json!("MISSING");
         self.presence.keys(data);
+        self.full_keys_at = None;
         self.next_keys = Instant::now();
         self.next_control = Instant::now();
     }
@@ -947,6 +949,23 @@ pub(crate) async fn run(
                             Work::Pulse(key,started,version,presence,value)=>if let Some(s)=slots.get_mut(&key){s.pulse_busy=false;s.pulse_cancel=None;match value{Ok(value)=>{
                                 let m=&value["mailbox"];let ttl=m["lease_until"].as_u64().unwrap_or(0).saturating_sub(m["server_time"].as_u64().unwrap_or(u64::MAX));
                                 let remaining=Duration::from_millis(ttl.min(15000)).saturating_sub(started.elapsed());
+                                if !remaining.is_zero() {
+                                    let now=Instant::now();
+                                    let hint=&m["key_head"];
+                                    let workspace=&s.binding.options.workspace_id;
+                                    let local_key_present=||hint["key_id"].as_str().is_none_or(|id|
+                                        access.cached_mail_keys(workspace,&[id.to_owned()])
+                                            .is_ok_and(|keys|keys.contains(id)));
+                                    if let Some(verify_by)=s.full_keys_at.map(|at|at+Duration::from_secs(120))
+                                        .filter(|until|*until>now&&s.presence.confirms_key_head(hint)&&local_key_present()){
+                                        s.presence.keys_at=Some(s.presence.keys_at.map_or(started,|at|at.max(started)));
+                                        s.next_keys=verify_by;
+                                    }else if !hint.is_null(){
+                                        s.next_keys=now;
+                                    }else{
+                                        s.next_keys=s.next_keys.min(now+Duration::from_secs(10));
+                                    }
+                                }
                                 if remaining.is_zero(){s.fail(Failure::code("MAILBOX_LEASE_EXPIRED"));}else{s.lease_until=Some(Instant::now()+remaining);if let Some(uploaded)=presence{s.presence.uploaded(&uploaded);}s.next_control=s.presence.next_pulse(Instant::now()+if version==s.presence.version{Duration::from_secs(6)}else{Duration::ZERO});s.pulse_failures=0;s.pulse_retry_at=Instant::now();}
                             },Err(mut e)=>{s.lease_until=None;s.pulse_failures=s.pulse_failures.saturating_add(1);s.pulse_retry_at=Instant::now()+if e.capacity(){receiver_retry_delay(s.pulse_failures,true)}else{Duration::from_millis((250u64<<s.pulse_failures.min(4)).min(4000))};
                                 if e.code=="MAILBOX_LEASE_EXPIRED"{e.retryable=true;}
@@ -971,7 +990,10 @@ pub(crate) async fn run(
                                 if store.key_missing(&workspace).unwrap_or(true)&&matches!(data["state"].as_str(),Some("READY"|"NOT_REQUIRED")){data["state"]=json!("MISSING");}
                                 let _=store.wake_key_heads(&workspace);
                                 for s in slots.values_mut().filter(|s|s.binding.options.workspace_id==workspace){
-                                    let before=s.presence.version;s.presence.keys(data.clone());s.next_keys=Instant::now()+Duration::from_secs(if matches!(data["state"].as_str(),Some("READY"|"NOT_REQUIRED")){10}else{2});if before!=s.presence.version{s.next_control=Instant::now();}else{s.next_control=s.presence.next_pulse(s.next_control);}s.notify();
+                                    let ready=matches!(data["state"].as_str(),Some("READY"|"NOT_REQUIRED"));
+                                    let now=Instant::now();
+                                    s.full_keys_at=ready.then_some(now);
+                                    let before=s.presence.version;s.presence.keys(data.clone());s.next_keys=now+Duration::from_secs(if ready{10}else{2});if before!=s.presence.version{s.next_control=now;}else{s.next_control=s.presence.next_pulse(s.next_control);}s.notify();
                                 }
                             },
                             Work::Report(key,id,version,value)=>if let Some(s)=slots.get_mut(&key){
@@ -1000,6 +1022,7 @@ pub(crate) async fn run(
                                 if value.is_err(){stream_failures=stream_failures.saturating_add(1);}else{stream_failures=0;}
                                 stream_retry=Instant::now()+if value.as_ref().err().is_some_and(Failure::capacity){receiver_retry_delay(stream_failures,true)}else{if value.is_ok(){Duration::from_millis(50)}else{receiver_retry_delay(stream_failures,false)}};
                                 for s in slots.values_mut().filter(|s|!s.blocked&&s.receive_fault.is_none()){s.link_verified=false;s.disconnects=s.disconnects.saturating_add(1);
+                                    if value.is_err(){s.full_keys_at=None;s.next_keys=Instant::now();}
                                     if fatal{s.fail(Failure{no_effect:false,code:code.clone().unwrap_or_else(||"STREAM_VERIFICATION_FAILED".into()),retryable:false});}
                                     else{s.state("RECONNECTING",code.clone());
                                         // Revalidate each fenced mailbox independently after a
@@ -1406,6 +1429,7 @@ fn slot(binding: Binding) -> Slot {
         pulse_cancel: None,
         presence: Default::default(),
         next_keys: Instant::now(),
+        full_keys_at: None,
         report_retry: Instant::now(),
         report_code: None,
         ack_code: None,
@@ -1512,11 +1536,17 @@ async fn stream(
     let (tx, rx) = oneshot::channel();
     tokio::select! {_=cancel.cancelled()=>return Ok(()),sent=frames.send(Frame::Bootstrap(generation,pins.clone(),tx))=>sent.map_err(|_|Failure::code("INBOX_DRIVER_STOPPED"))?};
     tokio::select! {_=cancel.cancelled()=>return Ok(()),stored=rx=>stored.map_err(|_|Failure::code("INBOX_DRIVER_STOPPED"))?.map_err(|e|Failure::code(&e.code))?};
-    let mut response = session
-        .transport
-        .mailbox_stream(token, cancel)
-        .await
-        .map_err(|_| Failure::code("STREAM_UNAVAILABLE"))?;
+    let mut response = tokio::select! {
+        biased;
+        _ = cancel.cancelled() => return Ok(()),
+        _ = tokio::time::sleep_until(deadline) => return Ok(()),
+        response = session.transport.mailbox_stream(token, cancel) => {
+            response.map_err(|error| match error {
+                crate::transport::TransportError::Timeout => Failure::code("STREAM_HEADERS_TIMEOUT"),
+                _ => Failure::code("STREAM_UNAVAILABLE"),
+            })?
+        }
+    };
     let mut buffer = SseBuffer::default();
     loop {
         let chunk = tokio::select! {_=cancel.cancelled()=>return Ok(()),_=tokio::time::sleep_until(deadline)=>return Ok(()),chunk=response.chunk()=>chunk.map_err(|_|Failure::code("STREAM_DISCONNECTED"))?};

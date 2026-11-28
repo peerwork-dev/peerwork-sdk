@@ -621,7 +621,6 @@ impl KernelAccess {
 
     pub(crate) async fn refresh_mailbox_clock(&self,cancel:&CancellationToken)->Result<(),KernelAccessError>{
         let client=self.open_session_client(cancel).await?;
-        client.transport().invalidate_context(client.discovery().receipt_public_key());
         client.refresh_authorization_context(cancel).await?;Ok(())
     }
     /// Selected retained-key checks, with no discovery or network work.
@@ -642,7 +641,7 @@ impl KernelAccess {
     }
     pub(crate) async fn mailbox_session(&self,cancel:&CancellationToken)->Result<crate::participant_watch::MailSession,KernelAccessError>{
         let client=self.open_session_client(cancel).await?;
-        client.refresh_authorization_context(cancel).await?;
+        client.fresh_structure_context(cancel).await?;
         let discovery=client.discovery();
         if !discovery.protocol_features().contains(&peerwork_core::communication::FEATURE.encode_utf16().collect::<Vec<_>>()){return Err(KernelClientError::UnsupportedStructureProfile.into());}
         Ok(crate::participant_watch::MailSession{transport:client.transport().clone(),audience:discovery.audience_utf16().to_vec(),service_key:discovery.receipt_public_key().into(),conversation_format:discovery.protocol_features().contains(&peerwork_core::communication::CONVERSATION_FEATURE.encode_utf16().collect::<Vec<_>>())})
@@ -698,8 +697,7 @@ impl KernelAccess {
         Ok(outcome)
     }
 
-    /// Refresh verified prerequisites using the same transport pool. Used by
-    /// the state owner before expiry, never to extend an unverified anchor.
+    /// Explicit refresh for callers that need a new authorization observation.
     pub async fn refresh_session_async(&self,cancel:&CancellationToken)->Result<(),KernelAccessError>{
         let mut client=self.open_session_client(cancel).await?;
         let _guard=if let Some(session)=&self.session{Some(session.refresh.lock().await)}else{None};

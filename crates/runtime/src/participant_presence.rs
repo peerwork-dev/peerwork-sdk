@@ -68,6 +68,17 @@ impl Presence {
         self.keys = value;
         self.keys_at = Some(Instant::now());
     }
+    pub fn confirms_key_head(&self, hint: &Value) -> bool {
+        let Some(hint) = hint.as_object() else { return false; };
+        match self.keys["state"].as_str() {
+            Some("READY") => hint.get("usable").and_then(Value::as_bool) == Some(true)
+                && hint.get("key_id") == self.keys.get("key_id")
+                && hint.get("epoch") == self.keys.get("epoch"),
+            Some("NOT_REQUIRED") => hint.get("key_id").is_some_and(Value::is_null)
+                && hint.get("epoch").is_some_and(Value::is_null),
+            _ => false,
+        }
+    }
     /// Schedule against the actual observation last uploaded, not the latest
     /// local probe. Renew before the service's10s host /15s key expiry, leaving
     /// 1s for dispatch and IO. Once the newest observation is uploaded, an old

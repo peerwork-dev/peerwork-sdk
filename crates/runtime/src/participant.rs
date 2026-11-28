@@ -1277,13 +1277,11 @@ impl ProgramWatch {
 enum JobKind {
     Mutation((String, String)),
     Request,
-    Refresh,
     Preparation,
 }
 enum JobResult {
     Mutation(Value),
     Request,
-    Refresh,
     Prepared{context:ReplyContext,original:Invoke,resolved:Result<Invoke>,protocol_route:bool,reply:oneshot::Sender<Result<Admission>>},
 }
 fn admit_request(store:&mut Store,identity:&KernelIdentity,config:&ParticipantConfig,sources:&[MigrationSource],active:&BTreeSet<(String,String)>,waiters:&mut BTreeMap<(String,String),Vec<oneshot::Sender<Operation>>>,context:ReplyContext,original:Invoke,resolved:Invoke,protocol_route:bool)->Result<Admission>{
@@ -1338,9 +1336,6 @@ async fn engine_loop(
         Duration::from_millis(250),
     );
     history.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let mut refresh = tokio::time::interval(Duration::from_secs(40));
-    refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let mut refresh_running = false;
     let mut maintenance: BTreeSet<(String, String)> = BTreeSet::new();
     // A verified result awaiting local persistence still occupies a worker
     // slot. Storage failure must not grow memory or cause another submission.
@@ -1355,7 +1350,6 @@ async fn engine_loop(
                         Some(JobKind::Preparation)=>if let Some(JobResult::Prepared{context,original,resolved,protocol_route,reply})=result {
                             let result=resolved.and_then(|resolved|admit_request(&mut store,&identity,&config,&sources,&active,&mut waiters,context,original,resolved,protocol_route));let _=reply.send(result);
                         },
-                        Some(JobKind::Refresh)=>refresh_running=false,
                         Some(JobKind::Mutation(key))=>{
                             let value=match result{Some(JobResult::Mutation(value))=>value,_=>json!({"state":"FAILED","code":"ENGINE_TASK_FAILED","retryable":false,"effect_certainty":"UNKNOWN","recovery":"OBSERVE_OR_RECOVER_ORIGINAL_OPERATION"})};
                             retry_persistence.insert(key,value);
@@ -1367,7 +1361,7 @@ async fn engine_loop(
             command=receiver.recv()=>match command{
                 None=>break,
                 Some(Command::ResolveExecution{context,request,reply})=>{
-                    if jobs.len()-usize::from(refresh_running)+retry_persistence.len()>=config.max_inflight{let _=reply.send(Err(ParticipantError::local("NOT_ADMITTED_BUSY","ADMISSION")));continue;}
+                    if jobs.len()+retry_persistence.len()>=config.max_inflight{let _=reply.send(Err(ParticipantError::local("NOT_ADMITTED_BUSY","ADMISSION")));continue;}
                     let access=access.clone();let stop=cancel.clone();let actor=identity.actor_id().to_owned();let origin=origin.clone();
                     let job=jobs.spawn_local(async move{
                         let selected=access.prepare_participant_execution(&request,&context.namespace,&actor,&origin,false,&stop).await.map_err(|e|{let e=KernelPublicError::from(e);let mut error=ParticipantError::local(e.code,"EXECUTION_CONTEXT_PREPARATION");error.details=e.details;error});
@@ -1403,7 +1397,7 @@ async fn engine_loop(
                     let existing=match store.existing(&context.namespace,&request,&identity){Ok(existing)=>existing,Err(error)=>{let _=reply.send(Err(error));continue;}};
                     if !crate::participant_actions::execution_mutation(&request.action)||existing.is_some()||resolved.is_some(){let selected=resolved.unwrap_or_else(||request.clone());let result=admit_request(&mut store,&identity,&config,&sources,&active,&mut waiters,context,request,selected,protocol_route);let _=reply.send(result);continue;}
                     if let Err(error)=context.capability.authorize(&request){let _=reply.send(Err(error));continue;}
-                    if jobs.len()-usize::from(refresh_running)+retry_persistence.len()>=config.max_inflight{let _=reply.send(Err(ParticipantError::local("NOT_ADMITTED_BUSY","ADMISSION")));continue;}
+                    if jobs.len()+retry_persistence.len()>=config.max_inflight{let _=reply.send(Err(ParticipantError::local("NOT_ADMITTED_BUSY","ADMISSION")));continue;}
                     let access=access.clone();let stop=cancel.clone();let actor=identity.actor_id().to_owned();let origin=origin.clone();
                     let task=jobs.spawn_local(async move{
                         let resolved=access.prepare_participant_execution(&request,&context.namespace,&actor,&origin,true,&stop).await.map_err(|error|{let error=KernelPublicError::from(error);let mut e=ParticipantError::local(error.code,"EXECUTION_CONTEXT_PREPARATION");e.details=error.details;e});
@@ -1417,7 +1411,7 @@ async fn engine_loop(
                 Some(Command::Result{context,id,selection,reply})=>{
                     let selected=(||{selection.validate()?;let request=store.request(&context.namespace,&id,&identity)?;context.capability.authorize(&request)?;let op=store.get(&context.namespace,&id,&identity)?;Ok((request,op))})();
                     let (request,op)=match selected{Ok(v)=>v,Err(e)=>{let _=reply.send(Err(e));continue;}};
-                    if jobs.len()-usize::from(refresh_running)+retry_persistence.len()>=config.max_inflight{let mut e=ParticipantError::local("NOT_ADMITTED_BUSY","ADMISSION").original(&id);e.effect_certainty=op.effect_certainty;let _=reply.send(Err(e));continue;}
+                    if jobs.len()+retry_persistence.len()>=config.max_inflight{let mut e=ParticipantError::local("NOT_ADMITTED_BUSY","ADMISSION").original(&id);e.effect_certainty=op.effect_certainty;let _=reply.send(Err(e));continue;}
                     let access=access.clone();let stop=cancel.clone();let cache=result_cache.clone();
                     let handle=jobs.spawn_local(async move{
                         let original=id.clone();let certainty=op.effect_certainty.clone();
@@ -1444,7 +1438,7 @@ async fn engine_loop(
                 },
                 Some(Command::Request{context,request,reply})=>{
                     if !context.local_live.load(std::sync::atomic::Ordering::Acquire){let _=reply.send(Err(ParticipantError::local("LOCAL_CLIENT_REVOKED","ADMISSION")));continue;}
-                    if jobs.len()-usize::from(refresh_running)+retry_persistence.len()>=config.max_inflight{let _=reply.send(Err(ParticipantError::local("NOT_ADMITTED_BUSY","ADMISSION")));continue;}
+                    if jobs.len()+retry_persistence.len()>=config.max_inflight{let _=reply.send(Err(ParticipantError::local("NOT_ADMITTED_BUSY","ADMISSION")));continue;}
                     if let Err(e)=context.capability.authorize(&request){let _=reply.send(Err(e));continue;}
                     let access=access.clone();let stop=cancel.clone();let namespace=context.namespace;let capability=context.capability;let live=context.local_live;let actor=identity.actor_id().to_owned();let request_origin=origin.clone();let sources=sources.clone();
                     let handle=jobs.spawn_local(async move{
@@ -1471,12 +1465,7 @@ async fn engine_loop(
                     });
                     job_kinds.insert(handle.id(),JobKind::Request);
                 },
-                Some(Command::Metrics{reply})=>{let _=reply.send(json!({"actor_id":identity.actor_id(),"origin":origin,"active_operations":active.len(),"active_tasks":jobs.len(),"max_inflight":config.max_inflight,"background_tasks":usize::from(refresh_running),"watch_driver_owned":!watch_task.is_finished(),"pending_local_persistence":retry_persistence.len(),"http":access.session_metrics(),"result_cache":result_cache.lock().ok().map(|c|c.metrics())}));},
-            },
-            _=refresh.tick(),if !refresh_running=>{
-                let access=access.clone();let stop=cancel.clone();refresh_running=true;
-                let handle=jobs.spawn_local(async move{let _=access.refresh_session_async(&stop).await;JobResult::Refresh});
-                job_kinds.insert(handle.id(),JobKind::Refresh);
+                Some(Command::Metrics{reply})=>{let _=reply.send(json!({"actor_id":identity.actor_id(),"origin":origin,"active_operations":active.len(),"active_tasks":jobs.len(),"max_inflight":config.max_inflight,"background_tasks":0,"watch_driver_owned":!watch_task.is_finished(),"pending_local_persistence":retry_persistence.len(),"http":access.session_metrics(),"result_cache":result_cache.lock().ok().map(|c|c.metrics())}));},
             },
             _=tick.tick()=>{},
             _=history.tick(),if store.history_due=>{
@@ -1501,7 +1490,7 @@ async fn engine_loop(
                 Err(_) => true,
             }
         });
-        while jobs.len() - usize::from(refresh_running) + retry_persistence.len()
+        while jobs.len() + retry_persistence.len()
             < config.max_inflight
         {
             let due = match store.due(config.max_pending) {

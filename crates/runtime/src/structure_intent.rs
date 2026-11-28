@@ -380,25 +380,35 @@ impl KernelClient {
     }
 
     pub(crate) async fn refresh_authorization_context(&self,cancel:&CancellationToken)->Result<(),KernelClientError>{
-        let mut nonce=[0u8;32];OsRng.try_fill_bytes(&mut nonce).map_err(|_|KernelClientError::InvalidCommand)?;
-        let nonce=base64url(&nonce);let started=Instant::now();let response=self.transport.structure_context(&nonce,cancel).await?;
-        if !(200..300).contains(&response.status){return Err(classify_http_rejection(response.status,&response.wire));}
-        if started.elapsed()>Duration::from_secs(30){return Err(TransportError::Timeout.into());}
-        let context=verify_structure_context(&response.wire,&nonce,self.discovery.audience_utf16(),self.discovery.receipt_public_key()).map_err(|_|JournalError::InvalidReceipt)?;
-        self.transport.remember_context(self.discovery.receipt_public_key(),&context,started);Ok(())
+        let _refresh = tokio::select! {
+            _ = cancel.cancelled() => return Err(TransportError::Cancelled.into()),
+            guard = self.transport.context_refresh.lock() => guard,
+        };
+        self.transport.invalidate_context(self.discovery.receipt_public_key());
+        self.load_authorization_context(cancel).await
     }
 
-    pub(super) async fn fresh_structure_context(&self,cancel:&CancellationToken)->Result<crate::transport::AuthorizationWindow,KernelClientError>{
-        if cancel.is_cancelled(){return Err(TransportError::Cancelled.into());}
-        if let Some(context)=self.transport.cached_context(self.discovery.receipt_public_key()){return Ok(context);}
+    async fn load_authorization_context(&self,cancel:&CancellationToken)->Result<(),KernelClientError>{
         let mut nonce=[0u8;32];OsRng.try_fill_bytes(&mut nonce).map_err(|_|KernelClientError::InvalidCommand)?;
         let nonce=base64url(&nonce);let started=Instant::now();let response=self.transport.structure_context(&nonce,cancel).await?;
         if response.status==404{return Err(KernelClientError::UnsupportedStructureProfile);}
         if !(200..300).contains(&response.status){return Err(classify_http_rejection(response.status,&response.wire));}
         if started.elapsed()>Duration::from_secs(30){return Err(TransportError::Timeout.into());}
         let context=verify_structure_context(&response.wire,&nonce,self.discovery.audience_utf16(),self.discovery.receipt_public_key()).map_err(|_|JournalError::InvalidReceipt)?;
-        self.transport.remember_context(self.discovery.receipt_public_key(),&context,started);
-        self.transport.cached_context(self.discovery.receipt_public_key()).ok_or_else(||TransportError::Timeout.into())
+        self.transport.remember_context(self.discovery.receipt_public_key(),&context,started);Ok(())
+    }
+
+    pub(crate) async fn fresh_structure_context(&self,cancel:&CancellationToken)->Result<crate::transport::AuthorizationWindow,KernelClientError>{
+        if cancel.is_cancelled(){return Err(TransportError::Cancelled.into());}
+        let pin = self.discovery.receipt_public_key();
+        if let Some(context) = self.transport.cached_context(pin) { return Ok(context); }
+        let _refresh = tokio::select! {
+            _ = cancel.cancelled() => return Err(TransportError::Cancelled.into()),
+            guard = self.transport.context_refresh.lock() => guard,
+        };
+        if let Some(context) = self.transport.cached_context(pin) { return Ok(context); }
+        self.load_authorization_context(cancel).await?;
+        self.transport.cached_context(pin).ok_or_else(||TransportError::Timeout.into())
     }
 
     pub(super) fn structure_command(&self, identity: &KernelIdentity, authority: &str, intent_wire: &[u8])
