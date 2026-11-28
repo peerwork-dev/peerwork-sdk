@@ -4,7 +4,8 @@ use crate::{
     agent_tools::AgentRequest,
     communication_runtime as ipc,
     participant::http_tests::{
-        configuration, install_synthetic_key, mutate, selected, structure, wait_terminal, Service,
+        configuration, install_synthetic_key, mutate, selected, structure, wait_terminal,
+        RuntimeProcess, Service,
     },
     participant::{ParticipantClient, ParticipantConfig},
 };
@@ -161,6 +162,16 @@ impl Drop for CodexCleanup {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires isolated PostgreSQL and real Codex and OpenCode V2 test hosts"]
 async fn independent_managed_codex_and_opencode_sessions() {
+    independent_managed_sessions("opencode").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires isolated PostgreSQL and real Codex and AGY ACP test hosts"]
+async fn independent_managed_codex_and_agy_sessions() {
+    independent_managed_sessions("agy").await;
+}
+
+async fn independent_managed_sessions(reviewer_harness: &str) {
     use std::path::PathBuf;
     let root = crate::test_support::protected_test_dir();
     let service = Service::start();
@@ -250,18 +261,32 @@ async fn independent_managed_codex_and_opencode_sessions() {
             .collect(),
         hosts: Vec::new(),
     };
-    let cancel = crate::KernelCancellationToken::new();
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    let process = tokio::spawn(ipc::serve(runtime.clone(), cancel.clone(), tx));
-    let ready = rx.await.unwrap().unwrap();
+    let config_path = root.path().join("runtime.json");
+    crate::communication_host::write_private(&config_path, &serde_json::to_vec(&runtime).unwrap())
+        .unwrap();
+    let mut process = RuntimeProcess::start(&config_path);
+    let ready = &process.ready;
 
     let location = root.path().join("connect");
     let _cleanup = CodexCleanup(location.clone());
     let codex = root.path().join("project-codex");
     crate::onboarding_files::directory(&codex, true).unwrap();
-    let opencode = PathBuf::from(std::env::var_os("PEERWORK_TEST_OPENCODE_PROJECT").unwrap());
-    let opencode_service =
-        PathBuf::from(std::env::var_os("PEERWORK_TEST_OPENCODE_SERVICE").unwrap());
+    let (reviewer_project, reviewer_slot, review_nonces, review_stop) = if reviewer_harness == "agy" {
+        (
+            PathBuf::from(std::env::var_os("PEERWORK_TEST_AGY_PROJECT").unwrap()),
+            json!({"harness":"agy","executable":std::env::var("PEERWORK_TEST_AGY_EXECUTABLE").unwrap(),
+                "conversation_id":std::env::var("PEERWORK_TEST_AGY_CONVERSATION").unwrap()}),
+            ["AGY-1", "AGY-2"],
+            "AGY_RECEIVING_ROUTE_RETIRED",
+        )
+    } else {
+        (
+            PathBuf::from(std::env::var_os("PEERWORK_TEST_OPENCODE_PROJECT").unwrap()),
+            json!({"harness":"opencode","service_file":std::env::var("PEERWORK_TEST_OPENCODE_SERVICE").unwrap()}),
+            ["OPEN-1", "OPEN-2"],
+            "OPENCODE_RECEIVING_ROUTE_RETIRED",
+        )
+    };
     let cli = PathBuf::from(std::env::var_os("PEERWORK_PARTICIPANT_CLI").unwrap());
     {
         let mut registry = Connect::open(&location).unwrap();
@@ -338,7 +363,7 @@ async fn independent_managed_codex_and_opencode_sessions() {
         }
         for (handle, harness, project) in [
             ("builder", "codex", codex.clone()),
-            ("reviewer", "opencode", opencode.clone()),
+            ("reviewer", reviewer_harness, reviewer_project),
         ] {
             let installed = registry
                 .install(
@@ -375,7 +400,7 @@ async fn independent_managed_codex_and_opencode_sessions() {
         registry.private_directory.replace_private(POLICY,None,&serde_json::to_vec(&json!({
             "format":"peerwork.session-launch.v1","controller":"coordinator","workspace_id":workspace,
             "peers":{"builder":{"harness":"codex"},
-                     "reviewer":{"harness":"opencode","service_file":opencode_service}}
+                     "reviewer":reviewer_slot}
         })).unwrap()).unwrap();
     }
     let frontend = || {
@@ -475,7 +500,7 @@ async fn independent_managed_codex_and_opencode_sessions() {
                 &receiver,
                 watch,
                 &configs[2].expected_actor,
-                "OPEN-1"
+                review_nonces[0]
             ),
         );
         let stopped = wait_state(&rebound, "stop", "implement", None, "STOPPED").await;
@@ -495,12 +520,11 @@ async fn independent_managed_codex_and_opencode_sessions() {
             &receiver,
             watch,
             &configs[2].expected_actor,
-            "OPEN-2",
+            review_nonces[1],
         )
         .await;
     }
     let stopped = wait_state(&rebound, "stop", "review", None, "STOPPED").await;
-    assert_eq!(stopped["stop_effect"], "OPENCODE_RECEIVING_ROUTE_RETIRED");
-    cancel.cancel();
-    process.await.unwrap().unwrap();
+    assert_eq!(stopped["stop_effect"], review_stop);
+    process.stop_gracefully().await;
 }

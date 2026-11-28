@@ -14,7 +14,8 @@ python3 tests/host-qualification/run.py \
   --node /path/to/node \
   --postgres-bin /path/to/postgres/bin \
   --codex /path/to/codex \
-  --opencode /path/to/opencode
+  --opencode /path/to/opencode \
+  --agy /path/to/agy
 ```
 
 The default runs all cases. Repeat `--case` to select specific cases and omit
@@ -31,6 +32,9 @@ specific replies emitted by the harnesses, and retain the same session or route 
 required by the case. The JSON output identifies the executable digests, case and
 verified signed replies. Logs and transient state are removed on exit.
 
-The maintained cases currently cover compact receiver reconnect, Codex handoff
-and restart, and independently managed Codex and OpenCode V2 sessions. An
-installed service or live user inbox is never an input to these cases.
+The cases cover compact receiver reconnect, Codex handoff and restart, and a
+common signed-message flow with managed Codex plus either OpenCode V2 or AGY
+ACP. The AGY runner provisions its own conversation through ACP and points the
+Gemini provider at a deterministic loopback endpoint. Always select the host
+version being qualified explicitly. An installed service or live user inbox
+is never an input to these cases.

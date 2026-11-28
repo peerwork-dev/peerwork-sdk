@@ -46,6 +46,7 @@ impl SessionRequest {
 enum Harness {
     Codex,
     Opencode,
+    Agy,
 }
 
 impl Harness {
@@ -53,17 +54,19 @@ impl Harness {
         match self {
             Self::Codex => "codex",
             Self::Opencode => "opencode",
+            Self::Agy => "agy",
         }
     }
 
     fn target_id(self, adapter: &Value) -> Result<&str> {
-        let field = match self {
-            Self::Codex => "thread_id",
-            Self::Opencode => "session_id",
+        let (kind, field) = match self {
+            Self::Codex => ("codex", "thread_id"),
+            Self::Opencode => ("opencode", "session_id"),
+            Self::Agy => ("agy-stdio", "conversation_id"),
         };
         adapter
             .get(field)
-            .filter(|_| adapter["kind"] == self.name())
+            .filter(|_| adapter["kind"] == kind)
             .and_then(Value::as_str)
             .ok_or_else(|| problem("SESSION_STATE_INVALID"))
     }
@@ -74,6 +77,27 @@ impl Harness {
 struct Slot {
     harness: Harness,
     service_file: Option<PathBuf>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    executable: Option<PathBuf>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    conversation_id: Option<String>,
+}
+
+impl Slot {
+    fn valid(&self) -> bool {
+        match self.harness {
+            Harness::Codex => self.service_file.is_none()
+                && self.executable.is_none() && self.conversation_id.is_none(),
+            Harness::Opencode => self.service_file.as_ref().is_some_and(|file| file.is_absolute())
+                && self.executable.is_none() && self.conversation_id.is_none(),
+            Harness::Agy => self.service_file.is_none()
+                && self.executable.as_ref().is_some_and(|file| file.is_absolute())
+                && self.conversation_id.as_ref().is_some_and(|id| {
+                    !id.is_empty() && id.len() <= 256
+                        && id.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+                }),
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -99,12 +123,7 @@ impl Policy {
             || policy.peers.iter().any(|(peer, slot)| {
                 !identifier(peer)
                     || peer == &policy.controller
-                    || match slot.harness {
-                        Harness::Codex => slot.service_file.is_some(),
-                        Harness::Opencode => {
-                            slot.service_file.as_ref().is_none_or(|p| !p.is_absolute())
-                        }
-                    }
+                    || !slot.valid()
             })
         {
             return Err(problem("SESSION_LAUNCH_POLICY_INVALID"));
@@ -174,6 +193,7 @@ fn outcome(id: &str, job: &Job, state: &str, code: &str) -> Value {
         value["stop_effect"] = json!(match job.selection.slot.harness {
             Harness::Codex => "DEDICATED_CODEX_HOST_EXITED",
             Harness::Opencode => "OPENCODE_RECEIVING_ROUTE_RETIRED",
+            Harness::Agy => "AGY_RECEIVING_ROUTE_RETIRED",
         });
     }
     value
@@ -518,14 +538,12 @@ impl Connect {
         }
         let admin = self.runtime_admin(peer, None).await?;
         let status = crate::communication_runtime::call(&admin, json!({"method":"status"})).await?;
-        if !status["value"]["optional_features"]
-            .as_array()
-            .is_some_and(|features| {
-                features
-                    .iter()
-                    .any(|feature| feature == "resident-scope-rebind-v1")
-            })
-        {
+        let features = status["value"]["optional_features"].as_array();
+        let required = match job.selection.slot.harness {
+            Harness::Agy => "agy-acp-resident-rebind-v1",
+            _ => "resident-scope-rebind-v1",
+        };
+        if !features.is_some_and(|features| features.iter().any(|feature| feature == required)) {
             return Err(problem("SESSION_RESIDENT_RUNTIME_REQUIRED"));
         }
         let directory = self.session_directory(id);
@@ -578,6 +596,14 @@ impl Connect {
                 };
                 Ok(host::adapter(file, &project, &session))
             }
+            Harness::Agy => Ok(json!({
+                "kind": "agy-stdio", "managed": true, "stdio_protocol": "acp",
+                "executable": job.selection.slot.executable,
+                "working_directory": project,
+                "conversation_id": job.selection.slot.conversation_id,
+                "mcp_server": name,
+                "acp_client": {"registry": self.directory, "participant": peer, "workspace": workspace},
+            })),
         }
         .map_err(problem)?;
         if job.adapter.as_ref().is_some_and(|saved| saved != &adapter) {
@@ -704,6 +730,12 @@ impl Connect {
                 host::idle(file.clone(), project, job.ownership.clone(), id.into())
                     .await
                     .map_err(problem)?
+            }
+            Harness::Agy => {
+                let observations = self.managed_delivery(&job, "status").await?;
+                observations["observations"].as_array().is_some_and(|rows| {
+                    rows.len() == 1 && rows[0]["transport_health"]["execution_state"] == "IDLE"
+                })
             }
         };
         if stopped {

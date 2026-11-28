@@ -725,13 +725,13 @@ async fn resident_runtime_keeps_durable_work_after_caller_disconnect_and_multipl
     assert_eq!(service.counts().await["workspaces"], 3);
 }
 
-struct RuntimeProcess {
+pub(crate) struct RuntimeProcess {
     child: Child,
-    ready: crate::communication_runtime::RuntimeReady,
+    pub(crate) ready: crate::communication_runtime::RuntimeReady,
     _stdout: BufReader<std::process::ChildStdout>,
 }
 impl RuntimeProcess {
-    fn start(config_path: &std::path::Path) -> Self {
+    pub(crate) fn start(config_path: &std::path::Path) -> Self {
         let binary =
             std::env::var("PEERWORK_PARTICIPANT_CLI").expect("explicit freshly built native CLI");
         let mut child = Command::new(binary)
@@ -768,6 +768,22 @@ impl RuntimeProcess {
     fn kill(&mut self) {
         self.child.kill().unwrap();
         assert!(!self.child.wait().unwrap().success());
+    }
+    #[cfg(target_os = "linux")]
+    pub(crate) async fn stop_gracefully(&mut self) {
+        assert!(self.child.try_wait().unwrap().is_none());
+        assert_eq!(unsafe { libc::kill(self.child.id() as i32, libc::SIGTERM) }, 0);
+        tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                if let Some(status) = self.child.try_wait().unwrap() {
+                    assert!(status.success(), "installed runtime exited with {status}");
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("installed runtime graceful shutdown");
     }
 }
 impl Drop for RuntimeProcess {

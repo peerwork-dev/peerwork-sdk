@@ -22,6 +22,8 @@ import threading
 import time
 from urllib.parse import quote
 
+import agy
+
 
 SUITE = Path(__file__).resolve().parent
 SDK = SUITE.parent.parent
@@ -30,11 +32,15 @@ CASES = {
         "compact_receiving_falls_back_and_resumes_after_socket_failure", (), ()
     ),
     "codex-restart": (
-        "codex_handoff_launch_and_same_thread_restart", ("codex",), ("HANDOFF-1",)
+        "codex_handoff_launch_and_same_thread_restart", ("codex",), ()
     ),
     "codex-opencode": (
         "independent_managed_codex_and_opencode_sessions",
-        ("codex", "opencode"), ("OPEN-1", "OPEN-2")
+        ("codex", "opencode"), ("HANDOFF-1", "OPEN-1", "OPEN-2")
+    ),
+    "codex-agy": (
+        "independent_managed_codex_and_agy_sessions",
+        ("codex", "agy"), ("HANDOFF-1", "AGY-1", "AGY-2")
     ),
 }
 
@@ -103,12 +109,20 @@ def model_config(args, root, env, stack, harnesses):
             '[features]\nincremental_tools = false\nincremental_tools_legacy = false\n'
             'plugins = false\nremote_plugin = false\n'
         )
-    if "opencode" not in harnesses:
+    if not {"opencode", "agy"}.intersection(harnesses):
         return
     spec = importlib.util.spec_from_file_location(
         "opencode_qualification", SDK / "tests/qualify-opencode-v2.py")
     fixture = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(fixture)
+    if "agy" in harnesses:
+        output = root / "agy-model"
+        output.mkdir()
+        agy_model = fixture.Model(output)
+        stack.callback(agy_model.server_close)
+        agy.prepare(args.agy, root, env, stack, agy_model)
+    if "opencode" not in harnesses:
+        return
     project = root / "opencode-project"
     settings = project / ".opencode/opencode.json"
     settings.parent.mkdir(parents=True)
@@ -195,7 +209,8 @@ def run_cases(args, case_names, postgres_url):
                 code = child.wait(timeout=240)
                 trace = (root / f"{name}.log").read_text(errors="replace")
                 observed = tuple(re.findall(r"verified signed reply for ([A-Z0-9-]+)", trace))
-                passed = code == 0 and "test result: ok. 1 passed;" in trace and observed == signed_replies
+                passed = (code == 0 and "test result: ok. 1 passed;" in trace
+                          and sorted(observed) == sorted(signed_replies))
                 print(json.dumps({"case": name, "state": "PASS" if passed else "FAIL",
                                   "signed_replies": list(observed), "exit_code": code}), flush=True)
                 if not passed:
@@ -253,7 +268,7 @@ def main():
     for name in ("sdk", "runner", "product", "node", "postgres-bin"):
         parser.add_argument("--" + name, type=lambda path: Path(path).resolve(strict=True),
                             required=True)
-    for name in ("codex", "opencode", "postgres-library-path", "runner-loader", "runner-libraries"):
+    for name in ("codex", "opencode", "agy", "postgres-library-path", "runner-loader", "runner-libraries"):
         parser.add_argument("--" + name, type=lambda path: Path(path).resolve(strict=True))
     parser.add_argument("--postgres-user", default="nobody",
                         help="unprivileged fixture owner when the TEST launcher runs as root")

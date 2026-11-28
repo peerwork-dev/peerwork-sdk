@@ -85,6 +85,13 @@ impl Runtime {
                 crate::participant_inbox::HostBinding::new(json!({"host":"CODEX_APP_SERVER",
                     "conversation_id":request.adapter["thread_id"],"endpoint":request.adapter["endpoint"],
                     "session_id":request.adapter["expected_session_id"]}))?
+            }else if request.adapter["kind"] == "agy-stdio" && request.adapter["managed"] == true {
+                // Opening an ACP process here would try to take ownership before
+                // the predecessor has drained. Verify the exact target later.
+                let session = request.adapter["conversation_id"].as_str()
+                    .filter(|value| !value.is_empty()).ok_or_else(|| local("HOST_CONFIG_INVALID"))?;
+                crate::participant_inbox::HostBinding::new(json!({"host":"ANTIGRAVITY_CLI",
+                    "conversation_id":session,"session_id":session}))?
             }else{
                 let adapter=request.adapter.clone();let executor=tokio::runtime::Handle::current();
                 tokio::task::spawn_blocking(move||{
@@ -127,8 +134,11 @@ impl Runtime {
     }
     async fn target_health(&self,snapshot:&Snapshot)->Result<()> {
         let borrowed=self.hosts.lock().await.rebind_adapter(snapshot)?;
-        let adapter=snapshot.request.adapter.clone();let scopes=snapshot.access_scopes.clone();
+        let mut adapter=snapshot.request.adapter.clone();let scopes=snapshot.access_scopes.clone();
         let wanted=snapshot.destination.clone();let executor=tokio::runtime::Handle::current();
+        if borrowed.is_none() && adapter["kind"] == "agy-stdio" && adapter["managed"] == true {
+            adapter["launch_fence"] = json!(self.directory.join(format!("rebind-acp-{}.state", wanted.digest)));
+        }
         let deadline=std::time::Instant::now()+Duration::from_secs(10);
         tokio::task::spawn_blocking(move||{
             let check=|host:&mut crate::communication_host::Host|->std::result::Result<(),&'static str>{

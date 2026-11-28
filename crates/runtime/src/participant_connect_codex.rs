@@ -275,7 +275,11 @@ impl Connect {
                 return Err(local("HOST_ATTACHMENT_PENDING_RESUME_ORIGINAL_SELECTION"));
             }
         }
-        let host_kind = if adapter["kind"] == "opencode" { "opencode" } else { "codex" };
+        let host_kind = match adapter["kind"].as_str() {
+            Some("opencode") => "opencode",
+            Some("agy-stdio") => "agy",
+            _ => "codex",
+        };
         self.original_client(&request.participant).await?;
         let setup = self
             .registry
